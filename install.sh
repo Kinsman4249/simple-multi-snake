@@ -12,13 +12,15 @@
 # The installer asks which hostname to serve the game on. On a repeat run it
 # offers the previously used hostname as the default. To run non-interactively
 # (for example under the curl pipe), set DOMAIN:
-#   curl -fsSL .../install.sh | sudo DOMAIN=snek.example.com bash
+#   curl -fsSL .../install.sh | sudo DOMAIN=snek.example.com CF_API_TOKEN=xxxx bash
 #
-# TLS: by default the installer obtains a Let's Encrypt certificate with the
-# certbot Apache plugin using the HTTP-01 (port 80) challenge and serves the
-# game on 443. Set ENABLE_TLS=no to skip that (for example if TLS is terminated
-# upstream at Cloudflare with an Origin Certificate). Provide CERTBOT_EMAIL for
-# expiry notices, or leave it blank to register without an email.
+# TLS: by default the installer obtains a Let's Encrypt certificate using the
+# DNS-01 challenge via the Cloudflare API, then lets the Apache plugin install
+# the certificate and serve the game on 443. DNS-01 needs no inbound port 80,
+# so the DNS record can stay proxied through Cloudflare (orange cloud). It
+# requires a Cloudflare API token with Zone:DNS:Edit on the zone. Provide it as
+# CF_API_TOKEN, or the installer prompts for it. Set ENABLE_TLS=no to skip TLS
+# entirely (for example if you use a Cloudflare Origin Certificate instead).
 #
 # Re-running is safe. It updates the app in place and preserves highscores.json.
 
@@ -39,6 +41,8 @@ TEMPLATE_NAME="fillmeout.example.com.conf"   # placeholder vhost shipped in depl
 TEMPLATE_HOST="fillmeout.example.com"        # placeholder string replaced at install
 ENABLE_TLS="${ENABLE_TLS:-yes}"              # set to "no" to skip certbot / 443
 CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"           # optional; blank registers without email
+CF_API_TOKEN="${CF_API_TOKEN:-}"             # Cloudflare token, Zone:DNS:Edit scope
+CF_PROPAGATION="${CF_PROPAGATION:-30}"       # seconds to wait for DNS propagation
 
 # ---------------------------------------------------------------------------
 # Must run as root: it writes to /opt, /etc/systemd, and /etc/apache2.
@@ -111,26 +115,48 @@ resolve_domain() {
 }
 resolve_domain
 VHOST_FILE="${CHOSEN_DOMAIN}.conf"
+CF_CREDS_FILE="/etc/letsencrypt/cloudflare-${CHOSEN_DOMAIN}.ini"
 echo "Using hostname: ${CHOSEN_DOMAIN}"
 
 # ---------------------------------------------------------------------------
-# Email resolution for Let's Encrypt (only relevant when ENABLE_TLS=yes).
-# CERTBOT_EMAIL wins; otherwise prompt if interactive; blank means register
-# without an email. No default is stored.
+# TLS inputs (only when ENABLE_TLS=yes).
+#   Email: CERTBOT_EMAIL wins; else optional prompt; blank registers without.
+#   Cloudflare token: CF_API_TOKEN wins; else reuse an existing creds file if
+#   one is already on disk from a previous run; else prompt (hidden). Without a
+#   token and without an existing creds file, DNS-01 cannot proceed.
 # ---------------------------------------------------------------------------
-resolve_email() {
+resolve_tls_inputs() {
   if [ "$ENABLE_TLS" != "yes" ]; then
     return
   fi
-  if [ -n "$CERTBOT_EMAIL" ]; then
-    return
-  fi
-  if [ -r /dev/tty ]; then
+
+  # Email
+  if [ -z "$CERTBOT_EMAIL" ] && [ -r /dev/tty ]; then
     printf "Email for Let's Encrypt expiry notices (blank to skip): " > /dev/tty
     read -r CERTBOT_EMAIL < /dev/tty || CERTBOT_EMAIL=""
   fi
+
+  # Cloudflare token
+  if [ -n "$CF_API_TOKEN" ]; then
+    return
+  fi
+  if [ -r "$CF_CREDS_FILE" ]; then
+    echo "  Reusing existing Cloudflare credentials at ${CF_CREDS_FILE}."
+    return
+  fi
+  if [ -r /dev/tty ]; then
+    printf "Cloudflare API token (Zone:DNS:Edit), input hidden: " > /dev/tty
+    read -rs CF_API_TOKEN < /dev/tty || CF_API_TOKEN=""
+    printf "\n" > /dev/tty
+  fi
+  if [ -z "$CF_API_TOKEN" ]; then
+    echo "ERROR: TLS is enabled but no Cloudflare API token was provided and no" >&2
+    echo "existing credentials file was found at ${CF_CREDS_FILE}." >&2
+    echo "Provide CF_API_TOKEN, or set ENABLE_TLS=no to skip TLS." >&2
+    exit 1
+  fi
 }
-resolve_email
+resolve_tls_inputs
 
 # ---------------------------------------------------------------------------
 # 1. Base tools. curl and git are needed to fetch Node and the repo.
@@ -210,8 +236,7 @@ systemctl restart multisnake
 # ---------------------------------------------------------------------------
 # 8. Apache reverse proxy. Enable modules, generate the vhost from the
 #    template by substituting the chosen hostname, test, reload. This ADDS a
-#    new vhost only. Existing sites are not touched. The :80 vhost must be live
-#    before step 9, because the HTTP-01 challenge is served over port 80.
+#    new vhost only. Existing sites are not touched.
 # ---------------------------------------------------------------------------
 echo "[8/9] Configuring Apache reverse proxy for ${CHOSEN_DOMAIN}..."
 a2enmod proxy proxy_http proxy_wstunnel >/dev/null
@@ -238,32 +263,48 @@ apache2ctl configtest
 systemctl reload apache2
 
 # ---------------------------------------------------------------------------
-# 9. TLS via certbot (HTTP-01 on port 80), serving the game on 443.
+# 9. TLS via certbot using the DNS-01 challenge (Cloudflare), with the Apache
+#    installer writing the :443 vhost and the 80->443 redirect.
 #    Guardrails:
-#      - certbot is installed only if it is not already present, so an
-#        existing certbot (apt or snap) and its renewal schedule are left
-#        alone. We never edit certbot.timer or /etc/cron.d/certbot; installing
-#        the Debian package already provides a twice-daily renewal timer that
-#        covers every cert in /etc/letsencrypt/renewal/, including this one.
-#      - If a certificate for this hostname already exists, --keep-until-expiring
-#        reuses it instead of requesting a new one (avoids rate limits and does
-#        not disturb other certs).
+#      - certbot and the two plugins are installed only if certbot is not
+#        already present, so an existing certbot and its renewal schedule are
+#        left alone. We never edit certbot.timer or /etc/cron.d/certbot;
+#        installing the Debian package already provides a twice-daily renewal
+#        timer covering every cert in /etc/letsencrypt/renewal/, including this
+#        one. Renewal reuses the saved DNS-01 method, so no port 80 is needed.
+#      - If a certificate for this hostname already exists,
+#        --keep-until-expiring reuses it instead of requesting a new one.
+#      - DNS-01 needs no inbound port 80, so the record can stay proxied
+#        through Cloudflare (orange cloud).
 #    Skip this whole step with ENABLE_TLS=no.
 # ---------------------------------------------------------------------------
 if [ "$ENABLE_TLS" = "yes" ]; then
-  echo "[9/9] Setting up TLS for ${CHOSEN_DOMAIN} (Let's Encrypt, HTTP-01)..."
+  echo "[9/9] Setting up TLS for ${CHOSEN_DOMAIN} (Let's Encrypt, DNS-01 via Cloudflare)..."
 
   if ! command -v certbot >/dev/null 2>&1; then
-    echo "  Installing certbot and the Apache plugin..."
-    apt-get install -y certbot python3-certbot-apache
+    echo "  Installing certbot, the Apache installer, and the Cloudflare DNS plugin..."
+    apt-get install -y certbot python3-certbot-apache python3-certbot-dns-cloudflare
   else
     echo "  certbot already present ($(certbot --version 2>/dev/null || echo unknown)); reusing it."
+    # Ensure the plugins we rely on are present without reinstalling certbot.
+    apt-get install -y python3-certbot-apache python3-certbot-dns-cloudflare || true
   fi
 
   # Make sure the renewal timer is active without altering its schedule. This
   # is a no-op if it is already enabled, and it does not touch any override.
   if systemctl list-unit-files 2>/dev/null | grep -q '^certbot.timer'; then
     systemctl enable --now certbot.timer >/dev/null 2>&1 || true
+  fi
+
+  # Write the Cloudflare credentials file if we were given a token. If we are
+  # reusing an existing file, leave it as-is. Certbot records this path for
+  # renewal but does not copy the contents, so the file must persist.
+  if [ -n "$CF_API_TOKEN" ]; then
+    mkdir -p /etc/letsencrypt
+    umask 077
+    printf "# Cloudflare API token used by Certbot for DNS-01\ndns_cloudflare_api_token = %s\n" \
+      "$CF_API_TOKEN" > "$CF_CREDS_FILE"
+    chmod 600 "$CF_CREDS_FILE"
   fi
 
   # Build the email argument: a real address if provided, otherwise register
@@ -274,10 +315,12 @@ if [ "$ENABLE_TLS" = "yes" ]; then
     EMAIL_ARG=( --register-unsafely-without-email )
   fi
 
-  # Obtain (or reuse) the cert and let the Apache plugin write the :443 vhost
-  # and the 80->443 redirect. --key-type ecdsa keeps modern defaults on all
-  # supported Debian releases.
-  certbot --apache \
+  # DNS-01 authenticator with the Apache installer. The authenticator creates
+  # the _acme-challenge TXT record via the Cloudflare API; the installer writes
+  # the :443 vhost and redirect. --key-type ecdsa keeps modern defaults.
+  certbot --authenticator dns-cloudflare --installer apache \
+    --dns-cloudflare-credentials "$CF_CREDS_FILE" \
+    --dns-cloudflare-propagation-seconds "$CF_PROPAGATION" \
     -d "$CHOSEN_DOMAIN" \
     --non-interactive --agree-tos \
     --keep-until-expiring \
@@ -312,11 +355,11 @@ echo
 echo "DNS / Cloudflare notes:"
 echo "- Point an A record for ${CHOSEN_DOMAIN} at this server public IP."
 if [ "$ENABLE_TLS" = "yes" ]; then
-  echo "- Ports 80 and 443 must be reachable from the internet. Port 80 is used"
-  echo "  for the HTTP-01 challenge at first issuance and at each renewal."
-  echo "- If the record is proxied through Cloudflare and issuance fails, set the"
-  echo "  record to DNS-only (grey cloud) for the first issuance, or disable"
-  echo "  'Always Use HTTPS' briefly, then re-run this installer."
+  echo "- TLS uses the DNS-01 challenge over the Cloudflare API, so no inbound"
+  echo "  port 80 is needed. The record can stay Proxied (orange cloud)."
+  echo "- Port 443 must be reachable for players to connect."
+  echo "- The Cloudflare token is stored at ${CF_CREDS_FILE} (chmod 600) and is"
+  echo "  reused automatically at each renewal."
   echo "- Open: https://${CHOSEN_DOMAIN}"
 else
   echo "- TLS was skipped. If fronting with Cloudflare, terminate TLS there and"

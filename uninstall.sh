@@ -14,9 +14,9 @@
 #
 # The hostname is read from the installer state file so this works no matter
 # which domain was chosen. High scores are backed up to /root before removal.
-# The Let's Encrypt cert for this hostname is deleted, but the global certbot
-# renewal timer and any other certs are left untouched. Set REMOVE_CERT=no to
-# keep the certificate.
+# The Let's Encrypt cert for this hostname and its Cloudflare credentials file
+# are deleted, but the global certbot renewal timer and any other certs are
+# left untouched. Set REMOVE_CERT=no to keep the certificate and credentials.
 
 set -euo pipefail
 
@@ -51,9 +51,9 @@ fi
 rm -f /etc/systemd/system/multisnake.service
 systemctl daemon-reload
 
-# 2. Remove the Apache vhost(s). certbot --apache creates a second file with
-#    the -le-ssl suffix for the :443 vhost, so remove both. Proxy modules are
-#    left enabled since other sites on this server may rely on them.
+# 2. Remove the Apache vhost(s). The Apache installer creates a second file
+#    with the -le-ssl suffix for the :443 vhost, so remove both. Proxy modules
+#    are left enabled since other sites on this server may rely on them.
 echo "[2/6] Removing the Apache vhost..."
 if [ -n "$DOMAIN_TO_REMOVE" ]; then
   for conf in "${DOMAIN_TO_REMOVE}.conf" "${DOMAIN_TO_REMOVE}-le-ssl.conf"; do
@@ -67,18 +67,20 @@ else
   echo "  No hostname found in ${STATE_FILE} and DOMAIN not set; skipping vhost removal."
 fi
 
-# 3. Remove the Let's Encrypt certificate for this hostname only. This does not
-#    affect other certs or the shared certbot renewal timer.
-echo "[3/6] Removing the TLS certificate for this hostname..."
-if [ "$REMOVE_CERT" = "yes" ] && [ -n "$DOMAIN_TO_REMOVE" ] && command -v certbot >/dev/null 2>&1; then
-  if [ -d "/etc/letsencrypt/live/${DOMAIN_TO_REMOVE}" ]; then
+# 3. Remove the Let's Encrypt certificate and Cloudflare credentials for this
+#    hostname only. This does not affect other certs or the shared renewal
+#    timer.
+echo "[3/6] Removing the TLS certificate and credentials for this hostname..."
+if [ "$REMOVE_CERT" = "yes" ] && [ -n "$DOMAIN_TO_REMOVE" ]; then
+  if command -v certbot >/dev/null 2>&1 && [ -d "/etc/letsencrypt/live/${DOMAIN_TO_REMOVE}" ]; then
     certbot delete --cert-name "${DOMAIN_TO_REMOVE}" --non-interactive || true
     echo "  Deleted certificate ${DOMAIN_TO_REMOVE}."
   else
     echo "  No certificate found for ${DOMAIN_TO_REMOVE}, nothing to delete."
   fi
+  rm -f "/etc/letsencrypt/cloudflare-${DOMAIN_TO_REMOVE}.ini"
 else
-  echo "  Skipping certificate removal (REMOVE_CERT=${REMOVE_CERT}, certbot present: $(command -v certbot >/dev/null 2>&1 && echo yes || echo no))."
+  echo "  Skipping certificate removal (REMOVE_CERT=${REMOVE_CERT})."
 fi
 
 # 4. Back up the high score file if it exists.
