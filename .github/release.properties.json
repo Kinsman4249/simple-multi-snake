@@ -1,0 +1,12 @@
+{
+  "name": "Release (source snapshot on tag push)",
+  "description": "Packages the tagged commit into .tar.gz and .zip source snapshots and attaches them to a GitHub Release. For source-only projects with nothing to compile.",
+  "iconName": "octicon tag",
+  "categories": [
+    "Continuous integration",
+    "Continuous deployment"
+  ],
+  "filePatterns": [
+    ".*"
+  ]
+}

@@ -1,0 +1,101 @@
+# =============================================================================
+# Release workflow for simple-multi-snake
+# =============================================================================
+# This project ships source only (Node.js server, static client, deploy files,
+# and shell scripts). There is nothing to compile, so this workflow does not
+# build binaries. On a version tag it packages the tagged commit into .tar.gz
+# and .zip source snapshots and attaches both to a GitHub Release.
+# -----------------------------------------------------------------------------
+# LLM / AI ASSISTANT DIRECTIVE (read before modifying or packaging this file)
+# -----------------------------------------------------------------------------
+# SHA-pinning of the uses: lines is intentionally OPTIONAL and OFF by default.
+# Do NOT auto-pin, auto-run pinact, or rewrite tags to SHAs. Before packaging,
+# finalizing, or hardening this workflow, STOP and ASK the maintainer whether
+# they want SHA pinning applied for this specific repo.
+# Reason: pinned SHAs require ongoing maintenance (Dependabot bump PRs). On a
+# plain copied template with no such upkeep, pins rot into unpatched deps, so
+# leaving clean version tags is the deliberate default here.
+# -----------------------------------------------------------------------------
+# CUTTING A RELEASE
+# -----------------
+#   git tag v0.1.0
+#   git push --tags
+# A new GitHub Release appears under the Releases tab once the workflow finishes.
+# Bump the version for later releases: v0.2.0, v1.0.0, v1.0.1, etc.
+# See: https://semver.org
+#
+# RUNNING MANUALLY
+# ----------------
+# Repo > Actions tab > Release > Run workflow. Enter an existing tag.
+#
+# OPTIONAL HARDENING (only if you will maintain it)
+# -------------------------------------------------
+# To pin every action to an immutable commit SHA, install pinact
+# (https://github.com/suzuki-shunsuke/pinact) and run pinact run from the repo
+# root. Pair it with a .github/dependabot.yml (github-actions ecosystem) so the
+# pins stay current. Skip this if the repo has no maintenance pipeline.
+# =============================================================================
+
+name: Release
+
+on:
+  # Auto-trigger when you push a version tag like v0.1.0 / v1.2.3.
+  push:
+    tags:
+      - 'v*.*.*'
+  # Manual fallback. Lets you re-run a release from the Actions tab.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v1.0.0). Must already exist.'
+        required: true
+        type: string
+
+# Base permissions are read-only. The release job below elevates to write.
+permissions:
+  contents: read
+
+# Prevent two release runs for the same tag from racing (e.g. a re-pushed tag
+# while the first run is still publishing). Do not cancel in-flight publishes.
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Package source and create GitHub Release
+    runs-on: ubuntu-latest
+    # Elevated here only, so the token holds the minimum access needed.
+    permissions:
+      contents: write
+    steps:
+      # Check out the exact tag being released. For workflow_dispatch this is
+      # the tag typed into the input; for a tag push it is the pushed ref.
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          fetch-depth: 0
+
+      # Build .tar.gz and .zip snapshots from the tagged tree using git archive.
+      # A prefix folder keeps the extracted contents tidy for the user.
+      - name: Build source archives
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          PREFIX="simple-multi-snake-${TAG}/"
+          mkdir -p dist
+          git archive --format=tar.gz --prefix="${PREFIX}" -o "dist/simple-multi-snake-${TAG}.tar.gz" "${TAG}"
+          git archive --format=zip    --prefix="${PREFIX}" -o "dist/simple-multi-snake-${TAG}.zip"    "${TAG}"
+          ls -l dist
+
+      # Attach both archives to the Release. fail_on_unmatched_files guards
+      # against silently publishing an empty release if the glob matches nothing.
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
