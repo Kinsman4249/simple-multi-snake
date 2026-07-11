@@ -1,0 +1,19 @@
+{
+  "grid": { "cols": 50, "rows": 34, "cellSize": 16 },
+
+  "speed": {
+    "startTickMs": 160,
+    "minTickMs": 70,
+    "rampIntervalSec": 20,
+    "rampStepMs": 10
+  },
+
+  "maxPlayers": 4,
+  "respawnDelayMs": 1500,
+  "spectatorPromoteDelayMs": 2500,
+
+  "killBonusScore": 10,
+  "killBonusGrowth": 3,
+
+  "captchaTokenTtlMs": 30000
+}

@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Multisnake</title>
+<style>
+  body {
+    background: #111;
+    color: #eee;
+    font-family: monospace;
+    display: flex;
+    justify-content: center;
+    margin-top: 20px;
+  }
+  #layout { display: flex; gap: 20px; align-items: flex-start; }
+  canvas { background: #000; border: 2px solid #555; }
+  .panel { width: 220px; }
+  .panel h3 { margin: 0 0 6px 0; font-size: 14px; border-bottom: 1px solid #444; padding-bottom: 4px; }
+  .panel ol { margin: 4px 0 16px 0; padding-left: 20px; font-size: 13px; }
+  #overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #overlay .box {
+    background: #1a1a1a; border: 1px solid #444; padding: 24px; text-align: center;
+  }
+  #overlay input {
+    background: #000; color: #6f6; border: 1px solid #666; font-family: monospace;
+    font-size: 20px; text-align: center; width: 4ch; margin-top: 10px;
+  }
+  #overlay button {
+    background: #333; color: #eee; border: 1px solid #666; padding: 6px 14px;
+    margin-top: 10px; cursor: pointer; font-family: monospace;
+  }
+  #status { font-size: 13px; margin-bottom: 8px; min-height: 18px; }
+  .err { color: #f66; }
+</style>
+</head>
+<body>
+
+<div id="layout">
+  <div>
+    <div id="status">connecting...</div>
+    <canvas id="game" width="800" height="544"></canvas>
+  </div>
+  <div class="panel">
+    <h3>Daily Top 5</h3>
+    <ol id="dailyList"></ol>
+    <h3>All-Time Top 5</h3>
+    <ol id="allTimeList"></ol>
+  </div>
+</div>
+
+<!-- Captcha / gate overlay, shown before a WebSocket connection is attempted -->
+<div id="overlay">
+  <div class="box">
+    <div id="captchaQuestion">Loading...</div>
+    <div><input id="captchaAnswer" maxlength="2" autofocus></div>
+    <button id="captchaSubmit">Join</button>
+    <div id="captchaError" class="err"></div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// Captcha gate
+// A short math question must be answered correctly before the
+// server will hand out a one-time token that allows a WebSocket
+// connection. This is only meant to stop naive scripted joins;
+// Cloudflare is expected to handle real bot traffic in front of this.
+// ============================================================
+let captchaId = null;
+
+async function loadCaptcha() {
+  const res = await fetch("/api/captcha");
+  const data = await res.json();
+  captchaId = data.id;
+  document.getElementById("captchaQuestion").textContent = data.a + " + " + data.b + " = ?";
+}
+
+document.getElementById("captchaSubmit").onclick = async () => {
+  const answer = document.getElementById("captchaAnswer").value;
+  const res = await fetch("/api/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: captchaId, answer })
+  });
+  if (!res.ok) {
+    document.getElementById("captchaError").textContent = "Wrong answer, try again.";
+    loadCaptcha();
+    document.getElementById("captchaAnswer").value = "";
+    return;
+  }
+  const { token } = await res.json();
+  document.getElementById("overlay").remove();
+  connect(token);
+};
+
+loadCaptcha();
+
+// ============================================================
+// Game client
+// ============================================================
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const statusEl = document.getElementById("status");
+
+let ws = null;
+let cellSize = 16;
+let myRole = null;
+
+function connect(token) {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(proto + "//" + location.host + "/ws?token=" + token);
+
+  ws.onopen = () => { statusEl.textContent = "connected"; };
+  ws.onclose = () => { statusEl.textContent = "disconnected. reload to rejoin."; };
+  ws.onmessage = (ev) => handleMessage(JSON.parse(ev.data));
+}
+
+function handleMessage(msg) {
+  if (msg.type === "state") {
+    render(msg);
+    renderLeaderboards(msg.highScores);
+  }
+  if (msg.type === "askInitials") {
+    askInitials(msg.targets, msg.score);
+  }
+}
+
+// Renders the shared board: all player snakes, food, and a status line
+// describing this connection's own role (player slot or spectator position).
+function render(msg) {
+  cellSize = msg.grid.cellSize;
+  canvas.width = msg.grid.cols * cellSize;
+  canvas.height = msg.grid.rows * cellSize;
+
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  if (msg.food) {
+    ctx.fillStyle = "#e33";
+    ctx.fillRect(msg.food.x * cellSize, msg.food.y * cellSize, cellSize - 1, cellSize - 1);
+  }
+
+  for (const p of msg.players) {
+    if (!p) continue;
+    p.body.forEach((seg, i) => {
+      ctx.fillStyle = i === 0 ? p.color.head : p.color.body;
+      ctx.fillRect(seg.x * cellSize, seg.y * cellSize, cellSize - 1, cellSize - 1);
+    });
+    if (!p.alive) {
+      // Dim dead snakes slightly so it's clear they're waiting to respawn/replace.
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      p.body.forEach(seg => ctx.fillRect(seg.x * cellSize, seg.y * cellSize, cellSize - 1, cellSize - 1));
+    }
+  }
+
+  myRole = msg.you;
+  const scores = msg.players.filter(p => p).map((p, i) => p.score).join(", ");
+  if (msg.you.role === "player") {
+    const me = msg.players[msg.you.slot];
+    statusEl.textContent = "You: slot " + (msg.you.slot + 1) + " | score " + (me ? me.score : 0) +
+      (me && !me.alive ? " | waiting to respawn" : "");
+  } else {
+    statusEl.textContent = "Spectating. Position in queue: " + msg.you.queuePos + " of " + msg.you.queueLen;
+  }
+}
+
+function renderLeaderboards(hs) {
+  const fmt = list => list.map(e => "<li>" + e.initials + " - " + e.score + "</li>").join("");
+  document.getElementById("dailyList").innerHTML = fmt(hs.daily);
+  document.getElementById("allTimeList").innerHTML = fmt(hs.allTime);
+}
+
+// ------------------------------------------------------------
+// Arcade-style 3 letter initials entry, shown when a death qualifies
+// for the daily and/or all-time top 5.
+// ------------------------------------------------------------
+function askInitials(targets, score) {
+  const box = document.createElement("div");
+  box.id = "initialsOverlay";
+  box.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;";
+  box.innerHTML =
+    '<div style="background:#1a1a1a;border:1px solid #444;padding:24px;text-align:center;">' +
+    "<div>New high score: " + score + "</div>" +
+    '<input id="initialsInput" maxlength="3" style="background:#000;color:#6f6;border:1px solid #666;font-family:monospace;font-size:24px;text-align:center;width:4ch;margin-top:10px;text-transform:uppercase;">' +
+    '<div><button id="initialsSubmit" style="background:#333;color:#eee;border:1px solid #666;padding:6px 14px;margin-top:10px;cursor:pointer;font-family:monospace;">Submit</button></div>' +
+    "</div>";
+  document.body.appendChild(box);
+  document.getElementById("initialsInput").focus();
+
+  document.getElementById("initialsSubmit").onclick = () => {
+    const value = document.getElementById("initialsInput").value || "AAA";
+    ws.send(JSON.stringify({ type: "initials", value, score, targets }));
+    box.remove();
+  };
+}
+
+// ------------------------------------------------------------
+// Input: arrow keys / WASD send direction messages to the server.
+// The server buffers them the same way the single-player version did.
+// ------------------------------------------------------------
+document.addEventListener("keydown", (e) => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const key = e.key.toLowerCase();
+  const map = { arrowup: "up", w: "up", arrowdown: "down", s: "down", arrowleft: "left", a: "left", arrowright: "right", d: "right" };
+  const dir = map[key];
+  if (!dir) return;
+  ws.send(JSON.stringify({ type: "dir", dir }));
+  if (key.startsWith("arrow")) e.preventDefault();
+});
+</script>
+
+</body>
+</html>
