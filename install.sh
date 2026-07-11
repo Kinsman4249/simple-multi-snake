@@ -9,21 +9,28 @@
 # Or, if you have already cloned the repo, run it from inside the checkout:
 #   sudo ./install.sh
 #
+# The installer asks which hostname to serve the game on. On a repeat run it
+# offers the previously used hostname as the default. To run non-interactively
+# (for example under the curl pipe), set DOMAIN:
+#   curl -fsSL .../install.sh | sudo DOMAIN=snek.example.com bash
+#
 # Re-running is safe. It updates the app in place and preserves highscores.json.
 
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Configuration. Override any value by exporting it before running, e.g.
-#   sudo DOMAIN=snek.example.com ./install.sh
+# Configuration. Override any value by exporting it before running.
+# Note: there is deliberately no default hostname. See resolve_domain below.
 # ---------------------------------------------------------------------------
 REPO_URL="${REPO_URL:-https://github.com/Kinsman4249/simple-multi-snake.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 APP_DIR="${APP_DIR:-/opt/multisnake}"        # where the app is installed
 SERVICE_USER="${SERVICE_USER:-multisnake}"   # unprivileged account the service runs as
 NODE_MAJOR="${NODE_MAJOR:-22}"               # Node.js LTS major version to install
-DOMAIN="${DOMAIN:-snek.ethanantonio.com}"    # vhost ServerName and .conf file name
-VHOST_FILE="${DOMAIN}.conf"                  # apache sites-available file name
+STATE_DIR="${STATE_DIR:-/etc/multisnake}"    # holds installer state between runs
+STATE_FILE="${STATE_DIR}/last-domain"        # the hostname used on the last run
+TEMPLATE_NAME="fillmeout.example.com.conf"   # placeholder vhost shipped in deploy/
+TEMPLATE_HOST="fillmeout.example.com"        # placeholder string replaced at install
 
 # ---------------------------------------------------------------------------
 # Must run as root: it writes to /opt, /etc/systemd, and /etc/apache2.
@@ -34,6 +41,69 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 echo "== simple-multi-snake installer =="
+
+# ---------------------------------------------------------------------------
+# Hostname resolution. Order of precedence:
+#   1. DOMAIN environment variable, if set (non-interactive path).
+#   2. Interactive prompt on the terminal, defaulting to the last used
+#      hostname if this installer has been run before.
+#   3. If there is no terminal, no DOMAIN, and no saved hostname, stop.
+# The chosen hostname is validated and saved for next time near the end.
+# ---------------------------------------------------------------------------
+LAST_DOMAIN=""
+if [ -r "$STATE_FILE" ]; then
+  LAST_DOMAIN="$(cat "$STATE_FILE" 2>/dev/null || true)"
+fi
+
+valid_hostname() {
+  # Letters, digits, dots, and hyphens, must contain at least one dot, and
+  # must not start or end with a dot or hyphen.
+  printf "%s" "$1" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$' \
+    && printf "%s" "$1" | grep -q '\.'
+}
+
+resolve_domain() {
+  # 1. Explicit DOMAIN wins.
+  if [ -n "${DOMAIN:-}" ]; then
+    if ! valid_hostname "$DOMAIN"; then
+      echo "ERROR: DOMAIN='${DOMAIN}' is not a valid hostname." >&2
+      exit 1
+    fi
+    CHOSEN_DOMAIN="$DOMAIN"
+    return
+  fi
+
+  # 2. Interactive prompt, if a terminal is attached.
+  if [ -r /dev/tty ]; then
+    local prompt reply
+    if [ -n "$LAST_DOMAIN" ]; then
+      prompt="Hostname to serve the game on [${LAST_DOMAIN}]: "
+    else
+      prompt="Hostname to serve the game on (e.g. snek.example.com): "
+    fi
+    while :; do
+      printf "%s" "$prompt" > /dev/tty
+      read -r reply < /dev/tty || reply=""
+      # Empty input reuses the saved hostname, when there is one.
+      if [ -z "$reply" ] && [ -n "$LAST_DOMAIN" ]; then
+        reply="$LAST_DOMAIN"
+      fi
+      if valid_hostname "$reply"; then
+        CHOSEN_DOMAIN="$reply"
+        return
+      fi
+      printf "Please enter a valid hostname (letters, digits, dots, hyphens).\n" > /dev/tty
+    done
+  fi
+
+  # 3. Nothing to go on.
+  echo "ERROR: no hostname provided and no saved hostname to reuse." >&2
+  echo "Re-run with DOMAIN set, e.g. sudo DOMAIN=snek.example.com bash install.sh" >&2
+  exit 1
+}
+resolve_domain
+VHOST_FILE="${CHOSEN_DOMAIN}.conf"
+echo "Using hostname: ${CHOSEN_DOMAIN}"
 
 # ---------------------------------------------------------------------------
 # 1. Base tools. curl and git are needed to fetch Node and the repo.
@@ -111,15 +181,36 @@ systemctl enable multisnake
 systemctl restart multisnake
 
 # ---------------------------------------------------------------------------
-# 8. Apache reverse proxy. Enable modules, drop in the vhost, test, reload.
-#    This ADDS a new vhost only. Existing sites are not touched.
+# 8. Apache reverse proxy. Enable modules, generate the vhost from the
+#    template by substituting the chosen hostname, test, reload. This ADDS a
+#    new vhost only. Existing sites are not touched.
 # ---------------------------------------------------------------------------
-echo "[8/8] Configuring Apache reverse proxy for ${DOMAIN}..."
+echo "[8/8] Configuring Apache reverse proxy for ${CHOSEN_DOMAIN}..."
 a2enmod proxy proxy_http proxy_wstunnel >/dev/null
-install -m 0644 "${SRC}/deploy/${VHOST_FILE}" "/etc/apache2/sites-available/${VHOST_FILE}"
+
+# If a previous run used a different hostname, retire that vhost so we do not
+# leave an orphaned site enabled alongside the new one.
+if [ -n "$LAST_DOMAIN" ] && [ "$LAST_DOMAIN" != "$CHOSEN_DOMAIN" ]; then
+  if [ -f "/etc/apache2/sites-enabled/${LAST_DOMAIN}.conf" ]; then
+    a2dissite "${LAST_DOMAIN}.conf" >/dev/null || true
+  fi
+  rm -f "/etc/apache2/sites-available/${LAST_DOMAIN}.conf"
+  echo "  Retired previous vhost for ${LAST_DOMAIN}."
+fi
+
+# Generate the real vhost from the placeholder template. A hostname cannot
+# contain a slash, so a plain sed with / delimiters is safe here.
+sed "s/${TEMPLATE_HOST}/${CHOSEN_DOMAIN}/g" "${SRC}/deploy/${TEMPLATE_NAME}" \
+  > "/etc/apache2/sites-available/${VHOST_FILE}"
+chmod 0644 "/etc/apache2/sites-available/${VHOST_FILE}"
 a2ensite "${VHOST_FILE}" >/dev/null
 apache2ctl configtest
 systemctl reload apache2
+
+# Remember the hostname so the next run can offer it as the default.
+mkdir -p "${STATE_DIR}"
+printf "%s\n" "${CHOSEN_DOMAIN}" > "${STATE_FILE}"
+chmod 0644 "${STATE_FILE}"
 
 # ---------------------------------------------------------------------------
 # Remove the temp clone if we created one.
@@ -131,9 +222,9 @@ fi
 echo
 echo "== Done =="
 echo "Service status:  systemctl status multisnake"
-echo "The app listens on 127.0.0.1:8080 and Apache proxies ${DOMAIN} to it."
+echo "The app listens on 127.0.0.1:8080 and Apache proxies ${CHOSEN_DOMAIN} to it."
 echo
 echo "Manual step still required:"
-echo "In Cloudflare, add an A record for the host part of ${DOMAIN} pointing"
+echo "In Cloudflare, add an A record for the host part of ${CHOSEN_DOMAIN} pointing"
 echo "to this server public IP, Proxied (orange cloud). Then open:"
-echo "  https://${DOMAIN}"
+echo "  https://${CHOSEN_DOMAIN}"
