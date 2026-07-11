@@ -14,6 +14,13 @@
 # (for example under the curl pipe), set DOMAIN:
 #   curl -fsSL .../install.sh | sudo DOMAIN=snek.example.com CF_API_TOKEN=xxxx bash
 #
+# Port: the app binds a loopback TCP port that Apache proxies to. The default
+# is 8080, but if that port is already in use (common on a host that already
+# runs other services) the installer automatically selects the next free port
+# and points server.js and the vhosts at it. Force a specific port with PORT.
+# The chosen port is saved and reused on later runs. A previous install that
+# crash-looped on a port clash is detected and offered an automatic fix.
+#
 # TLS: by default the installer obtains a Let's Encrypt certificate using the
 # DNS-01 challenge via the Cloudflare API, then lets the Apache plugin install
 # the certificate and serve the game on 443. DNS-01 needs no inbound port 80,
@@ -37,8 +44,12 @@ SERVICE_USER="${SERVICE_USER:-multisnake}"   # unprivileged account the service 
 NODE_MAJOR="${NODE_MAJOR:-22}"               # Node.js LTS major version to install
 STATE_DIR="${STATE_DIR:-/etc/multisnake}"    # holds installer state between runs
 STATE_FILE="${STATE_DIR}/last-domain"        # the hostname used on the last run
+PORT_FILE="${STATE_DIR}/last-port"           # the port used on the last run
+PREFERRED_PORT="${PORT:-}"                   # optional explicit port override
+DEFAULT_PORT=8080                            # starting point for the free-port scan
 TEMPLATE_NAME="fillmeout.example.com.conf"   # placeholder vhost shipped in deploy/
 TEMPLATE_HOST="fillmeout.example.com"        # placeholder string replaced at install
+TEMPLATE_PORT="8080"                         # placeholder port in the vhost template
 ENABLE_TLS="${ENABLE_TLS:-yes}"              # set to "no" to skip certbot / 443
 CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"           # optional; blank registers without email
 CF_API_TOKEN="${CF_API_TOKEN:-}"             # Cloudflare token, Zone:DNS:Edit scope
@@ -115,8 +126,123 @@ resolve_domain() {
 }
 resolve_domain
 VHOST_FILE="${CHOSEN_DOMAIN}.conf"
+LE_SSL_FILE="/etc/apache2/sites-available/${CHOSEN_DOMAIN}-le-ssl.conf"
 CF_CREDS_FILE="/etc/letsencrypt/cloudflare-${CHOSEN_DOMAIN}.ini"
 echo "Using hostname: ${CHOSEN_DOMAIN}"
+
+# ---------------------------------------------------------------------------
+# Port helpers and selection.
+#
+# port_is_free: true when nothing is listening on the given TCP port. It looks
+# at every listening socket regardless of bind address, which is deliberately
+# conservative: if any process holds the port on any interface, we avoid it.
+#
+# detect_prior_failure (recovery catch): if an earlier install left the service
+# crash-looping (classically EADDRINUSE from a port already in use), this makes
+# that visible and, when interactive, asks before applying the fix. It is
+# distinct from the proactive selection below, whose whole job is to prevent
+# the clash in the first place. This path exists because a prior run may have
+# already written a bad port into server.js and the vhosts, then reported
+# success while the service quietly failed, producing a confusing 404.
+#
+# resolve_port (initial catch): stop our own service so it releases any port it
+# holds, then choose a port: the PORT override, else the last saved port, else
+# the default, scanning upward until a free port is found.
+# ---------------------------------------------------------------------------
+port_is_free() {
+  local p="$1"
+  if ss -ltnH 2>/dev/null | awk '{print $4}' | sed 's/.*://' | grep -qx "$p"; then
+    return 1
+  fi
+  return 0
+}
+
+detect_prior_failure() {
+  # Only relevant if a prior install exists on this host.
+  [ -f /etc/systemd/system/multisnake.service ] || return 0
+
+  local failed=0
+  if systemctl is-failed --quiet multisnake 2>/dev/null; then
+    failed=1
+  elif journalctl -u multisnake -n 50 --no-pager 2>/dev/null | grep -q 'EADDRINUSE'; then
+    failed=1
+  fi
+  [ "$failed" -eq 1 ] || return 0
+
+  # Work out which port the failed install was trying to use.
+  local prior_port=""
+  if [ -r "${APP_DIR}/server.js" ]; then
+    prior_port="$(grep -oE 'const PORT = [0-9]+' "${APP_DIR}/server.js" | grep -oE '[0-9]+' | head -n1 || true)"
+  fi
+  if [ -z "$prior_port" ] && [ -r "$PORT_FILE" ]; then
+    prior_port="$(cat "$PORT_FILE" 2>/dev/null || true)"
+  fi
+
+  echo
+  echo "NOTICE: a previous multisnake install is present but its service is failing."
+  if [ -n "$prior_port" ]; then
+    local holder
+    holder="$(ss -ltnpH 2>/dev/null | awk -v pat=":${prior_port}\$" '$4 ~ pat {print $NF}' | head -n1)"
+    echo "Port ${prior_port} appears to have been in use already (EADDRINUSE), so the"
+    echo "game never came up. Requests then return 404 from whatever else owns that"
+    echo "port. This is almost certainly why the site shows 404 after the cert step."
+    if [ -n "$holder" ]; then
+      echo "Current listener on port ${prior_port}: ${holder}"
+    fi
+  fi
+  echo "This run will select a free port and re-point the app and the Apache vhosts"
+  echo "(including the certbot SSL vhost) to fix it."
+
+  if [ -r /dev/tty ]; then
+    printf "Proceed with the automatic port fix? [Y/n]: " > /dev/tty
+    local ans
+    read -r ans < /dev/tty || ans=""
+    case "$ans" in
+      [Nn]*)
+        echo "Stopping at your request. No changes were made this run." >&2
+        exit 1
+        ;;
+    esac
+  fi
+}
+
+resolve_port() {
+  # Release our own port first so a re-run does not treat it as a conflict.
+  systemctl stop multisnake >/dev/null 2>&1 || true
+
+  local preferred=""
+  if [ -n "$PREFERRED_PORT" ]; then
+    preferred="$PREFERRED_PORT"
+  elif [ -r "$PORT_FILE" ]; then
+    preferred="$(cat "$PORT_FILE" 2>/dev/null || true)"
+  fi
+  case "$preferred" in
+    ''|*[!0-9]*) preferred="$DEFAULT_PORT" ;;
+  esac
+  if [ "$preferred" -lt 1 ] || [ "$preferred" -gt 65535 ]; then
+    preferred="$DEFAULT_PORT"
+  fi
+
+  local p="$preferred" tries=0
+  while ! port_is_free "$p"; do
+    p=$((p + 1))
+    tries=$((tries + 1))
+    if [ "$p" -gt 65535 ]; then p=1025; fi
+    if [ "$tries" -gt 500 ]; then
+      echo "ERROR: could not find a free TCP port to bind to." >&2
+      exit 1
+    fi
+  done
+  CHOSEN_PORT="$p"
+  if [ "$CHOSEN_PORT" != "$preferred" ]; then
+    echo "Port ${preferred} is in use; the app will use ${CHOSEN_PORT} instead."
+  else
+    echo "Using port ${CHOSEN_PORT} for the app."
+  fi
+}
+
+detect_prior_failure
+resolve_port
 
 # ---------------------------------------------------------------------------
 # TLS inputs (only when ENABLE_TLS=yes).
@@ -200,7 +326,8 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Lay the app down in APP_DIR. An existing highscores.json is left in place.
+# 4. Lay the app down in APP_DIR, then patch the port into server.js. An
+#    existing highscores.json is left in place.
 # ---------------------------------------------------------------------------
 echo "[4/9] Installing app files to ${APP_DIR}..."
 mkdir -p "${APP_DIR}/public"
@@ -208,6 +335,9 @@ install -m 0644 "${SRC}/server.js"         "${APP_DIR}/server.js"
 install -m 0644 "${SRC}/config.json"       "${APP_DIR}/config.json"
 install -m 0644 "${SRC}/package.json"      "${APP_DIR}/package.json"
 install -m 0644 "${SRC}/public/index.html" "${APP_DIR}/public/index.html"
+
+# server.js ships with a default of 8080; set it to the chosen port.
+sed -i "s/const PORT = [0-9]\+;/const PORT = ${CHOSEN_PORT};/" "${APP_DIR}/server.js"
 
 # ---------------------------------------------------------------------------
 # 5. Install production npm deps (ws) inside APP_DIR.
@@ -225,7 +355,12 @@ fi
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${APP_DIR}"
 
 # ---------------------------------------------------------------------------
-# 7. systemd service. Copy unit, reload, enable on boot, (re)start now.
+# 7. systemd service. Copy unit, reload, enable on boot, start now, then verify
+#    the app actually answers on its port. The verification is the catch: with
+#    Type=simple systemd reports the unit started the moment it forks, so a
+#    crash right after (for example a port clash) would otherwise go unnoticed
+#    and later show up only as a 404 through Apache. Failing here is loud and
+#    early, with the relevant logs.
 # ---------------------------------------------------------------------------
 echo "[7/9] Installing and starting the systemd service..."
 install -m 0644 "${SRC}/deploy/multisnake.service" /etc/systemd/system/multisnake.service
@@ -233,10 +368,20 @@ systemctl daemon-reload
 systemctl enable multisnake
 systemctl restart multisnake
 
+sleep 1
+if ! curl -fsS "http://127.0.0.1:${CHOSEN_PORT}/" -o /dev/null 2>/dev/null; then
+  echo "ERROR: multisnake did not come up on 127.0.0.1:${CHOSEN_PORT}." >&2
+  echo "This usually means the port is held by another process or the app" >&2
+  echo "failed to start. Recent service logs:" >&2
+  journalctl -u multisnake -n 20 --no-pager >&2 || true
+  exit 1
+fi
+echo "  App is responding on 127.0.0.1:${CHOSEN_PORT}."
+
 # ---------------------------------------------------------------------------
 # 8. Apache reverse proxy. Enable modules, generate the vhost from the
-#    template by substituting the chosen hostname, test, reload. This ADDS a
-#    new vhost only. Existing sites are not touched.
+#    template by substituting the chosen hostname and port, test, reload. This
+#    ADDS a new vhost only. Existing sites are not touched.
 # ---------------------------------------------------------------------------
 echo "[8/9] Configuring Apache reverse proxy for ${CHOSEN_DOMAIN}..."
 a2enmod proxy proxy_http proxy_wstunnel >/dev/null
@@ -253,12 +398,22 @@ if [ -n "$LAST_DOMAIN" ] && [ "$LAST_DOMAIN" != "$CHOSEN_DOMAIN" ]; then
   echo "  Retired previous vhost for ${LAST_DOMAIN}."
 fi
 
-# Generate the real vhost from the placeholder template. A hostname cannot
-# contain a slash, so a plain sed with / delimiters is safe here.
-sed "s/${TEMPLATE_HOST}/${CHOSEN_DOMAIN}/g" "${SRC}/deploy/${TEMPLATE_NAME}" \
-  > "/etc/apache2/sites-available/${VHOST_FILE}"
+# Generate the real vhost from the placeholder template, substituting both the
+# hostname and the port. Neither contains a slash, so sed with # delimiters is
+# safe.
+sed -e "s#${TEMPLATE_HOST}#${CHOSEN_DOMAIN}#g" \
+    -e "s#127\.0\.0\.1:${TEMPLATE_PORT}#127.0.0.1:${CHOSEN_PORT}#g" \
+    "${SRC}/deploy/${TEMPLATE_NAME}" > "/etc/apache2/sites-available/${VHOST_FILE}"
 chmod 0644 "/etc/apache2/sites-available/${VHOST_FILE}"
 a2ensite "${VHOST_FILE}" >/dev/null
+
+# On a re-run the certbot SSL vhost already exists and certbot will not rewrite
+# it when the certificate is reused, so re-point its proxy port here as well.
+if [ -f "$LE_SSL_FILE" ]; then
+  sed -i "s#127\.0\.0\.1:[0-9]\+#127.0.0.1:${CHOSEN_PORT}#g" "$LE_SSL_FILE"
+  echo "  Re-pointed existing SSL vhost to port ${CHOSEN_PORT}."
+fi
+
 apache2ctl configtest
 systemctl reload apache2
 
@@ -328,6 +483,11 @@ if [ "$ENABLE_TLS" = "yes" ]; then
     --key-type ecdsa \
     "${EMAIL_ARG[@]}"
 
+  # certbot may have (re)written the SSL vhost; make sure its proxy port is
+  # correct, then test and reload.
+  if [ -f "$LE_SSL_FILE" ]; then
+    sed -i "s#127\.0\.0\.1:[0-9]\+#127.0.0.1:${CHOSEN_PORT}#g" "$LE_SSL_FILE"
+  fi
   apache2ctl configtest
   systemctl reload apache2
   echo "  TLS is configured. The game is served on https://${CHOSEN_DOMAIN}"
@@ -335,10 +495,11 @@ else
   echo "[9/9] ENABLE_TLS=no, skipping certbot. Serving plain HTTP on port 80."
 fi
 
-# Remember the hostname so the next run can offer it as the default.
+# Remember the hostname and port so the next run can offer/reuse them.
 mkdir -p "${STATE_DIR}"
 printf "%s\n" "${CHOSEN_DOMAIN}" > "${STATE_FILE}"
-chmod 0644 "${STATE_FILE}"
+printf "%s\n" "${CHOSEN_PORT}" > "${PORT_FILE}"
+chmod 0644 "${STATE_FILE}" "${PORT_FILE}"
 
 # ---------------------------------------------------------------------------
 # Remove the temp clone if we created one.
@@ -350,7 +511,7 @@ fi
 echo
 echo "== Done =="
 echo "Service status:  systemctl status multisnake"
-echo "The app listens on 127.0.0.1:8080 and Apache proxies ${CHOSEN_DOMAIN} to it."
+echo "The app listens on 127.0.0.1:${CHOSEN_PORT} and Apache proxies ${CHOSEN_DOMAIN} to it."
 echo
 echo "DNS / Cloudflare notes:"
 echo "- Point an A record for ${CHOSEN_DOMAIN} at this server public IP."
