@@ -49,6 +49,24 @@ variables:
     curl -fsSL https://raw.githubusercontent.com/Kinsman4249/simple-multi-snake/main/install.sh \
       | sudo DOMAIN=snek.example.com CF_API_TOKEN=your_token bash
 
+## Port selection
+
+The Node app binds a loopback TCP port that Apache proxies to. The default is
+8080. If that port is already taken (common on a host that already runs other
+services) the installer automatically picks the next free port and points both
+server.js and the Apache vhosts at it. The chosen port is saved to
+/etc/multisnake/last-port and reused on later runs.
+
+- Force a specific port with the PORT environment variable.
+- After the service starts, the installer performs a health check against the
+  chosen port. If the app does not answer, the install fails immediately with
+  the relevant service logs rather than continuing to issue a certificate for a
+  process that is not running.
+- If an earlier install is detected as failed (for example a port clash that
+  left the service crash-looping), the installer explains the problem, names
+  the process currently holding the port, and offers to move the app to a free
+  port and re-point the vhosts before continuing.
+
 ## TLS (Let's Encrypt via DNS-01)
 
 By default the installer uses the DNS-01 challenge through the Cloudflare API,
@@ -133,13 +151,19 @@ Keys:
 - captchaTokenTtlMs: how long a solved-captcha token stays valid before the
   WebSocket must be opened.
 
+The listening port is not in config.json; it is chosen at install time and
+written into server.js. To change it, re-run the installer with PORT set.
+
 ## Operating the service
 
     sudo systemctl status multisnake      # health and recent logs
     sudo journalctl -u multisnake -f      # follow live logs
     sudo systemctl restart multisnake     # apply a config change
 
-The app binds to 127.0.0.1:8080 only. Apache is the sole public entry point.
+The app binds to 127.0.0.1 on the chosen port only. Apache is the sole public
+entry point. To confirm which port is in use:
+
+    cat /etc/multisnake/last-port
 
 ## Repository layout
 
@@ -151,7 +175,7 @@ The app binds to 127.0.0.1:8080 only. Apache is the sole public entry point.
     |   `-- index.html                    game client served to browsers
     |-- deploy/
     |   |-- multisnake.service            systemd unit
-    |   `-- fillmeout.example.com.conf    Apache vhost template (installer fills in the hostname)
+    |   `-- fillmeout.example.com.conf    Apache vhost template (installer fills in the hostname and port)
     |-- install.sh                        one-command installer
     |-- uninstall.sh                      one-command uninstaller
     |-- INSTALL.md                        manual step-by-step install notes
@@ -168,8 +192,9 @@ The app binds to 127.0.0.1:8080 only. Apache is the sole public entry point.
             `-- release.yml
 
 The vhost is a template. The installer copies deploy/fillmeout.example.com.conf
-and replaces the placeholder hostname with the one you enter, writing the result
-to /etc/apache2/sites-available/<hostname>.conf. There is no per-domain vhost
+and replaces the placeholder hostname and the placeholder port (8080) with the
+values chosen at install, writing the result to
+/etc/apache2/sites-available/<hostname>.conf. There is no per-domain vhost
 committed to the repo.
 
 ## Notes and limitations
