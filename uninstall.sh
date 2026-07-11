@@ -5,21 +5,26 @@
 # One-liner (as root):
 #   curl -fsSL https://raw.githubusercontent.com/Kinsman4249/simple-multi-snake/main/uninstall.sh | sudo bash
 #
-# To also remove the service account and delete the app directory outright:
-#   curl -fsSL https://raw.githubusercontent.com/Kinsman4249/simple-multi-snake/main/uninstall.sh | sudo bash -s -- --purge
+# To also remove the service account:
+#   curl -fsSL .../uninstall.sh | sudo bash -s -- --purge
 #
 # From a local checkout:
-#   sudo ./uninstall.sh            # remove app, service, vhost; keep a highscores backup
+#   sudo ./uninstall.sh            # remove app, service, vhost, cert; keep the service user
 #   sudo ./uninstall.sh --purge    # also remove the service user
 #
-# High scores are backed up to /root before the app directory is removed.
+# The hostname is read from the installer state file so this works no matter
+# which domain was chosen. High scores are backed up to /root before removal.
+# The Let's Encrypt cert for this hostname is deleted, but the global certbot
+# renewal timer and any other certs are left untouched. Set REMOVE_CERT=no to
+# keep the certificate.
 
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/multisnake}"
 SERVICE_USER="${SERVICE_USER:-multisnake}"
-DOMAIN="${DOMAIN:-snek.ethanantonio.com}"
-VHOST_FILE="${DOMAIN}.conf"
+STATE_DIR="${STATE_DIR:-/etc/multisnake}"
+STATE_FILE="${STATE_DIR}/last-domain"
+REMOVE_CERT="${REMOVE_CERT:-yes}"
 PURGE=0
 [ "${1:-}" = "--purge" ] && PURGE=1
 
@@ -30,44 +35,77 @@ fi
 
 echo "== simple-multi-snake uninstaller =="
 
+# Determine which hostname was installed. DOMAIN overrides; otherwise use the
+# saved state file. If neither is available we can still remove the app and
+# service, but we cannot know which vhost/cert to remove.
+DOMAIN_TO_REMOVE="${DOMAIN:-}"
+if [ -z "$DOMAIN_TO_REMOVE" ] && [ -r "$STATE_FILE" ]; then
+  DOMAIN_TO_REMOVE="$(cat "$STATE_FILE" 2>/dev/null || true)"
+fi
+
 # 1. Stop and remove the systemd service.
-echo "[1/4] Stopping and removing the systemd service..."
+echo "[1/6] Stopping and removing the systemd service..."
 if systemctl list-unit-files | grep -q '^multisnake.service'; then
   systemctl disable --now multisnake || true
 fi
 rm -f /etc/systemd/system/multisnake.service
 systemctl daemon-reload
 
-# 2. Remove the Apache vhost. Proxy modules are left enabled since other
-#    sites on this server may rely on them.
-echo "[2/4] Removing the Apache vhost ${VHOST_FILE}..."
-if [ -f "/etc/apache2/sites-enabled/${VHOST_FILE}" ]; then
-  a2dissite "${VHOST_FILE}" >/dev/null || true
+# 2. Remove the Apache vhost(s). certbot --apache creates a second file with
+#    the -le-ssl suffix for the :443 vhost, so remove both. Proxy modules are
+#    left enabled since other sites on this server may rely on them.
+echo "[2/6] Removing the Apache vhost..."
+if [ -n "$DOMAIN_TO_REMOVE" ]; then
+  for conf in "${DOMAIN_TO_REMOVE}.conf" "${DOMAIN_TO_REMOVE}-le-ssl.conf"; do
+    if [ -f "/etc/apache2/sites-enabled/${conf}" ]; then
+      a2dissite "${conf}" >/dev/null || true
+    fi
+    rm -f "/etc/apache2/sites-available/${conf}"
+  done
+  apache2ctl configtest && systemctl reload apache2 || true
+else
+  echo "  No hostname found in ${STATE_FILE} and DOMAIN not set; skipping vhost removal."
 fi
-rm -f "/etc/apache2/sites-available/${VHOST_FILE}"
-apache2ctl configtest && systemctl reload apache2 || true
 
-# 3. Back up the high score file if it exists.
-echo "[3/4] Backing up high scores if present..."
+# 3. Remove the Let's Encrypt certificate for this hostname only. This does not
+#    affect other certs or the shared certbot renewal timer.
+echo "[3/6] Removing the TLS certificate for this hostname..."
+if [ "$REMOVE_CERT" = "yes" ] && [ -n "$DOMAIN_TO_REMOVE" ] && command -v certbot >/dev/null 2>&1; then
+  if [ -d "/etc/letsencrypt/live/${DOMAIN_TO_REMOVE}" ]; then
+    certbot delete --cert-name "${DOMAIN_TO_REMOVE}" --non-interactive || true
+    echo "  Deleted certificate ${DOMAIN_TO_REMOVE}."
+  else
+    echo "  No certificate found for ${DOMAIN_TO_REMOVE}, nothing to delete."
+  fi
+else
+  echo "  Skipping certificate removal (REMOVE_CERT=${REMOVE_CERT}, certbot present: $(command -v certbot >/dev/null 2>&1 && echo yes || echo no))."
+fi
+
+# 4. Back up the high score file if it exists.
+echo "[4/6] Backing up high scores if present..."
 if [ -f "${APP_DIR}/highscores.json" ]; then
   BACKUP="/root/multisnake-highscores-$(date +%Y%m%d-%H%M%S).json"
   cp "${APP_DIR}/highscores.json" "${BACKUP}"
   echo "  Saved ${BACKUP}"
 fi
 
-# 4. Remove the app directory, and optionally the service user.
-echo "[4/4] Removing application files..."
+# 5. Remove the app directory and the installer state.
+echo "[5/6] Removing application files and installer state..."
 rm -rf "${APP_DIR}"
+rm -rf "${STATE_DIR}"
+
+# 6. Optionally remove the service user.
+echo "[6/6] Service user cleanup..."
 if [ "${PURGE}" -eq 1 ]; then
   if id "${SERVICE_USER}" >/dev/null 2>&1; then
     userdel "${SERVICE_USER}" || true
     echo "  Removed service user ${SERVICE_USER}."
   fi
+else
+  echo "  Kept service user '${SERVICE_USER}'. Re-run with --purge to remove it."
 fi
 
 echo
 echo "== Done =="
-if [ "${PURGE}" -eq 0 ]; then
-  echo "Service user '${SERVICE_USER}' was kept. Re-run with --purge to remove it."
-fi
-echo "Node.js and Apache modules were left installed; other services may use them."
+echo "Node.js, Apache modules, and the certbot renewal timer were left in place;"
+echo "other services may depend on them."
