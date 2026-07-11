@@ -165,6 +165,108 @@ entry point. To confirm which port is in use:
 
     cat /etc/multisnake/last-port
 
+## Manual install
+
+The one-command installer above is the recommended path and handles everything:
+hostname selection, free-port selection, the systemd service, the Apache vhost,
+and TLS. This section is for doing it by hand or understanding what the
+installer does. Replace YOUR_HOST with your hostname throughout.
+
+### 1. Node.js 22
+
+    sudo apt update
+    sudo apt install -y curl git ca-certificates
+    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+    sudo apt install -y nodejs
+    node --version
+
+### 2. Deploy the app
+
+    sudo mkdir -p /opt/multisnake/public
+    sudo cp server.js config.json package.json /opt/multisnake/
+    sudo cp public/index.html /opt/multisnake/public/
+    cd /opt/multisnake
+    sudo npm install --omit=dev
+
+### 3. Choose the listening port
+
+server.js ships with a default of 8080 (const PORT = 8080;). If 8080 is already
+used by another service, check what holds it and pick a free port:
+
+    sudo ss -ltnp | grep ':8080'
+    sudo sed -i 's/const PORT = 8080;/const PORT = 8091;/' /opt/multisnake/server.js
+
+Use the same port everywhere below in place of 8080.
+
+### 4. Service account and permissions
+
+    sudo useradd --system --no-create-home --shell /usr/sbin/nologin multisnake
+    sudo chown -R multisnake:multisnake /opt/multisnake
+
+### 5. systemd service
+
+    sudo cp deploy/multisnake.service /etc/systemd/system/multisnake.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now multisnake
+    sudo systemctl status multisnake
+
+Confirm the app is listening before continuing. This catches a port clash early,
+before Apache and TLS are set up:
+
+    curl -sI http://127.0.0.1:8080/     # expect HTTP/1.1 200 OK
+
+If the service is failed or the port is in use, check the logs, pick a different
+port, redo step 3, and restart:
+
+    sudo journalctl -u multisnake -n 20 --no-pager
+    sudo systemctl restart multisnake
+
+### 6. Apache reverse proxy
+
+    sudo a2enmod proxy proxy_http proxy_wstunnel
+    sudo sed -e 's/fillmeout.example.com/YOUR_HOST/g' \
+             deploy/fillmeout.example.com.conf \
+             > /etc/apache2/sites-available/YOUR_HOST.conf
+    sudo a2ensite YOUR_HOST.conf
+    sudo apache2ctl configtest
+    sudo systemctl reload apache2
+
+If you changed the port in step 3, also replace 127.0.0.1:8080 with your port in
+the generated vhost before enabling it.
+
+### 7. TLS with Let's Encrypt (DNS-01 via Cloudflare)
+
+DNS-01 needs no inbound port 80, so the record can stay proxied through
+Cloudflare. You need a Cloudflare API token scoped Zone:DNS:Edit for the zone.
+
+    sudo apt install -y certbot python3-certbot-apache python3-certbot-dns-cloudflare
+
+    sudo mkdir -p /etc/letsencrypt
+    sudo sh -c 'umask 077; printf "dns_cloudflare_api_token = %s\n" "YOUR_TOKEN" \
+      > /etc/letsencrypt/cloudflare-YOUR_HOST.ini'
+    sudo chmod 600 /etc/letsencrypt/cloudflare-YOUR_HOST.ini
+
+    sudo certbot --authenticator dns-cloudflare --installer apache \
+      --dns-cloudflare-credentials /etc/letsencrypt/cloudflare-YOUR_HOST.ini \
+      --dns-cloudflare-propagation-seconds 30 \
+      -d YOUR_HOST \
+      --non-interactive --agree-tos --keep-until-expiring --redirect \
+      --key-type ecdsa -m you@example.com
+
+The Apache plugin writes the :443 vhost (YOUR_HOST-le-ssl.conf) and the 80 to
+443 redirect. If you changed the app port, confirm the SSL vhost proxies to the
+right port, since certbot copies the proxy directives from the :80 vhost:
+
+    grep -i proxypass /etc/apache2/sites-available/YOUR_HOST-le-ssl.conf
+
+Installing certbot provides a systemd timer that renews all certificates twice
+daily. No cron entry is needed and none should be added.
+
+### 8. DNS and verify
+
+Point an A record for YOUR_HOST at this server public IP (it can stay Proxied),
+make sure port 443 is reachable, then open https://YOUR_HOST in a browser.
+
 ## Repository layout
 
     .
@@ -178,7 +280,6 @@ entry point. To confirm which port is in use:
     |   `-- fillmeout.example.com.conf    Apache vhost template (installer fills in the hostname and port)
     |-- install.sh                        one-command installer
     |-- uninstall.sh                      one-command uninstaller
-    |-- INSTALL.md                        manual step-by-step install notes
     |-- CHANGELOG.md
     |-- CODE_OF_CONDUCT.md
     |-- CONTRIBUTING.md
