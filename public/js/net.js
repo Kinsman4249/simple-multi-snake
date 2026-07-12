@@ -1,9 +1,8 @@
 // ============================================================
 // Networking: owns the WebSocket connection and keeps the last two
-// authoritative "state" snapshots, each stamped with the time this
-// browser received it. This module does not interpret game data.
+// authoritative "state" snapshots, each stamped with browser receive time.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).net = "net 2026-07-12.5";
+(window.__BUILDS__ = window.__BUILDS__ || {}).net = "net 2026-07-12.6";
 const Net = (() => {
   let ws = null;
   let handlers = {};
@@ -25,6 +24,10 @@ const Net = (() => {
       handlers.onState && handlers.onState(currSnap, prevSnap);
     } else if (msg.type === "askInitials") {
       handlers.onInitials && handlers.onInitials(msg);
+    } else if (msg.type === "spectator") {
+      handlers.onSpectator && handlers.onSpectator(msg);
+    } else if (msg.type === "offerJoin") {
+      handlers.onOfferJoin && handlers.onOfferJoin(msg);
     }
   }
   function send(obj) {

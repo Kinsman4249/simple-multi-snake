@@ -1,13 +1,8 @@
 // ============================================================
-// Rendering: grid-snapped board draw. Snakes are drawn on WHOLE cells
-// only, using integer cell coordinates. There is no sub-cell
-// interpolation anywhere in this file, so motion is a discrete step:
-// the tail cell disappears and a new cell appears at the head. If the
-// on-screen snake still glides smoothly between cells, the running
-// client is a STALE build (check the DEBUG panel build stamps), because
-// this code multiplies integer cell coords by cellSize and nothing else.
+// Rendering: grid-snapped board draw. Whole cells only, integer coords,
+// zero sub-cell interpolation. Tail drops, a cell appears at the head.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-12.5";
+(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-12.6";
 const Render = (() => {
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");

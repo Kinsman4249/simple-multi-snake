@@ -1,9 +1,11 @@
 // ============================================================
-// Non-engine UI: the captcha join gate, the status line, the two high
-// score lists, the arcade initials prompt, and a DEBUG button/panel that
-// shows client+server build stamps and recent server corrections.
+// Non-engine UI: captcha join gate, status line, high score lists, the
+// arcade initials prompt (now with a live countdown), a spectator overlay,
+// an explicit "JOIN" offer button (so an AFK spectator cannot silently take
+// a slot), and a DEBUG button/panel. Debug recording is only turned on when
+// the panel is opened, via the toggle callback from main.js.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-12.5";
+(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-12.6";
 const UI = (() => {
   const statusEl = document.getElementById("status");
   let captchaId = null;
@@ -14,7 +16,6 @@ const UI = (() => {
     captchaId = data.id;
     document.getElementById("captchaQuestion").textContent = data.a + " + " + data.b + " = ?";
   }
-
   function initCaptchaGate(onSuccess) {
     loadCaptcha();
     document.getElementById("captchaSubmit").onclick = async () => {
@@ -35,52 +36,119 @@ const UI = (() => {
       onSuccess(data.token);
     };
   }
-
-  function setConnectionStatus(text) {
-    statusEl.textContent = text;
-  }
+  function setConnectionStatus(text) { statusEl.textContent = text; }
 
   function updateStatus(curr) {
     if (curr.you.role === "player") {
       const me = curr.players[curr.you.slot];
       statusEl.textContent = "You: slot " + (curr.you.slot + 1) + " | score " +
-        (me ? me.score : 0) + (me && !me.alive ? " | waiting to respawn" : "");
+        (me ? me.score : 0) + (me && !me.alive ? " | waiting" : "");
     } else {
-      statusEl.textContent = "Spectating. Position in queue: " +
+      statusEl.textContent = "Spectating. Queue position: " +
         curr.you.queuePos + " of " + curr.you.queueLen;
     }
   }
-
   function updateLeaderboards(hs) {
     const fmt = list => list.map(e => "<li>" + e.initials + " - " + e.score + "</li>").join("");
     document.getElementById("dailyList").innerHTML = fmt(hs.daily);
     document.getElementById("allTimeList").innerHTML = fmt(hs.allTime);
   }
 
-  function askInitials(targets, score) {
+  function overlayBox(id) {
+    const existing = document.getElementById(id);
+    if (existing) existing.remove();
     const box = document.createElement("div");
-    box.id = "initialsOverlay";
-    box.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;";
+    box.id = id;
+    box.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:9998;";
+    return box;
+  }
+
+  // Initials prompt with a live countdown. When the deadline passes the
+  // server will move the player to spectator; we just reflect the timer and
+  // auto-submit whatever is typed so a score is not lost at the buzzer.
+  function askInitials(targets, score, deadlineMs) {
+    const box = overlayBox("initialsOverlay");
+    const end = Date.now() + (deadlineMs || 20000);
     box.innerHTML =
-      "<div style=\"background:#1a1a1a;border:1px solid #444;padding:24px;text-align:center;\">" +
+      "<div style=\"background:#1a1a1a;border:1px solid #444;padding:24px;text-align:center;font-family:monospace;color:#eee;\">" +
       "<div>New high score: " + score + "</div>" +
-      "<div><input id=\"initialsInput\" maxlength=\"3\" style=\"background:#000;color:#6f6;border:1px solid #666;font-family:monospace;font-size:20px;text-align:center;width:4ch;margin-top:10px;\"></div>" +
+      "<div style=\"margin:8px 0;color:#fa6;\">Enter initials before <span id=\"initCountdown\">20</span>s or you become a spectator</div>" +
+      "<div><input id=\"initialsInput\" maxlength=\"3\" style=\"background:#000;color:#6f6;border:1px solid #666;font-family:monospace;font-size:20px;text-align:center;width:4ch;\"></div>" +
       "<div><button id=\"initialsSubmit\" style=\"background:#333;color:#eee;border:1px solid #666;padding:6px 14px;margin-top:10px;cursor:pointer;font-family:monospace;\">Submit</button></div>" +
       "</div>";
     document.body.appendChild(box);
     document.getElementById("initialsInput").focus();
-    document.getElementById("initialsSubmit").onclick = () => {
-      const value = document.getElementById("initialsInput").value || "AAA";
+    let done = false;
+    const submit = () => {
+      if (done) return;
+      done = true;
+      clearInterval(t);
+      const value = (document.getElementById("initialsInput").value || "AAA").toUpperCase();
       Net.send({ type: "initials", value, score, targets });
       box.remove();
     };
+    document.getElementById("initialsSubmit").onclick = submit;
+    const t = setInterval(() => {
+      const left = Math.max(0, Math.ceil((end - Date.now()) / 1000));
+      const el = document.getElementById("initCountdown");
+      if (el) el.textContent = String(left);
+      if (left <= 0) submit();
+    }, 250);
   }
 
+  // Spectator overlay: shows global disconnect countdown info from server.
+  function showSpectator(msg) {
+    const box = overlayBox("spectatorOverlay");
+    box.style.background = "rgba(0,0,0,0.6)";
+    box.innerHTML =
+      "<div style=\"background:#141414;border:1px solid #444;padding:20px;text-align:center;font-family:monospace;color:#ddd;\">" +
+      "<div style=\"font-size:18px;\">Spectating</div>" +
+      "<div style=\"margin-top:8px;color:#9cf;\">Queue position: " + (msg.queuePos || "-") + " of " + (msg.queueLen || "-") + "</div>" +
+      (msg.disconnectMs ? "<div style=\"margin-top:8px;color:#f88;\">Idle disconnect in " + Math.round(msg.disconnectMs / 1000) + "s</div>" : "") +
+      "</div>";
+    document.body.appendChild(box);
+    // If the player is actively spectating a live game, do not block the view.
+    setTimeout(() => { const b = document.getElementById("spectatorOverlay"); if (b) b.remove(); }, 2500);
+  }
+
+  // Explicit join offer. A spectator at the front of the queue must click to
+  // take the open slot; if they do not accept within the window the server
+  // passes the offer to the next spectator. This stops AFK takeover.
+  function offerJoin(msg, onAccept) {
+    const box = overlayBox("joinOverlay");
+    const end = Date.now() + (msg.acceptMs || 10000);
+    box.innerHTML =
+      "<div style=\"background:#10240f;border:1px solid #3a3;padding:24px;text-align:center;font-family:monospace;color:#dfd;\">" +
+      "<div style=\"font-size:18px;\">A slot is open</div>" +
+      "<div style=\"margin:8px 0;\">Join in <span id=\"joinCountdown\">10</span>s</div>" +
+      "<div><button id=\"joinBtn\" style=\"background:#2a5;color:#031;border:1px solid #6f6;padding:8px 18px;font-size:16px;cursor:pointer;font-family:monospace;\">JOIN NOW</button></div>" +
+      "</div>";
+    document.body.appendChild(box);
+    let done = false;
+    const finish = accepted => {
+      if (done) return;
+      done = true;
+      clearInterval(t);
+      box.remove();
+      if (accepted) onAccept();
+    };
+    document.getElementById("joinBtn").onclick = () => finish(true);
+    const t = setInterval(() => {
+      const left = Math.max(0, Math.ceil((end - Date.now()) / 1000));
+      const el = document.getElementById("joinCountdown");
+      if (el) el.textContent = String(left);
+      if (left <= 0) finish(false); // let server offer the next spectator
+    }, 250);
+  }
+
+  // ---- Debug button + panel (lazy: nothing recorded until opened) ----
   let debugInfoFn = null;
+  let debugToggleFn = null;
   let debugTimer = null;
 
-  function initDebug(getInfoFn) {
+  function initDebug(getInfoFn, toggleFn) {
     debugInfoFn = getInfoFn;
+    debugToggleFn = toggleFn || function () {};
     if (document.getElementById("debugBtn")) return;
 
     const btn = document.createElement("button");
@@ -91,12 +159,13 @@ const UI = (() => {
 
     const panel = document.createElement("div");
     panel.id = "debugPanel";
-    panel.style.cssText = "position:fixed;top:34px;left:6px;z-index:9999;display:none;width:340px;max-height:70vh;overflow:auto;background:rgba(0,0,0,0.9);color:#ddd;border:1px solid #666;font-family:monospace;font-size:11px;padding:8px;white-space:pre-wrap;";
+    panel.style.cssText = "position:fixed;top:34px;left:6px;z-index:9999;display:none;width:360px;max-height:70vh;overflow:auto;background:rgba(0,0,0,0.9);color:#ddd;border:1px solid #666;font-family:monospace;font-size:11px;padding:8px;white-space:pre-wrap;";
     document.body.appendChild(panel);
 
     btn.onclick = () => {
       const open = panel.style.display === "none";
       panel.style.display = open ? "block" : "none";
+      debugToggleFn(open);           // enable/disable recording on the hot path
       if (open) {
         renderDebug();
         debugTimer = setInterval(renderDebug, 250);
@@ -106,7 +175,6 @@ const UI = (() => {
       }
     };
   }
-
   function renderDebug() {
     const panel = document.getElementById("debugPanel");
     if (!panel || !debugInfoFn) return;
@@ -124,18 +192,21 @@ const UI = (() => {
     lines.push("  tickMs: " + (info.tickMs == null ? "-" : info.tickMs));
     lines.push("  role:   " + (info.role || "-") + "   slot: " + (info.slot == null ? "-" : info.slot));
     lines.push("");
+    lines.push("== PENDING INPUTS ==");
+    const pend = info.pending || [];
+    if (pend.length === 0) lines.push("  none");
+    else pend.forEach(x => lines.push("  #" + x.seq + " " + x.dir + " retries=" + x.retries + (x.confirmed ? " CONFIRMED" : " pending")));
+    lines.push("");
     lines.push("== SERVER CORRECTIONS (" + (info.correctionCount || 0) + " total) ==");
     const c = info.corrections || [];
-    if (c.length === 0) {
-      lines.push("  none");
-    } else {
-      c.slice().reverse().forEach(x => {
-        lines.push("  seq " + (x.seq == null ? "-" : x.seq) + " [" + x.type + "] pred(" +
-          x.predicted.x + "," + x.predicted.y + ") -> act(" + x.actual.x + "," + x.actual.y + ")");
-      });
-    }
+    if (c.length === 0) lines.push("  none");
+    else c.slice().reverse().forEach(x => {
+      lines.push("  seq " + (x.seq == null ? "-" : x.seq) + " [" + x.type + "] pred(" +
+        x.predicted.x + "," + x.predicted.y + ") -> act(" + x.actual.x + "," + x.actual.y + ")");
+    });
     panel.textContent = lines.join("\n");
   }
 
-  return { initCaptchaGate, setConnectionStatus, updateStatus, updateLeaderboards, askInitials, initDebug };
+  return { initCaptchaGate, setConnectionStatus, updateStatus, updateLeaderboards,
+           askInitials, showSpectator, offerJoin, initDebug };
 })();
