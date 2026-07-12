@@ -3,23 +3,25 @@
 //
 // Movement is grid-snapped (integer cells only, one cell per tick).
 //
-// Authority split:
-//   * CLIENT leads on turns. Each accepted turn is a pending input with a
-//     client seq. When the server's authoritative dir matches the oldest
-//     pending input, that input is confirmed and retired. A CORRECT
-//     prediction is never snapped back, so it does not visually fight.
-//   * We DEFER to the server only on a genuine mispredict: the authoritative
-//     head diverges AND no outstanding input explains it (collision, wall
-//     death, powerup, respawn/teleport) -> hard resync.
+// Authority split (this build):
+//   * The CLIENT leads on movement/turns at all times.
+//   * The server OVERRIDES the client ONLY on a real game-state conflict:
+//       - deadOnServer: server reports our snake not alive (collision, wall
+//         death, powerup interaction), or
+//       - bigJump: authoritative head moved more than one cell from our last
+//         confirmed head (respawn / teleport).
+//     Only then do we hard-resync and drop pending inputs.
+//   * A PLAIN positional difference (server a tick behind our predicted turn)
+//     is NOT a conflict. We rebase onto the authoritative body but KEEP the
+//     unconfirmed pending turns and keep leading, so turning does not jitter.
 //
-// Input retry: an unconfirmed turn is re-sent after a couple of ticks
-// (dropped-packet recovery, why spamming used to help). Retries STOP if the
-// server reports our snake dead, so a resolved collision is never undone.
+// Turn confirmation: when the server's authoritative dir matches our oldest
+// pending input, that input is confirmed and retired. Input retry re-sends an
+// unconfirmed turn after a couple of ticks; retry stops if we are dead.
 //
-// Debug recording is DISABLED until UI opens the panel (setDebug(true)), to
-// avoid any per-tick allocation on the hot path when the panel is closed.
+// Debug recording is DISABLED until the UI opens the panel (setDebug(true)).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.6";
+(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.7";
 const DIR_VECTORS = {
   up: { x: 0, y: -1 },
   down: { x: 0, y: 1 },
@@ -33,23 +35,20 @@ class LocalPlayerPredictor {
     this.id = id;
     this.slot = null;
     this.dir = { x: 1, y: 0 };
-    this.pending = [];        // [{ seq, dirName, vec, sentTick, retries, confirmed }]
+    this.pending = [];
     this.clientSeq = 0;
     this.confirmedBody = null;
     this.predictedBody = null;
     this.grid = null;
     this.lastServerSeq = null;
     this.deadOnServer = false;
-    this.debug = false;       // gated: only record corrections when panel open
+    this.debug = false;
     this.corrections = [];
     this.correctionCount = 0;
     this.sendFn = null;
   }
   setSender(fn) { this.sendFn = fn; }
-  setDebug(on) {
-    this.debug = !!on;
-    if (!on) { this.corrections.length = 0; }
-  }
+  setDebug(on) { this.debug = !!on; if (!on) this.corrections.length = 0; }
   sameVec(a, b) { return a && b && a.x === b.x && a.y === b.y; }
 
   queueInput(dirName) {
@@ -71,8 +70,7 @@ class LocalPlayerPredictor {
     if (this.deadOnServer || !this.sendFn) return;
     for (const p of this.pending) {
       if (p.confirmed) continue;
-      const waited = (this.lastServerSeq == null || p.sentTick == null)
-        ? 0 : (this.lastServerSeq - p.sentTick);
+      const waited = (this.lastServerSeq == null || p.sentTick == null) ? 0 : (this.lastServerSeq - p.sentTick);
       if (waited >= RETRY_AFTER_TICKS && p.retries < MAX_RETRIES) {
         p.retries++;
         p.sentTick = this.lastServerSeq;
@@ -85,11 +83,7 @@ class LocalPlayerPredictor {
     if (grid) this.grid = grid;
     this.lastServerSeq = (seq == null ? this.lastServerSeq : seq);
     const p = players[slot];
-    if (!p) {
-      this.confirmedBody = null;
-      this.predictedBody = null;
-      return;
-    }
+    if (!p) { this.confirmedBody = null; this.predictedBody = null; return; }
     this.slot = slot;
     this.deadOnServer = !p.alive;
 
@@ -104,31 +98,29 @@ class LocalPlayerPredictor {
     }
     while (this.pending.length && this.pending[0].confirmed) this.pending.shift();
 
-    let mispredict = false;
-    if (this.predictedBody && this.predictedBody.length) {
+    // A CONFLICT is ONLY death or teleport/respawn. Plain positional drift
+    // while a turn is in flight is absorbed without overriding the client.
+    const conflict = this.deadOnServer || bigJump;
+
+    if (this.debug && this.predictedBody && this.predictedBody.length) {
       const ph = this.predictedBody[0];
       const ah = p.body[0];
       if (ph.x !== ah.x || ph.y !== ah.y) {
-        const explainedByPending = !bigJump && this.pending.some(x => !x.confirmed);
-        if (bigJump || !explainedByPending) {
-          mispredict = true;
-          if (this.debug) {
-            this.correctionCount++;
-            this.corrections.push({
-              seq: (seq == null ? null : seq),
-              type: bigJump ? "respawn/teleport" : "mispredict",
-              predicted: { x: ph.x, y: ph.y },
-              actual: { x: ah.x, y: ah.y }
-            });
-            if (this.corrections.length > 50) this.corrections.shift();
-          }
-        }
+        this.correctionCount++;
+        this.corrections.push({
+          seq: (seq == null ? null : seq),
+          type: this.deadOnServer ? "death/collision" : (bigJump ? "respawn/teleport" : "absorbed (no override)"),
+          predicted: { x: ph.x, y: ph.y },
+          actual: { x: ah.x, y: ah.y }
+        });
+        if (this.corrections.length > 50) this.corrections.shift();
       }
     }
 
     this.confirmedBody = p.body.map(s => ({ x: s.x, y: s.y }));
     if (authDir) this.dir = authDir;
-    if (mispredict || bigJump) this.pending = [];
+    if (conflict) this.pending = [];
+
     this.recompute();
   }
 
@@ -159,7 +151,5 @@ class LocalPlayerPredictor {
     const head = { x: head0.x + chosen.x, y: head0.y + chosen.y };
     this.predictedBody = [head, ...this.confirmedBody.slice(0, -1)];
   }
-  renderBody(_alpha) {
-    return this.predictedBody || this.confirmedBody;
-  }
+  renderBody(_alpha) { return this.predictedBody || this.confirmedBody; }
 }

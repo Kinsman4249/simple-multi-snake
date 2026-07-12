@@ -1,9 +1,9 @@
 // ============================================================
 // Bootstrap. Client leads on movement; server corrections and the join
 // lifecycle are surfaced through the UI. Debug recording is only enabled
-// while the DEBUG panel is open (UI calls back into the predictor).
+// while the DEBUG panel is open.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-12.6";
+(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-12.7";
 const myPlayers = new Map();
 myPlayers.set("p1", new LocalPlayerPredictor("p1"));
 let myRole = null;
@@ -71,7 +71,6 @@ window.__DEBUG_SOURCE__ = function () {
     correctionCount: p1 ? p1.correctionCount : 0
   };
 };
-// UI toggles debug recording so nothing is logged until the panel is open.
 window.__DEBUG_TOGGLE__ = function (on) {
   const p1 = myPlayers.get("p1");
   if (p1) p1.setDebug(on);
