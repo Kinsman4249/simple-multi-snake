@@ -3,17 +3,20 @@
 //
 // Movement is grid-snapped (integer cells only, one cell per tick).
 //
-// Turn feel fix (.8): prediction chains the current heading PLUS any queued
-// turns FORWARD from the confirmed head, instead of pivoting a single step
-// around it. Pivoting made the head appear to snap back one cell on the turn
-// frame (the hiccup). Chaining forward means a queued turn extends the path,
-// which is why buffering inputs felt smoother; that behavior is now default.
+// Turn-corner fix (.9): the server has ~1 tick of input latency, so after
+// you press a turn it runs ONE more straight cell in the old heading and
+// THEN turns. Earlier builds predicted the turn happening at the current
+// head immediately, so the predicted corner sat one cell short of where the
+// server actually places it, and the head popped over by a cell on the next
+// snapshot (the residual "absorbed (no override)" diagonal jitter). We now
+// model that lag: a queued turn is applied AFTER first advancing one cell in
+// the current confirmed heading, matching the server's corner timing.
 //
 // Authority split:
 //   * The CLIENT leads on movement/turns at all times.
 //   * The server OVERRIDES only on a real conflict: deadOnServer (collision/
-//     wall/powerup) or bigJump (respawn/teleport). Then we hard-resync and
-//     drop pending inputs. Plain positional drift is absorbed (no override).
+//     wall/powerup) or bigJump (respawn/teleport). Then hard-resync and drop
+//     pending inputs. Plain positional drift is absorbed (no override).
 //
 // Turn confirmation: when the server's authoritative dir matches our oldest
 // pending input, that input is confirmed and retired. Input retry re-sends an
@@ -21,7 +24,7 @@
 //
 // Debug recording is DISABLED until the UI opens the panel (setDebug(true)).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.8";
+(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.9";
 const DIR_VECTORS = {
   up: { x: 0, y: -1 },
   down: { x: 0, y: 1 },
@@ -31,6 +34,7 @@ const DIR_VECTORS = {
 const RETRY_AFTER_TICKS = 2;
 const MAX_RETRIES = 3;
 const MAX_LEAD_CELLS = 2;   // how many predicted cells we may lead the server by
+const SERVER_INPUT_LAG = 1; // straight cells the server runs before a queued turn
 class LocalPlayerPredictor {
   constructor(id) {
     this.id = id;
@@ -135,27 +139,34 @@ class LocalPlayerPredictor {
     return h.x >= 0 && h.x < this.grid.cols && h.y >= 0 && h.y < this.grid.rows;
   }
 
-  // Build the sequence of heading vectors to apply, in order: the current
-  // confirmed heading is implicit; each unconfirmed queued turn changes the
-  // heading for the steps after it. We advance the head forward one cell per
-  // step (bounded by MAX_LEAD_CELLS) so a turn EXTENDS the path rather than
-  // pivoting the single predicted cell backward.
+  // Predict forward from the confirmed head. A queued turn does NOT bend the
+  // path at the current cell; instead we first advance SERVER_INPUT_LAG cells
+  // in the current heading (matching the server running one straight cell
+  // before it applies the turn), and only then change heading. This places
+  // the predicted corner where the server will actually place it, so turns
+  // stop relocating by a cell. Bounded by MAX_LEAD_CELLS so we never over-run.
   recompute() {
     if (!this.confirmedBody) { this.predictedBody = null; return; }
     const unconfirmed = this.pending.filter(x => !x.confirmed);
-
-    // Number of forward steps to predict: at least 1, at most MAX_LEAD_CELLS,
-    // and never more than the count of distinct queued turns + 1.
-    const steps = Math.min(MAX_LEAD_CELLS, Math.max(1, unconfirmed.length));
+    const steps = Math.min(MAX_LEAD_CELLS, Math.max(1, unconfirmed.length + SERVER_INPUT_LAG));
 
     let body = this.confirmedBody.slice();
     let heading = this.dir;
+    let turnIdx = 0;          // which queued turn to apply next
+    let lagLeft = SERVER_INPUT_LAG; // straight cells to run before first turn
+
     for (let n = 0; n < steps; n++) {
-      // Adopt the nth queued turn as the heading for this step if present.
-      if (unconfirmed[n]) heading = unconfirmed[n].vec;
+      // Apply the next queued turn only after the server-lag straight cells.
+      if (lagLeft <= 0 && unconfirmed[turnIdx]) {
+        heading = unconfirmed[turnIdx].vec;
+        turnIdx++;
+        lagLeft = SERVER_INPUT_LAG; // model lag before the following turn too
+      } else if (lagLeft > 0) {
+        lagLeft--;
+      }
       const head = { x: body[0].x + heading.x, y: body[0].y + heading.y };
-      if (!this.inBounds(head)) break;          // hold at wall; do not go off-board
-      body = [head, ...body.slice(0, -1)];      // advance one cell (tail drops)
+      if (!this.inBounds(head)) break; // hold at wall; do not go off-board
+      body = [head, ...body.slice(0, -1)];
     }
     this.predictedBody = body;
   }
