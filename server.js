@@ -395,6 +395,7 @@ function broadcastState() {
             alive: s.alive,
             score: s.score,
             color: s.color,
+            dir: s.dir,
             body: s.body
           }
         : null
