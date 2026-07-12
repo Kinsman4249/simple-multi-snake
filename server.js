@@ -1,22 +1,23 @@
 // ============================================================
 // Multiplayer Snake server.
 //
-// Authority: server authoritative for collisions/powerups; the client
-// leads on movement (see predict.js). The server sends each player's
-// authoritative dir so the client can confirm/retire predicted turns.
+// Authority: server authoritative for collisions/powerups; the client leads
+// on movement (see predict.js). The server sends each player's authoritative
+// dir so the client can confirm/retire predicted turns.
 //
-// Lifecycle (this build):
-//   1. On death, if the score qualifies, the player is prompted for
-//      initials and enters state "awaitInitials". They CANNOT respawn
-//      until initials are submitted.
-//   2. If initials are not submitted within INITIALS_TIMEOUT_MS (20s) the
-//      player is moved to spectator.
-//   3. Spectators sit in a global queue. A spectator is disconnected after
-//      SPECTATOR_IDLE_MS (5 min) of being idle in the queue. This timeout
-//      is GLOBAL (one shared constant).
-//   4. When a slot opens, the front spectator is OFFERED the slot with an
-//      explicit JOIN button (JOIN_OFFER_MS). If they do not accept, the
-//      offer passes to the next spectator. This prevents AFK takeover.
+// Lifecycle:
+//   1. On qualifying death -> "awaitInitials"; no respawn until initials in.
+//   2. No initials within INITIALS_TIMEOUT_MS (20s) -> spectator.
+//   3. Spectators sit in a global queue; disconnected after SPECTATOR_IDLE_MS
+//      (5 min) idle. One shared (global) constant.
+//   4. Open slot -> front spectator OFFERED slot with explicit JOIN button
+//      (JOIN_OFFER_MS); no accept -> offer passes to next. Prevents AFK.
+//
+// Score resets to 0 on every (re)spawn, so a respawned snake cannot
+// re-qualify for the high-score table with a stale score.
+//
+// Input buffer: up to INPUT_BUFFER (3) queued turns per snake so buffered
+// inputs during rapid turns register rather than being dropped.
 //
 // Run: npm install ws ; node server.js
 // ============================================================
@@ -29,13 +30,12 @@ const CFG = JSON.parse(fs.readFileSync(path.join(__dirname, "config.json"), "utf
 const HS_FILE = path.join(__dirname, "highscores.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const PORT = 8080;
-const BUILD = "server 2026-07-12.6";
+const BUILD = "server 2026-07-12.8";
 const WALL_GRACE_TICKS = Number.isInteger(CFG.wallGraceTicks) ? CFG.wallGraceTicks : 1;
-
-// Lifecycle timeouts (config-overridable).
 const INITIALS_TIMEOUT_MS = Number.isInteger(CFG.initialsTimeoutMs) ? CFG.initialsTimeoutMs : 20000;
-const SPECTATOR_IDLE_MS = Number.isInteger(CFG.spectatorIdleMs) ? CFG.spectatorIdleMs : 300000; // global 5 min
+const SPECTATOR_IDLE_MS = Number.isInteger(CFG.spectatorIdleMs) ? CFG.spectatorIdleMs : 300000;
 const JOIN_OFFER_MS = Number.isInteger(CFG.joinOfferMs) ? CFG.joinOfferMs : 10000;
+const INPUT_BUFFER = Number.isInteger(CFG.inputBuffer) ? CFG.inputBuffer : 3;
 
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 function loadHighScores() {
@@ -49,6 +49,7 @@ function saveHighScores(data) { fs.writeFileSync(HS_FILE, JSON.stringify(data, n
 let highScores = loadHighScores();
 function qualifies(score) {
   const targets = [];
+  if (score <= 0) return targets;
   if (highScores.daily.length < 5 || score > highScores.daily[highScores.daily.length - 1].score) targets.push("daily");
   if (highScores.allTime.length < 5 || score > highScores.allTime[highScores.allTime.length - 1].score) targets.push("allTime");
   return targets;
@@ -95,12 +96,10 @@ const COLORS = [
   { head: "#ff6", body: "#aa3" }
 ];
 let slots = new Array(CFG.maxPlayers).fill(null);
-// Spectators: [{ connId, since }]. Global idle disconnect uses since.
 let spectatorQueue = [];
 let connections = new Map();
 let food = null;
 let sessionStart = null;
-// Active join offer: { connId, expiresAt } or null.
 let joinOffer = null;
 
 function cellFree(x, y, ignoreSlotIndex = -1) {
@@ -134,6 +133,10 @@ function spawnSnake(slotIndex) {
   s.wallStalls = 0;
   s.awaitInitials = false;
   s.initialsDeadline = null;
+  // Reset score on (re)spawn. Without this a respawned snake keeps its old
+  // score, re-qualifies for the high-score table on its next death, and the
+  // initials prompt fires again and again.
+  s.score = 0;
 }
 function newPlayerSlot(connId) {
   return {
@@ -172,8 +175,6 @@ function removeConnection(connId) {
     sessionStart = null; food = null;
   }
 }
-// Offer an open slot to the front spectator with an explicit JOIN button.
-// If they never accept, the offer expires and passes to the next spectator.
 function maybeOfferSlot() {
   if (joinOffer) return;
   const openIndex = slots.findIndex(s => s === null);
@@ -201,17 +202,14 @@ function acceptJoin(connId) {
   if (sessionStart === null) sessionStart = Date.now();
   if (!food) placeFood();
 }
-// Timers: expire join offers and disconnect idle spectators (global).
 function lifecycleSweep() {
   const now = Date.now();
   if (joinOffer && now >= joinOffer.expiresAt) {
-    // front spectator did not accept: rotate them to the back, offer next.
     const idx = spectatorQueue.findIndex(e => e.connId === joinOffer.connId);
     if (idx !== -1) { const [e] = spectatorQueue.splice(idx, 1); spectatorQueue.push({ connId: e.connId, since: now }); }
     joinOffer = null;
     maybeOfferSlot();
   }
-  // Global spectator idle disconnect.
   for (const e of spectatorQueue.slice()) {
     if (now - e.since >= SPECTATOR_IDLE_MS) {
       const conn = connections.get(e.connId);
@@ -219,7 +217,6 @@ function lifecycleSweep() {
       removeConnection(e.connId);
     }
   }
-  // Initials deadline: move lingering awaitInitials players to spectator.
   for (let i = 0; i < slots.length; i++) {
     const s = slots[i];
     if (s && s.awaitInitials && s.initialsDeadline && now >= s.initialsDeadline) {
@@ -335,9 +332,6 @@ function applyKillBonuses(died) {
     for (let n = 0; n < CFG.killBonusGrowth; n++) killer.body.push({ ...tail });
   }
 }
-// On death: if the score qualifies, gate on initials (no respawn until
-// submitted or the deadline moves them to spectator). Otherwise respawn as
-// before (subject to queue/offer flow).
 function handleDeath(slotIndex) {
   const s = slots[slotIndex];
   if (!s) return;
@@ -348,9 +342,8 @@ function handleDeath(slotIndex) {
     s.awaitInitials = true;
     s.initialsDeadline = Date.now() + INITIALS_TIMEOUT_MS;
     sendTo(conn.ws, { type: "askInitials", targets, score: s.score, deadlineMs: INITIALS_TIMEOUT_MS });
-    return; // do NOT schedule respawn; gated on initials
+    return;
   }
-  // Non-qualifying: respawn in place, or yield slot if spectators waiting.
   setTimeout(() => {
     if (!slots[slotIndex] || slots[slotIndex].connId !== s.connId) return;
     if (spectatorQueue.length > 0) movePlayerToSpectator(slotIndex);
@@ -404,8 +397,6 @@ const httpServer = http.createServer((req, res) => {
   fs.readFile(filePath, (err, data) => {
     if (err) { res.writeHead(404); res.end("not found"); return; }
     const ext = path.extname(filePath);
-    // Cache-Control: no-cache on code/markup so a CDN edge (Cloudflare) does
-    // not serve stale JS after a deploy. Assets still validate via ETag.
     const headers = { "Content-Type": MIME[ext] || "application/octet-stream" };
     if (ext === ".js" || ext === ".css" || ext === ".html") headers["Cache-Control"] = "no-cache";
     res.writeHead(200, headers);
@@ -440,9 +431,7 @@ wss.on("connection", ws => {
       const dirMap = { up: { x: 0, y: -1 }, down: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 } };
       const nd = dirMap[msg.dir];
       if (!nd) return;
-      // Dedup by client seq is unnecessary here: reversal/duplicate guard plus
-      // the 2-item cap make a resent turn idempotent against the queue.
-      if (slot.inputQueue.length >= 2) return;
+      if (slot.inputQueue.length >= INPUT_BUFFER) return;
       const last = slot.inputQueue.length > 0 ? slot.inputQueue[slot.inputQueue.length - 1] : slot.dir;
       const reversal = nd.x === -last.x && nd.y === -last.y;
       const duplicate = nd.x === last.x && nd.y === last.y;
@@ -456,7 +445,6 @@ wss.on("connection", ws => {
       const initials = String(msg.value || "").toUpperCase().slice(0, 3).padEnd(3, "A");
       const targets = qualifies(msg.score || 0);
       recordScore(msg.targets || targets, initials, msg.score || 0);
-      // Initials satisfied: clear the gate and respawn (or yield if queued).
       if (conn.role === "player") {
         const s = slots[conn.slotIndex];
         if (s) {
