@@ -218,9 +218,24 @@ function currentTickMs() {
   const ms = CFG.speed.startTickMs - steps * CFG.speed.rampStepMs;
   return Math.max(CFG.speed.minTickMs, ms);
 }
+// Single global tick sequence, shared by every player and broadcast to every
+// client. There is deliberately no per-player or per-connection tick counter:
+// one board, one authoritative clock, driven by the same self-rescheduling
+// setTimeout chain as before. Client-side prediction (Phase 2 client work)
+// runs on each browser's own requestAnimationFrame loop and never causes an
+// extra server tick; it only smooths what gets drawn between the ticks that
+// already happen here.
+let tickSeq = 0;
+
 function scheduleTick() {
   setTimeout(gameTick, currentTickMs());
 }
+
+// gameTick is now a small pipeline of named stages instead of one long
+// function. Behavior is identical to before; this is purely a Phase 2
+// restructure so Phase 4 (powerups, wormhole) can hook into a stage by name
+// instead of another editing pass through one monolithic function. Stage
+// hook points are marked where a future powerup will plug in.
 function gameTick() {
   const active = slots
     .map((s, i) => ({ s, i }))
@@ -229,15 +244,37 @@ function gameTick() {
     scheduleTick();
     return;
   }
-  // Step 1: apply queued direction changes and compute each snake's next head.
-  const newHeads = new Map(); // slotIndex -> {x,y}
+
+  const newHeads = computeNewHeads(active);
+  const died = new Map(); // slotIndex -> killerSlotIndex or null
+
+  resolveWallCollisions(active, newHeads, died);   // Phase 4 hook: wormhole-on-wall-touch
+  resolveSelfCollisions(active, newHeads, died);
+  resolveSnakeCollisions(active, newHeads, died);  // Phase 4 hook: wormhole-on-player-touch
+  applyMovementAndFood(active, newHeads, died);
+  applyKillBonuses(died);
+  for (const [victimIndex] of died) handleDeath(victimIndex);
+
+  tickSeq++;
+  broadcastState();
+  scheduleTick();
+}
+
+// Stage 1: apply one queued direction change per active snake (max one per
+// tick, matching the client's own predictor so its reconciliation lines up),
+// and compute where each head would land this tick.
+function computeNewHeads(active) {
+  const newHeads = new Map();
   for (const { s, i } of active) {
     if (s.inputQueue.length > 0) s.dir = s.inputQueue.shift();
     const head = s.body[0];
     newHeads.set(i, { x: head.x + s.dir.x, y: head.y + s.dir.y });
   }
-  const died = new Map(); // slotIndex -> killerSlotIndex or null
-  // Step 2: wall collisions.
+  return newHeads;
+}
+
+// Stage 2: wall collisions.
+function resolveWallCollisions(active, newHeads, died) {
   for (const { i } of active) {
     if (died.has(i)) continue;
     const h = newHeads.get(i);
@@ -245,8 +282,11 @@ function gameTick() {
       died.set(i, null);
     }
   }
-  // Step 3: self collisions (head into own body, excluding the tail cell
-  // since the tail moves away this same tick unless the snake is growing).
+}
+
+// Stage 3: self collisions (head into own body, excluding the tail cell
+// since the tail moves away this same tick unless the snake is growing).
+function resolveSelfCollisions(active, newHeads, died) {
   for (const { s, i } of active) {
     if (died.has(i)) continue;
     const h = newHeads.get(i);
@@ -255,9 +295,12 @@ function gameTick() {
       died.set(i, null);
     }
   }
-  // Step 4: collisions with other snakes. Head-on-head (both moving into the
-  // same cell) kills both with no bonus. Head-into-body kills the mover and
-  // awards the bonus to the snake whose body was hit.
+}
+
+// Stage 4: collisions with other snakes. Head-on-head (both moving into the
+// same cell) kills both with no bonus. Head-into-body kills the mover and
+// awards the bonus to the snake whose body was hit.
+function resolveSnakeCollisions(active, newHeads, died) {
   for (const { i } of active) {
     if (died.has(i)) continue;
     const h = newHeads.get(i);
@@ -275,7 +318,10 @@ function gameTick() {
       }
     }
   }
-  // Step 5: move survivors, handle food, apply kill bonuses.
+}
+
+// Stage 5: move survivors, handle food.
+function applyMovementAndFood(active, newHeads, died) {
   for (const { s, i } of active) {
     if (died.has(i)) continue;
     const h = newHeads.get(i);
@@ -288,7 +334,10 @@ function gameTick() {
       s.body.pop();
     }
   }
-  // Step 6: apply kill bonuses now that survivors have already moved this tick.
+}
+
+// Stage 6: apply kill bonuses now that survivors have already moved this tick.
+function applyKillBonuses(died) {
   for (const [victimIndex, killerIndex] of died) {
     if (killerIndex === null) continue;
     const killer = slots[killerIndex];
@@ -298,12 +347,6 @@ function gameTick() {
     const tail = killer.body[killer.body.length - 1];
     for (let n = 0; n < CFG.killBonusGrowth; n++) killer.body.push({ ...tail });
   }
-  // Step 7: process deaths (score check, respawn or spectator promotion).
-  for (const [victimIndex] of died) {
-    handleDeath(victimIndex);
-  }
-  broadcastState();
-  scheduleTick();
 }
 function handleDeath(slotIndex) {
   const s = slots[slotIndex];
@@ -340,6 +383,8 @@ function sendTo(ws, msg) {
 function broadcastState() {
   const state = {
     type: "state",
+    seq: tickSeq,           // one global monotonic counter, shared by all players
+    serverTime: Date.now(), // wall-clock time this tick was produced
     tickMs: currentTickMs(),
     grid: CFG.grid,
     food,
