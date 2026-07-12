@@ -1,38 +1,25 @@
 // ============================================================
 // Multiplayer Snake server.
-// One authoritative process. Apache reverse-proxies HTTP and the
-// WebSocket upgrade to this process; this process serves the static
-// client, a two-step math captcha, and the live game.
-//
-// Run: npm install ws
-//      node server.js
-// Config lives in config.json next to this file (restart to reload it).
-//
-// Authority model: the server is authoritative for everything EXCEPT
-// static walls. Walls never move and are fully known to the client, so a
-// player's turn that would avoid a wall is favored even if it arrives a
-// tick late (see resolveWallCollisions wall-grace). Snake-vs-snake and
-// self collisions stay fully server-authoritative.
+// Authority model: server authoritative for everything EXCEPT static
+// walls. A wall-avoiding turn is favored even if it arrives a tick late
+// (resolveWallCollisions wall-grace). Snake-vs-snake and self collisions
+// stay fully server-authoritative.
+// Run: npm install ws ; node server.js
 // ============================================================
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { WebSocketServer } = require("ws"); // npm install ws
+const { WebSocketServer } = require("ws");
 const CFG = JSON.parse(fs.readFileSync(path.join(__dirname, "config.json"), "utf8"));
 const HS_FILE = path.join(__dirname, "highscores.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const PORT = 8080;
-
-// How many ticks a snake may stall against a wall waiting for a late but
-// valid turn before the wall finally wins. Defaults to 1 if not in config.
+const BUILD = "server 2026-07-12.5";
 const WALL_GRACE_TICKS = Number.isInteger(CFG.wallGraceTicks) ? CFG.wallGraceTicks : 1;
 
-// ------------------------------------------------------------
-// High score persistence
-// ------------------------------------------------------------
 function todayStr() {
-  return new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+  return new Date().toISOString().slice(0, 10);
 }
 function loadHighScores() {
   let data;
@@ -70,9 +57,6 @@ function recordScore(targets, initials, score) {
   }
   saveHighScores(highScores);
 }
-// ------------------------------------------------------------
-// Math captcha
-// ------------------------------------------------------------
 const pendingCaptchas = new Map();
 const joinTokens = new Map();
 function makeCaptcha() {
@@ -99,9 +83,6 @@ function consumeJoinToken(token) {
   joinTokens.delete(token);
   return expiry !== undefined && Date.now() < expiry;
 }
-// ------------------------------------------------------------
-// Game state
-// ------------------------------------------------------------
 const COLORS = [
   { head: "#6f6", body: "#3a3" },
   { head: "#6cf", body: "#38a" },
@@ -197,9 +178,6 @@ function promoteSpectatorInto(slotIndex) {
   conn.role = "player";
   conn.slotIndex = slotIndex;
 }
-// ------------------------------------------------------------
-// Game loop
-// ------------------------------------------------------------
 function currentTickMs() {
   if (sessionStart === null) return CFG.speed.startTickMs;
   const elapsedSec = (Date.now() - sessionStart) / 1000;
@@ -220,11 +198,11 @@ function gameTick() {
     return;
   }
   const newHeads = computeNewHeads(active);
-  const died = new Map();       // slotIndex -> killerSlotIndex or null
-  const stalled = new Set();    // slots held one tick by wall-grace
-  resolveWallCollisions(active, newHeads, died, stalled);   // Phase 4 hook: wormhole-on-wall-touch
+  const died = new Map();
+  const stalled = new Set();
+  resolveWallCollisions(active, newHeads, died, stalled);
   resolveSelfCollisions(active, newHeads, died, stalled);
-  resolveSnakeCollisions(active, newHeads, died, stalled);  // Phase 4 hook: wormhole-on-player-touch
+  resolveSnakeCollisions(active, newHeads, died, stalled);
   applyMovementAndFood(active, newHeads, died, stalled);
   applyKillBonuses(died);
   for (const [victimIndex] of died) handleDeath(victimIndex);
@@ -235,9 +213,6 @@ function gameTick() {
 function inBounds(h) {
   return h.x >= 0 && h.x < CFG.grid.cols && h.y >= 0 && h.y < CFG.grid.rows;
 }
-// Look for the first queued input that turns the head back in bounds and is
-// not a reversal of the current heading. If found, drop it (and anything
-// queued before it) and return it. Used to honor a wall-avoiding turn.
 function consumeInboundsTurn(s) {
   const head = s.body[0];
   for (let k = 0; k < s.inputQueue.length; k++) {
@@ -251,8 +226,6 @@ function consumeInboundsTurn(s) {
   }
   return null;
 }
-// Stage 1: apply one queued direction change per active snake and compute
-// where each head would land this tick.
 function computeNewHeads(active) {
   const newHeads = new Map();
   for (const { s, i } of active) {
@@ -262,13 +235,6 @@ function computeNewHeads(active) {
   }
   return newHeads;
 }
-// Stage 2: wall collisions, with client-favoring grace.
-// If a head would leave the board we do not kill immediately. First we try a
-// queued in-bounds turn (a valid turn that arrived this same tick). If none,
-// and grace ticks remain, the snake HOLDS position for this tick (a stall) to
-// wait for an in-flight turn, matching the client predictor. Only when grace
-// is exhausted does the wall win. Walls are static so this cannot be abused
-// for advantage; it just stops late-by-a-hair turns from being unfair deaths.
 function resolveWallCollisions(active, newHeads, died, stalled) {
   for (const { s, i } of active) {
     if (died.has(i)) continue;
@@ -285,14 +251,13 @@ function resolveWallCollisions(active, newHeads, died, stalled) {
     if (s.wallStalls < WALL_GRACE_TICKS) {
       s.wallStalls++;
       stalled.add(i);
-      newHeads.set(i, { x: s.body[0].x, y: s.body[0].y }); // hold, no move
+      newHeads.set(i, { x: s.body[0].x, y: s.body[0].y });
       continue;
     }
     died.set(i, null);
     s.wallStalls = 0;
   }
 }
-// Stage 3: self collisions. Stalled snakes neither move nor die this tick.
 function resolveSelfCollisions(active, newHeads, died, stalled) {
   for (const { s, i } of active) {
     if (died.has(i) || stalled.has(i)) continue;
@@ -303,9 +268,6 @@ function resolveSelfCollisions(active, newHeads, died, stalled) {
     }
   }
 }
-// Stage 4: collisions with other snakes. Stalled snakes are static obstacles:
-// they can be hit by others (head-into-body) but do not initiate collisions
-// and are not counted for head-on kills.
 function resolveSnakeCollisions(active, newHeads, died, stalled) {
   for (const { i } of active) {
     if (died.has(i) || stalled.has(i)) continue;
@@ -325,8 +287,6 @@ function resolveSnakeCollisions(active, newHeads, died, stalled) {
     }
   }
 }
-// Stage 5: move survivors, handle food. Stalled snakes are skipped so they
-// stay in place (no unshift, no pop) for their one grace tick.
 function applyMovementAndFood(active, newHeads, died, stalled) {
   for (const { s, i } of active) {
     if (died.has(i) || stalled.has(i)) continue;
@@ -341,7 +301,6 @@ function applyMovementAndFood(active, newHeads, died, stalled) {
     s.wallStalls = 0;
   }
 }
-// Stage 6: kill bonuses.
 function applyKillBonuses(died) {
   for (const [victimIndex, killerIndex] of died) {
     if (killerIndex === null) continue;
@@ -374,15 +333,13 @@ function handleDeath(slotIndex) {
     }
   }, CFG.spectatorPromoteDelayMs);
 }
-// ------------------------------------------------------------
-// Networking helpers
-// ------------------------------------------------------------
 function sendTo(ws, msg) {
   if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
 }
 function broadcastState() {
   const state = {
     type: "state",
+    build: BUILD,
     seq: tickSeq,
     serverTime: Date.now(),
     tickMs: currentTickMs(),
@@ -410,9 +367,6 @@ function broadcastState() {
     sendTo(conn.ws, { ...state, you });
   }
 }
-// ------------------------------------------------------------
-// HTTP server: static files + captcha API
-// ------------------------------------------------------------
 const MIME = { ".html": "text/html", ".js": "application/javascript", ".json": "application/json", ".css": "text/css" };
 const httpServer = http.createServer((req, res) => {
   const url = new URL(req.url, "http://x");
@@ -457,9 +411,6 @@ const httpServer = http.createServer((req, res) => {
     res.end(data);
   });
 });
-// ------------------------------------------------------------
-// WebSocket server
-// ------------------------------------------------------------
 const wss = new WebSocketServer({ noServer: true });
 httpServer.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url, "http://x");
@@ -518,6 +469,6 @@ wss.on("connection", ws => {
   });
 });
 httpServer.listen(PORT, "127.0.0.1", () => {
-  console.log("Multisnake listening on http://127.0.0.1:" + PORT);
+  console.log("Multisnake listening on http://127.0.0.1:" + PORT + " build " + BUILD);
 });
 scheduleTick();
