@@ -1,0 +1,46 @@
+// ============================================================
+// Networking: owns the WebSocket connection and keeps the last two
+// authoritative "state" snapshots, each stamped with the time this
+// browser received it. Two snapshots is what render.js needs to
+// interpolate remote snake and food positions between real server
+// ticks. This module does not interpret game data, only stores it.
+// ============================================================
+const Net = (() => {
+  let ws = null;
+  let handlers = {};
+
+  let prevSnap = null;
+  let currSnap = null;
+
+  function connect(token, cbHandlers) {
+    handlers = cbHandlers;
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(proto + "//" + location.host + "/ws?token=" + token);
+    ws.onopen = () => handlers.onOpen && handlers.onOpen();
+    ws.onclose = () => handlers.onClose && handlers.onClose();
+    ws.onmessage = ev => dispatch(JSON.parse(ev.data));
+    return ws;
+  }
+
+  function dispatch(msg) {
+    if (msg.type === "state") {
+      prevSnap = currSnap;
+      // recvTime (not serverTime) drives interpolation pacing on this client,
+      // since it is measured on the same clock as the render loop's now().
+      currSnap = Object.assign({ recvTime: performance.now() }, msg);
+      handlers.onState && handlers.onState(currSnap, prevSnap);
+    } else if (msg.type === "askInitials") {
+      handlers.onInitials && handlers.onInitials(msg);
+    }
+  }
+
+  function send(obj) {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  }
+
+  function snapshots() {
+    return { prev: prevSnap, curr: currSnap };
+  }
+
+  return { connect, send, snapshots };
+})();
