@@ -1,28 +1,35 @@
 // ============================================================
 // Multiplayer Snake server.
 // One authoritative process. Apache reverse-proxies HTTP and the
-// WebSocket upgrade to this process; this process serves the
-// static client, a two-step math captcha, and the live game.
+// WebSocket upgrade to this process; this process serves the static
+// client, a two-step math captcha, and the live game.
 //
 // Run: npm install ws
 //      node server.js
 // Config lives in config.json next to this file (restart to reload it).
+//
+// Authority model: the server is authoritative for everything EXCEPT
+// static walls. Walls never move and are fully known to the client, so a
+// player's turn that would avoid a wall is favored even if it arrives a
+// tick late (see resolveWallCollisions wall-grace). Snake-vs-snake and
+// self collisions stay fully server-authoritative.
 // ============================================================
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { WebSocketServer } = require("ws"); // npm install ws
-
 const CFG = JSON.parse(fs.readFileSync(path.join(__dirname, "config.json"), "utf8"));
 const HS_FILE = path.join(__dirname, "highscores.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const PORT = 8080;
 
+// How many ticks a snake may stall against a wall waiting for a late but
+// valid turn before the wall finally wins. Defaults to 1 if not in config.
+const WALL_GRACE_TICKS = Number.isInteger(CFG.wallGraceTicks) ? CFG.wallGraceTicks : 1;
+
 // ------------------------------------------------------------
 // High score persistence
-// Two lists: "daily" (resets when the calendar date changes) and
-// "allTime" (never resets). Each holds at most 5 entries.
 // ------------------------------------------------------------
 function todayStr() {
   return new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
@@ -34,7 +41,6 @@ function loadHighScores() {
   } catch {
     data = { date: todayStr(), daily: [], allTime: [] };
   }
-  // If the stored date is not today, the daily board resets.
   if (data.date !== todayStr()) {
     data.date = todayStr();
     data.daily = [];
@@ -45,8 +51,6 @@ function saveHighScores(data) {
   fs.writeFileSync(HS_FILE, JSON.stringify(data, null, 2));
 }
 let highScores = loadHighScores();
-
-// Returns which boards (daily/allTime) a given score would place into the top 5 of.
 function qualifies(score) {
   const targets = [];
   if (highScores.daily.length < 5 || score > highScores.daily[highScores.daily.length - 1].score) {
@@ -58,7 +62,7 @@ function qualifies(score) {
   return targets;
 }
 function recordScore(targets, initials, score) {
-  highScores = loadHighScores(); // pick up a possible day rollover first
+  highScores = loadHighScores();
   for (const board of targets) {
     highScores[board].push({ initials, score });
     highScores[board].sort((a, b) => b.score - a.score);
@@ -66,26 +70,22 @@ function recordScore(targets, initials, score) {
   }
   saveHighScores(highScores);
 }
-
 // ------------------------------------------------------------
-// Super simple math captcha, meant only to stop naive scripted
-// joins. Cloudflare is expected to be doing the real bot filtering
-// in front of this. Tokens are one-time and short lived.
+// Math captcha
 // ------------------------------------------------------------
-const pendingCaptchas = new Map(); // captchaId -> expected sum
-const joinTokens = new Map();      // token -> expiry timestamp
+const pendingCaptchas = new Map();
+const joinTokens = new Map();
 function makeCaptcha() {
   const a = 1 + Math.floor(Math.random() * 9);
   const b = 1 + Math.floor(Math.random() * 9);
   const id = crypto.randomBytes(8).toString("hex");
   pendingCaptchas.set(id, a + b);
-  // Expire unused captchas after 2 minutes so the map does not grow forever.
   setTimeout(() => pendingCaptchas.delete(id), 120000);
   return { id, a, b };
 }
 function verifyCaptcha(id, answer) {
   const expected = pendingCaptchas.get(id);
-  pendingCaptchas.delete(id); // one-time use regardless of outcome
+  pendingCaptchas.delete(id);
   if (expected === undefined) return false;
   return Number(answer) === expected;
 }
@@ -96,28 +96,23 @@ function issueJoinToken() {
 }
 function consumeJoinToken(token) {
   const expiry = joinTokens.get(token);
-  joinTokens.delete(token); // one-time use
+  joinTokens.delete(token);
   return expiry !== undefined && Date.now() < expiry;
 }
-
 // ------------------------------------------------------------
 // Game state
-// slots: fixed-size array, one entry per possible player (null = empty)
-// spectatorQueue: FIFO array of connection ids waiting for a slot
-// connections: connId -> { ws, role, slotIndex }
 // ------------------------------------------------------------
 const COLORS = [
-  { head: "#6f6", body: "#3a3" }, // green
-  { head: "#6cf", body: "#38a" }, // blue
-  { head: "#f6f", body: "#a3a" }, // magenta
-  { head: "#ff6", body: "#aa3" }  // yellow
+  { head: "#6f6", body: "#3a3" },
+  { head: "#6cf", body: "#38a" },
+  { head: "#f6f", body: "#a3a" },
+  { head: "#ff6", body: "#aa3" }
 ];
 let slots = new Array(CFG.maxPlayers).fill(null);
 let spectatorQueue = [];
 let connections = new Map();
 let food = null;
-let sessionStart = null; // set when the board goes from empty to non-empty; drives the speed ramp
-
+let sessionStart = null;
 function cellFree(x, y, ignoreSlotIndex = -1) {
   for (let i = 0; i < slots.length; i++) {
     const s = slots[i];
@@ -134,7 +129,6 @@ function placeFood() {
   } while (!cellFree(x, y));
   food = { x, y };
 }
-// Spawns a fresh 3-segment snake for a slot at a random clear spot, facing right.
 function spawnSnake(slotIndex) {
   let x, y;
   let attempts = 0;
@@ -142,27 +136,27 @@ function spawnSnake(slotIndex) {
     x = 3 + Math.floor(Math.random() * (CFG.grid.cols - 6));
     y = 3 + Math.floor(Math.random() * (CFG.grid.rows - 6));
     attempts++;
-    // Keep searching while ANY of the three spawn cells is occupied.
   } while ((!cellFree(x, y, slotIndex) || !cellFree(x - 1, y, slotIndex) || !cellFree(x - 2, y, slotIndex)) && attempts < 100);
   slots[slotIndex].body = [{ x, y }, { x: x - 1, y }, { x: x - 2, y }];
   slots[slotIndex].dir = { x: 1, y: 0 };
   slots[slotIndex].inputQueue = [];
   slots[slotIndex].alive = true;
   slots[slotIndex].respawnAt = null;
+  slots[slotIndex].wallStalls = 0;
 }
 function newPlayerSlot(connId) {
   return {
     connId,
-    color: null, // assigned once we know the slot index
+    color: null,
     body: [],
     dir: { x: 1, y: 0 },
     inputQueue: [],
     alive: true,
     score: 0,
-    respawnAt: null
+    respawnAt: null,
+    wallStalls: 0
   };
 }
-// Assigns a newly joined connection to an open slot, or to the spectator queue.
 function assignConnection(connId, ws) {
   const freeIndex = slots.findIndex(s => s === null);
   if (freeIndex !== -1 && spectatorQueue.length === 0) {
@@ -170,14 +164,13 @@ function assignConnection(connId, ws) {
     slots[freeIndex].color = COLORS[freeIndex];
     spawnSnake(freeIndex);
     connections.set(connId, { ws, role: "player", slotIndex: freeIndex });
-    if (sessionStart === null) sessionStart = Date.now(); // board went from empty to active
+    if (sessionStart === null) sessionStart = Date.now();
     if (!food) placeFood();
   } else {
     spectatorQueue.push(connId);
     connections.set(connId, { ws, role: "spectator", slotIndex: null });
   }
 }
-// Frees a slot or removes a connection from the spectator queue on disconnect.
 function removeConnection(connId) {
   const conn = connections.get(connId);
   if (!conn) return;
@@ -189,27 +182,23 @@ function removeConnection(connId) {
     spectatorQueue = spectatorQueue.filter(id => id !== connId);
   }
   if (slots.every(s => s === null) && spectatorQueue.length === 0) {
-    sessionStart = null; // board is empty, next joiner starts the speed ramp over
+    sessionStart = null;
     food = null;
   }
 }
-// Pulls the next waiting spectator into a freed slot, if anyone is waiting.
 function promoteSpectatorInto(slotIndex) {
   if (spectatorQueue.length === 0) return;
   const nextConnId = spectatorQueue.shift();
   const conn = connections.get(nextConnId);
-  if (!conn) return; // they disconnected while queued
+  if (!conn) return;
   slots[slotIndex] = newPlayerSlot(nextConnId);
   slots[slotIndex].color = COLORS[slotIndex];
   spawnSnake(slotIndex);
   conn.role = "player";
   conn.slotIndex = slotIndex;
 }
-
 // ------------------------------------------------------------
 // Game loop
-// Uses a self-rescheduling setTimeout (not setInterval) because the
-// tick rate itself changes over time as the game speeds up.
 // ------------------------------------------------------------
 function currentTickMs() {
   if (sessionStart === null) return CFG.speed.startTickMs;
@@ -218,24 +207,10 @@ function currentTickMs() {
   const ms = CFG.speed.startTickMs - steps * CFG.speed.rampStepMs;
   return Math.max(CFG.speed.minTickMs, ms);
 }
-// Single global tick sequence, shared by every player and broadcast to every
-// client. There is deliberately no per-player or per-connection tick counter:
-// one board, one authoritative clock, driven by the same self-rescheduling
-// setTimeout chain as before. Client-side prediction (Phase 2 client work)
-// runs on each browser's own requestAnimationFrame loop and never causes an
-// extra server tick; it only smooths what gets drawn between the ticks that
-// already happen here.
 let tickSeq = 0;
-
 function scheduleTick() {
   setTimeout(gameTick, currentTickMs());
 }
-
-// gameTick is now a small pipeline of named stages instead of one long
-// function. Behavior is identical to before; this is purely a Phase 2
-// restructure so Phase 4 (powerups, wormhole) can hook into a stage by name
-// instead of another editing pass through one monolithic function. Stage
-// hook points are marked where a future powerup will plug in.
 function gameTick() {
   const active = slots
     .map((s, i) => ({ s, i }))
@@ -244,25 +219,40 @@ function gameTick() {
     scheduleTick();
     return;
   }
-
   const newHeads = computeNewHeads(active);
-  const died = new Map(); // slotIndex -> killerSlotIndex or null
-
-  resolveWallCollisions(active, newHeads, died);   // Phase 4 hook: wormhole-on-wall-touch
-  resolveSelfCollisions(active, newHeads, died);
-  resolveSnakeCollisions(active, newHeads, died);  // Phase 4 hook: wormhole-on-player-touch
-  applyMovementAndFood(active, newHeads, died);
+  const died = new Map();       // slotIndex -> killerSlotIndex or null
+  const stalled = new Set();    // slots held one tick by wall-grace
+  resolveWallCollisions(active, newHeads, died, stalled);   // Phase 4 hook: wormhole-on-wall-touch
+  resolveSelfCollisions(active, newHeads, died, stalled);
+  resolveSnakeCollisions(active, newHeads, died, stalled);  // Phase 4 hook: wormhole-on-player-touch
+  applyMovementAndFood(active, newHeads, died, stalled);
   applyKillBonuses(died);
   for (const [victimIndex] of died) handleDeath(victimIndex);
-
   tickSeq++;
   broadcastState();
   scheduleTick();
 }
-
-// Stage 1: apply one queued direction change per active snake (max one per
-// tick, matching the client's own predictor so its reconciliation lines up),
-// and compute where each head would land this tick.
+function inBounds(h) {
+  return h.x >= 0 && h.x < CFG.grid.cols && h.y >= 0 && h.y < CFG.grid.rows;
+}
+// Look for the first queued input that turns the head back in bounds and is
+// not a reversal of the current heading. If found, drop it (and anything
+// queued before it) and return it. Used to honor a wall-avoiding turn.
+function consumeInboundsTurn(s) {
+  const head = s.body[0];
+  for (let k = 0; k < s.inputQueue.length; k++) {
+    const d = s.inputQueue[k];
+    const reversal = d.x === -s.dir.x && d.y === -s.dir.y;
+    if (reversal) continue;
+    if (inBounds({ x: head.x + d.x, y: head.y + d.y })) {
+      s.inputQueue.splice(0, k + 1);
+      return d;
+    }
+  }
+  return null;
+}
+// Stage 1: apply one queued direction change per active snake and compute
+// where each head would land this tick.
 function computeNewHeads(active) {
   const newHeads = new Map();
   for (const { s, i } of active) {
@@ -272,23 +262,40 @@ function computeNewHeads(active) {
   }
   return newHeads;
 }
-
-// Stage 2: wall collisions.
-function resolveWallCollisions(active, newHeads, died) {
-  for (const { i } of active) {
-    if (died.has(i)) continue;
-    const h = newHeads.get(i);
-    if (h.x < 0 || h.x >= CFG.grid.cols || h.y < 0 || h.y >= CFG.grid.rows) {
-      died.set(i, null);
-    }
-  }
-}
-
-// Stage 3: self collisions (head into own body, excluding the tail cell
-// since the tail moves away this same tick unless the snake is growing).
-function resolveSelfCollisions(active, newHeads, died) {
+// Stage 2: wall collisions, with client-favoring grace.
+// If a head would leave the board we do not kill immediately. First we try a
+// queued in-bounds turn (a valid turn that arrived this same tick). If none,
+// and grace ticks remain, the snake HOLDS position for this tick (a stall) to
+// wait for an in-flight turn, matching the client predictor. Only when grace
+// is exhausted does the wall win. Walls are static so this cannot be abused
+// for advantage; it just stops late-by-a-hair turns from being unfair deaths.
+function resolveWallCollisions(active, newHeads, died, stalled) {
   for (const { s, i } of active) {
     if (died.has(i)) continue;
+    let h = newHeads.get(i);
+    if (inBounds(h)) { s.wallStalls = 0; continue; }
+    const saved = consumeInboundsTurn(s);
+    if (saved) {
+      s.dir = saved;
+      h = { x: s.body[0].x + saved.x, y: s.body[0].y + saved.y };
+      newHeads.set(i, h);
+      s.wallStalls = 0;
+      continue;
+    }
+    if (s.wallStalls < WALL_GRACE_TICKS) {
+      s.wallStalls++;
+      stalled.add(i);
+      newHeads.set(i, { x: s.body[0].x, y: s.body[0].y }); // hold, no move
+      continue;
+    }
+    died.set(i, null);
+    s.wallStalls = 0;
+  }
+}
+// Stage 3: self collisions. Stalled snakes neither move nor die this tick.
+function resolveSelfCollisions(active, newHeads, died, stalled) {
+  for (const { s, i } of active) {
+    if (died.has(i) || stalled.has(i)) continue;
     const h = newHeads.get(i);
     const bodyWithoutTail = s.body.slice(0, -1);
     if (bodyWithoutTail.some(seg => seg.x === h.x && seg.y === h.y)) {
@@ -296,54 +303,51 @@ function resolveSelfCollisions(active, newHeads, died) {
     }
   }
 }
-
-// Stage 4: collisions with other snakes. Head-on-head (both moving into the
-// same cell) kills both with no bonus. Head-into-body kills the mover and
-// awards the bonus to the snake whose body was hit.
-function resolveSnakeCollisions(active, newHeads, died) {
+// Stage 4: collisions with other snakes. Stalled snakes are static obstacles:
+// they can be hit by others (head-into-body) but do not initiate collisions
+// and are not counted for head-on kills.
+function resolveSnakeCollisions(active, newHeads, died, stalled) {
   for (const { i } of active) {
-    if (died.has(i)) continue;
+    if (died.has(i) || stalled.has(i)) continue;
     const h = newHeads.get(i);
     for (const { s: other, i: j } of active) {
       if (j === i || died.has(j)) continue;
       const otherHead = newHeads.get(j);
-      if (h.x === otherHead.x && h.y === otherHead.y) {
+      if (!stalled.has(j) && h.x === otherHead.x && h.y === otherHead.y) {
         died.set(i, null);
-        died.set(j, null); // head-on collision, no bonus either way
+        died.set(j, null);
         continue;
       }
       const otherBodyWithoutTail = other.body.slice(0, -1);
       if (otherBodyWithoutTail.some(seg => seg.x === h.x && seg.y === h.y)) {
-        died.set(i, j); // i died, j gets credit
+        died.set(i, j);
       }
     }
   }
 }
-
-// Stage 5: move survivors, handle food.
-function applyMovementAndFood(active, newHeads, died) {
+// Stage 5: move survivors, handle food. Stalled snakes are skipped so they
+// stay in place (no unshift, no pop) for their one grace tick.
+function applyMovementAndFood(active, newHeads, died, stalled) {
   for (const { s, i } of active) {
-    if (died.has(i)) continue;
+    if (died.has(i) || stalled.has(i)) continue;
     const h = newHeads.get(i);
     s.body.unshift(h);
     if (food && h.x === food.x && h.y === food.y) {
       s.score += 1;
       placeFood();
-      // growing: do not pop the tail this tick
     } else {
       s.body.pop();
     }
+    s.wallStalls = 0;
   }
 }
-
-// Stage 6: apply kill bonuses now that survivors have already moved this tick.
+// Stage 6: kill bonuses.
 function applyKillBonuses(died) {
   for (const [victimIndex, killerIndex] of died) {
     if (killerIndex === null) continue;
     const killer = slots[killerIndex];
     if (!killer || !killer.alive) continue;
     killer.score += CFG.killBonusScore;
-    // Grow by a fixed 3 segments by duplicating the tail cell 3 times.
     const tail = killer.body[killer.body.length - 1];
     for (let n = 0; n < CFG.killBonusGrowth; n++) killer.body.push({ ...tail });
   }
@@ -358,22 +362,18 @@ function handleDeath(slotIndex) {
     sendTo(conn.ws, { type: "askInitials", targets, score: s.score });
   }
   setTimeout(() => {
-    if (!slots[slotIndex] || slots[slotIndex].connId !== s.connId) return; // already replaced
+    if (!slots[slotIndex] || slots[slotIndex].connId !== s.connId) return;
     if (spectatorQueue.length > 0) {
-      // Someone is waiting: this player steps aside into the spectator queue,
-      // and the next spectator in line takes the slot.
       slots[slotIndex] = null;
       spectatorQueue.push(s.connId);
       if (conn) conn.role = "spectator";
       if (conn) conn.slotIndex = null;
       promoteSpectatorInto(slotIndex);
     } else {
-      // Nobody waiting: just respawn the same player.
       spawnSnake(slotIndex);
     }
   }, CFG.spectatorPromoteDelayMs);
 }
-
 // ------------------------------------------------------------
 // Networking helpers
 // ------------------------------------------------------------
@@ -383,8 +383,8 @@ function sendTo(ws, msg) {
 function broadcastState() {
   const state = {
     type: "state",
-    seq: tickSeq,           // one global monotonic counter, shared by all players
-    serverTime: Date.now(), // wall-clock time this tick was produced
+    seq: tickSeq,
+    serverTime: Date.now(),
     tickMs: currentTickMs(),
     grid: CFG.grid,
     food,
@@ -410,7 +410,6 @@ function broadcastState() {
     sendTo(conn.ws, { ...state, you });
   }
 }
-
 // ------------------------------------------------------------
 // HTTP server: static files + captcha API
 // ------------------------------------------------------------
@@ -442,7 +441,6 @@ const httpServer = http.createServer((req, res) => {
     });
     return;
   }
-  // Static file serving out of public/, defaulting to index.html.
   let filePath = path.join(PUBLIC_DIR, url.pathname === "/" ? "index.html" : url.pathname);
   if (!filePath.startsWith(PUBLIC_DIR)) {
     res.writeHead(403);
@@ -459,10 +457,8 @@ const httpServer = http.createServer((req, res) => {
     res.end(data);
   });
 });
-
 // ------------------------------------------------------------
-// WebSocket server: manual upgrade handling so we can check the
-// join token on the URL before accepting the connection.
+// WebSocket server
 // ------------------------------------------------------------
 const wss = new WebSocketServer({ noServer: true });
 httpServer.on("upgrade", (req, socket, head) => {
@@ -479,16 +475,11 @@ httpServer.on("upgrade", (req, socket, head) => {
   }
   wss.handleUpgrade(req, socket, head, ws => wss.emit("connection", ws));
 });
-
-// Cloudflare drops idle proxied WebSocket connections after about 100 seconds.
-// When the board is idle (spectators waiting, no active players) no state is
-// broadcast, so send a lightweight ping on an interval to keep them alive.
 setInterval(() => {
   for (const [, conn] of connections) {
     if (conn.ws && conn.ws.readyState === conn.ws.OPEN) conn.ws.ping();
   }
 }, 30000);
-
 wss.on("connection", ws => {
   const connId = crypto.randomBytes(8).toString("hex");
   assignConnection(connId, ws);
@@ -526,7 +517,6 @@ wss.on("connection", ws => {
     broadcastState();
   });
 });
-
 httpServer.listen(PORT, "127.0.0.1", () => {
   console.log("Multisnake listening on http://127.0.0.1:" + PORT);
 });
