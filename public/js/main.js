@@ -1,12 +1,9 @@
 // ============================================================
-// Bootstrap. Wires net.js, predict.js, render.js and ui.js together
-// and drives the animation-frame render loop.
-//
-// Phase 2 wires exactly one locally controlled snake ("p1", arrow
-// keys, WASD mapped to the same directions). Phase 3 adds a second
-// predictor ("p2") for a WASD-only local player and splits the keymap;
-// nothing in net.js/predict.js/render.js needs to change for that.
+// Bootstrap. Wires net.js, predict.js, render.js and ui.js together and
+// drives the animation-frame render loop. Also exposes a debug source
+// (window.__DEBUG_SOURCE__) that the UI debug panel reads.
 // ============================================================
+(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-12.5";
 const myPlayers = new Map();
 myPlayers.set("p1", new LocalPlayerPredictor("p1"));
 let myRole = null;
@@ -22,10 +19,7 @@ function startGame(token) {
 function handleState(curr) {
   myRole = curr.you;
   if (curr.you.role === "player") {
-    // Pass curr.grid so the predictor is wall-aware: a wall-avoiding turn is
-    // favored client-side (walls are static and fully known here), matching
-    // the server wall-grace stall in server.js resolveWallCollisions.
-    myPlayers.get("p1").reconcile(curr.you.slot, curr.players, curr.tickMs, curr.grid);
+    myPlayers.get("p1").reconcile(curr.you.slot, curr.players, curr.tickMs, curr.grid, curr.seq);
   }
   UI.updateStatus(curr);
   UI.updateLeaderboards(curr.highScores);
@@ -57,5 +51,20 @@ document.addEventListener("keydown", e => {
   if (applied) Net.send({ type: "dir", dir: applied });
   if (key.startsWith("arrow")) e.preventDefault();
 });
+window.__DEBUG_SOURCE__ = function () {
+  const { curr } = Net.snapshots();
+  const p1 = myPlayers.get("p1");
+  return {
+    builds: window.__BUILDS__ || {},
+    serverBuild: curr ? curr.build : null,
+    seq: curr ? curr.seq : null,
+    tickMs: curr ? curr.tickMs : null,
+    role: myRole ? myRole.role : null,
+    slot: myRole ? myRole.slot : null,
+    corrections: p1 ? p1.corrections.slice(-12) : [],
+    correctionCount: p1 ? p1.correctionCount : 0
+  };
+};
 UI.initCaptchaGate(startGame);
+UI.initDebug(window.__DEBUG_SOURCE__);
 requestAnimationFrame(frame);

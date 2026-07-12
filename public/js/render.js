@@ -1,12 +1,13 @@
 // ============================================================
-// Rendering: grid-snapped board draw. Snakes are drawn on whole cells
-// only. There is no sub-cell interpolation between snapshots, so motion
-// is a discrete cell-to-cell step: the tail cell disappears and a cell
-// reappears at the new head, classic Snake style. Locally controlled
-// slots draw their predicted grid-snapped body from predict.js so a turn
-// registers on the next frame (precise controls); every other snake draws
-// its latest authoritative cells. prevSnap is intentionally unused.
+// Rendering: grid-snapped board draw. Snakes are drawn on WHOLE cells
+// only, using integer cell coordinates. There is no sub-cell
+// interpolation anywhere in this file, so motion is a discrete step:
+// the tail cell disappears and a new cell appears at the head. If the
+// on-screen snake still glides smoothly between cells, the running
+// client is a STALE build (check the DEBUG panel build stamps), because
+// this code multiplies integer cell coords by cellSize and nothing else.
 // ============================================================
+(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-12.5";
 const Render = (() => {
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");
@@ -20,9 +21,6 @@ const Render = (() => {
     ctx.fillStyle = color;
     ctx.fillRect(seg.x * grid.cellSize, seg.y * grid.cellSize, grid.cellSize - 1, grid.cellSize - 1);
   }
-  // localBodies: Map<slotIndex, {x,y}[]> from predict.js, for any slot(s)
-  // this connection controls. Those override the authoritative cells and are
-  // drawn at their own predicted position instead. Everything is grid-snapped.
   function draw(prevSnap, currSnap, localBodies) {
     if (!currSnap) return;
     if (!grid || grid.cols !== currSnap.grid.cols || grid.cellSize !== currSnap.grid.cellSize) {
