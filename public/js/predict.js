@@ -1,30 +1,27 @@
 // ============================================================
-// Client-side prediction with CLIENT-LEAD reconciliation.
+// Client-side prediction, CLIENT-AUTHORITATIVE for movement.
 //
-// Movement is grid-snapped (integer cells only, one cell per tick).
+// The client simulates its OWN snake purely from the local inputs and
+// renders that simulation directly. The server does NOT nudge our head
+// position tick-to-tick. The only time the server overrides us is a real
+// game-state conflict:
+//   * deadOnServer: our snake is not alive (collision with wall / snake /
+//     self), or
+//   * bigJump: the authoritative head is far from ours (respawn / teleport).
+// On either, we hard-snap to the authoritative body and resync. Otherwise
+// we IGNORE the authoritative head entirely and keep our own simulation, so
+// the normal one-tick network phase offset never shows as jitter.
 //
-// Turn-corner fix (.9): the server has ~1 tick of input latency, so after
-// you press a turn it runs ONE more straight cell in the old heading and
-// THEN turns. Earlier builds predicted the turn happening at the current
-// head immediately, so the predicted corner sat one cell short of where the
-// server actually places it, and the head popped over by a cell on the next
-// snapshot (the residual "absorbed (no override)" diagonal jitter). We now
-// model that lag: a queued turn is applied AFTER first advancing one cell in
-// the current confirmed heading, matching the server's corner timing.
+// Growth (food eaten, kill bonuses) is length-only: we adopt the server
+// body LENGTH so our snake grows/shrinks correctly, but we keep our own
+// head/segment POSITIONS. Position is never corrected without a conflict.
 //
-// Authority split:
-//   * The CLIENT leads on movement/turns at all times.
-//   * The server OVERRIDES only on a real conflict: deadOnServer (collision/
-//     wall/powerup) or bigJump (respawn/teleport). Then hard-resync and drop
-//     pending inputs. Plain positional drift is absorbed (no override).
-//
-// Turn confirmation: when the server's authoritative dir matches our oldest
-// pending input, that input is confirmed and retired. Input retry re-sends an
-// unconfirmed turn after a couple of ticks; retry stops if we are dead.
+// Turn feel: a queued turn takes effect on the very next local tick, so the
+// snake goes exactly where you point it, immediately.
 //
 // Debug recording is DISABLED until the UI opens the panel (setDebug(true)).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.9";
+(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.10";
 const DIR_VECTORS = {
   up: { x: 0, y: -1 },
   down: { x: 0, y: 1 },
@@ -33,41 +30,40 @@ const DIR_VECTORS = {
 };
 const RETRY_AFTER_TICKS = 2;
 const MAX_RETRIES = 3;
-const MAX_LEAD_CELLS = 2;   // how many predicted cells we may lead the server by
-const SERVER_INPUT_LAG = 1; // straight cells the server runs before a queued turn
 class LocalPlayerPredictor {
   constructor(id) {
     this.id = id;
     this.slot = null;
     this.dir = { x: 1, y: 0 };
-    this.pending = [];
+    this.queue = [];            // queued turn vectors (client-side buffer)
+    this.pending = [];          // [{ seq, dirName, vec, sentTick, retries, confirmed }]
     this.clientSeq = 0;
-    this.confirmedBody = null;
-    this.predictedBody = null;
-    this.grid = null;
+    this.simBody = null;        // our own authoritative-to-us simulated body
     this.lastServerSeq = null;
     this.deadOnServer = false;
+    this.grid = null;
     this.debug = false;
     this.corrections = [];
     this.correctionCount = 0;
     this.sendFn = null;
+    this.lastTick = null;       // server seq we last advanced the sim on
   }
   setSender(fn) { this.sendFn = fn; }
   setDebug(on) { this.debug = !!on; if (!on) this.corrections.length = 0; }
   sameVec(a, b) { return a && b && a.x === b.x && a.y === b.y; }
 
+  // Keypress -> queue a turn (same rules the server enforces) and send it.
   queueInput(dirName) {
     const vec = DIR_VECTORS[dirName];
     if (!vec) return null;
-    const unconfirmed = this.pending.filter(p => !p.confirmed);
-    if (unconfirmed.length >= 2) return null;
-    const last = unconfirmed.length > 0 ? unconfirmed[unconfirmed.length - 1].vec : this.dir;
-    if (this.sameVec(vec, { x: -last.x, y: -last.y })) return null;
-    if (this.sameVec(vec, last)) return null;
+    if (this.queue.length >= 2) return null;
+    const last = this.queue.length > 0 ? this.queue[this.queue.length - 1] : this.dir;
+    if (this.sameVec(vec, { x: -last.x, y: -last.y })) return null; // reversal
+    if (this.sameVec(vec, last)) return null;                       // duplicate
+    this.queue.push(vec);
     const item = { seq: ++this.clientSeq, dirName, vec, sentTick: this.lastServerSeq, retries: 0, confirmed: false };
     this.pending.push(item);
     if (this.sendFn) this.sendFn(dirName, item.seq);
-    this.recompute();
     return dirName;
   }
 
@@ -84,47 +80,94 @@ class LocalPlayerPredictor {
     }
   }
 
+  // Advance our own simulation exactly one cell in the current heading,
+  // applying at most one queued turn first (mirrors server per-tick rule).
+  stepSim(growBy) {
+    if (!this.simBody || this.simBody.length === 0) return;
+    if (this.queue.length > 0) this.dir = this.queue.shift();
+    const head = { x: this.simBody[0].x + this.dir.x, y: this.simBody[0].y + this.dir.y };
+    if (!this.inBounds(head)) return; // hold at wall; server resolves the death
+    this.simBody.unshift(head);
+    // Keep our length in sync with the server: grow by growBy this tick,
+    // else drop the tail (normal movement).
+    if (growBy > 0) {
+      // grow: keep the tail (do not pop); extra growth handled by length sync
+    } else {
+      this.simBody.pop();
+    }
+  }
+
   reconcile(slot, players, tickMs, grid, seq) {
     if (grid) this.grid = grid;
+    const prevSeq = this.lastServerSeq;
     this.lastServerSeq = (seq == null ? this.lastServerSeq : seq);
     const p = players[slot];
-    if (!p) { this.confirmedBody = null; this.predictedBody = null; return; }
+    if (!p) { this.simBody = null; return; }
     this.slot = slot;
     this.deadOnServer = !p.alive;
 
+    const authHead = p.body[0];
     const authDir = p.dir || this.inferDirFromBody(p.body);
-    const bigJump = !this.confirmedBody || this.confirmedBody.length === 0 ||
-      (Math.abs(p.body[0].x - this.confirmedBody[0].x) +
-       Math.abs(p.body[0].y - this.confirmedBody[0].y) > 1);
 
+    // Confirm/retire the oldest pending turn once the server heading matches.
     if (authDir) {
       const next = this.pending.find(x => !x.confirmed);
       if (next && this.sameVec(next.vec, authDir)) next.confirmed = true;
     }
     while (this.pending.length && this.pending[0].confirmed) this.pending.shift();
 
+    // First snapshot, or no local sim yet: adopt the server body wholesale.
+    if (!this.simBody || this.simBody.length === 0) {
+      this.simBody = p.body.map(s => ({ x: s.x, y: s.y }));
+      if (authDir) this.dir = authDir;
+      return;
+    }
+
+    // CONFLICT detection: death, or a big jump between our head and the
+    // authoritative head (respawn / teleport / genuine desync).
+    const dxy = Math.abs(authHead.x - this.simBody[0].x) + Math.abs(authHead.y - this.simBody[0].y);
+    const bigJump = dxy > 1;
     const conflict = this.deadOnServer || bigJump;
 
-    if (this.debug && this.predictedBody && this.predictedBody.length) {
-      const ph = this.predictedBody[0];
-      const ah = p.body[0];
-      if (ph.x !== ah.x || ph.y !== ah.y) {
+    if (this.debug) {
+      const ph = this.simBody[0];
+      if (ph.x !== authHead.x || ph.y !== authHead.y) {
         this.correctionCount++;
         this.corrections.push({
           seq: (seq == null ? null : seq),
-          type: this.deadOnServer ? "death/collision" : (bigJump ? "respawn/teleport" : "absorbed (no override)"),
+          type: this.deadOnServer ? "death/collision" : (bigJump ? "respawn/teleport" : "ignored (client authoritative)"),
           predicted: { x: ph.x, y: ph.y },
-          actual: { x: ah.x, y: ah.y }
+          actual: { x: authHead.x, y: authHead.y }
         });
         if (this.corrections.length > 50) this.corrections.shift();
       }
     }
 
-    this.confirmedBody = p.body.map(s => ({ x: s.x, y: s.y }));
-    if (authDir) this.dir = authDir;
-    if (conflict) this.pending = [];
+    if (conflict) {
+      // Hard resync: server wins on collisions and teleports.
+      this.simBody = p.body.map(s => ({ x: s.x, y: s.y }));
+      if (authDir) this.dir = authDir;
+      this.queue = [];
+      this.pending = [];
+      return;
+    }
 
-    this.recompute();
+    // No conflict: keep our own simulated positions. Advance our sim by the
+    // number of server ticks elapsed since last snapshot (normally 1). Sync
+    // LENGTH to the server (growth from food/kills) without touching position.
+    const ticks = (prevSeq == null || this.lastServerSeq == null)
+      ? 1 : Math.max(0, this.lastServerSeq - prevSeq);
+    const targetLen = p.body.length;
+    for (let t = 0; t < ticks; t++) {
+      const grow = this.simBody.length < targetLen ? 1 : 0;
+      this.stepSim(grow);
+    }
+    // Final length reconciliation (in case of multi-growth from a kill bonus).
+    while (this.simBody.length < targetLen) {
+      const tail = this.simBody[this.simBody.length - 1];
+      this.simBody.push({ x: tail.x, y: tail.y });
+    }
+    while (this.simBody.length > targetLen) this.simBody.pop();
   }
 
   inferDirFromBody(body) {
@@ -138,37 +181,5 @@ class LocalPlayerPredictor {
     if (!this.grid) return true;
     return h.x >= 0 && h.x < this.grid.cols && h.y >= 0 && h.y < this.grid.rows;
   }
-
-  // Predict forward from the confirmed head. A queued turn does NOT bend the
-  // path at the current cell; instead we first advance SERVER_INPUT_LAG cells
-  // in the current heading (matching the server running one straight cell
-  // before it applies the turn), and only then change heading. This places
-  // the predicted corner where the server will actually place it, so turns
-  // stop relocating by a cell. Bounded by MAX_LEAD_CELLS so we never over-run.
-  recompute() {
-    if (!this.confirmedBody) { this.predictedBody = null; return; }
-    const unconfirmed = this.pending.filter(x => !x.confirmed);
-    const steps = Math.min(MAX_LEAD_CELLS, Math.max(1, unconfirmed.length + SERVER_INPUT_LAG));
-
-    let body = this.confirmedBody.slice();
-    let heading = this.dir;
-    let turnIdx = 0;          // which queued turn to apply next
-    let lagLeft = SERVER_INPUT_LAG; // straight cells to run before first turn
-
-    for (let n = 0; n < steps; n++) {
-      // Apply the next queued turn only after the server-lag straight cells.
-      if (lagLeft <= 0 && unconfirmed[turnIdx]) {
-        heading = unconfirmed[turnIdx].vec;
-        turnIdx++;
-        lagLeft = SERVER_INPUT_LAG; // model lag before the following turn too
-      } else if (lagLeft > 0) {
-        lagLeft--;
-      }
-      const head = { x: body[0].x + heading.x, y: body[0].y + heading.y };
-      if (!this.inBounds(head)) break; // hold at wall; do not go off-board
-      body = [head, ...body.slice(0, -1)];
-    }
-    this.predictedBody = body;
-  }
-  renderBody(_alpha) { return this.predictedBody || this.confirmedBody; }
+  renderBody(_alpha) { return this.simBody; }
 }
