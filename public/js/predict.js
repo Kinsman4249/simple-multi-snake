@@ -85,7 +85,14 @@ class LocalPlayerPredictor {
        Math.abs(p.body[0].y - this.confirmedBody[0].y) > 1);
 
     this.confirmedBody = p.body.map(s => ({ x: s.x, y: s.y }));
-    this.dir = p.dir || this.dir;
+
+    // Authoritative direction must come from the server. Without this, the
+    // client keeps validating future turns against a stale heading after the
+    // first accepted turn, so later keypresses can be rejected locally before
+    // they are ever sent. If an older server does not send dir yet, infer it
+    // from the first two body cells as a compatibility fallback.
+    const authoritativeDir = p.dir || this.inferDirFromBody(this.confirmedBody);
+    if (authoritativeDir) this.dir = authoritativeDir;
 
     if (bigJump) {
       this.pendingInputs = [];
@@ -96,6 +103,16 @@ class LocalPlayerPredictor {
     }
 
     this.recompute();
+  }
+
+  // Compatibility fallback for older snapshots that do not include p.dir.
+  // The vector from body[1] to body[0] is the snake's current heading.
+  inferDirFromBody(body) {
+    if (!body || body.length < 2) return null;
+    const dx = body[0].x - body[1].x;
+    const dy = body[0].y - body[1].y;
+    if (Math.abs(dx) + Math.abs(dy) !== 1) return null;
+    return { x: dx, y: dy };
   }
 
   // Predict exactly one tick past the confirmed body, using the next
