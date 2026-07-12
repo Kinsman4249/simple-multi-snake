@@ -2,7 +2,7 @@
 // Rendering: grid-snapped board draw. Whole cells only, integer coords,
 // zero sub-cell interpolation. Tail drops, a cell appears at the head.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-12.7";
+(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-12.8";
 const Render = (() => {
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");

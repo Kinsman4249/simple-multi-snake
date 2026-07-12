@@ -1,11 +1,9 @@
 // ============================================================
-// Non-engine UI: captcha join gate, status line, high score lists, the
-// arcade initials prompt (now with a live countdown), a spectator overlay,
-// an explicit "JOIN" offer button (so an AFK spectator cannot silently take
-// a slot), and a DEBUG button/panel. Debug recording is only turned on when
-// the panel is opened, via the toggle callback from main.js.
+// Non-engine UI: captcha gate, status line, high score lists, initials
+// prompt with countdown, spectator overlay, explicit JOIN offer button,
+// and a DEBUG button/panel (recording enabled only while open).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-12.6";
+(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-12.8";
 const UI = (() => {
   const statusEl = document.getElementById("status");
   let captchaId = null;
@@ -63,9 +61,6 @@ const UI = (() => {
     return box;
   }
 
-  // Initials prompt with a live countdown. When the deadline passes the
-  // server will move the player to spectator; we just reflect the timer and
-  // auto-submit whatever is typed so a score is not lost at the buzzer.
   function askInitials(targets, score, deadlineMs) {
     const box = overlayBox("initialsOverlay");
     const end = Date.now() + (deadlineMs || 20000);
@@ -96,7 +91,6 @@ const UI = (() => {
     }, 250);
   }
 
-  // Spectator overlay: shows global disconnect countdown info from server.
   function showSpectator(msg) {
     const box = overlayBox("spectatorOverlay");
     box.style.background = "rgba(0,0,0,0.6)";
@@ -107,13 +101,9 @@ const UI = (() => {
       (msg.disconnectMs ? "<div style=\"margin-top:8px;color:#f88;\">Idle disconnect in " + Math.round(msg.disconnectMs / 1000) + "s</div>" : "") +
       "</div>";
     document.body.appendChild(box);
-    // If the player is actively spectating a live game, do not block the view.
     setTimeout(() => { const b = document.getElementById("spectatorOverlay"); if (b) b.remove(); }, 2500);
   }
 
-  // Explicit join offer. A spectator at the front of the queue must click to
-  // take the open slot; if they do not accept within the window the server
-  // passes the offer to the next spectator. This stops AFK takeover.
   function offerJoin(msg, onAccept) {
     const box = overlayBox("joinOverlay");
     const end = Date.now() + (msg.acceptMs || 10000);
@@ -137,11 +127,10 @@ const UI = (() => {
       const left = Math.max(0, Math.ceil((end - Date.now()) / 1000));
       const el = document.getElementById("joinCountdown");
       if (el) el.textContent = String(left);
-      if (left <= 0) finish(false); // let server offer the next spectator
+      if (left <= 0) finish(false);
     }, 250);
   }
 
-  // ---- Debug button + panel (lazy: nothing recorded until opened) ----
   let debugInfoFn = null;
   let debugToggleFn = null;
   let debugTimer = null;
@@ -165,7 +154,7 @@ const UI = (() => {
     btn.onclick = () => {
       const open = panel.style.display === "none";
       panel.style.display = open ? "block" : "none";
-      debugToggleFn(open);           // enable/disable recording on the hot path
+      debugToggleFn(open);
       if (open) {
         renderDebug();
         debugTimer = setInterval(renderDebug, 250);

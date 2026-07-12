@@ -3,7 +3,7 @@
 // lifecycle are surfaced through the UI. Debug recording is only enabled
 // while the DEBUG panel is open.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-12.7";
+(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-12.8";
 const myPlayers = new Map();
 myPlayers.set("p1", new LocalPlayerPredictor("p1"));
 let myRole = null;

@@ -3,17 +3,17 @@
 //
 // Movement is grid-snapped (integer cells only, one cell per tick).
 //
-// Authority split (this build):
+// Turn feel fix (.8): prediction chains the current heading PLUS any queued
+// turns FORWARD from the confirmed head, instead of pivoting a single step
+// around it. Pivoting made the head appear to snap back one cell on the turn
+// frame (the hiccup). Chaining forward means a queued turn extends the path,
+// which is why buffering inputs felt smoother; that behavior is now default.
+//
+// Authority split:
 //   * The CLIENT leads on movement/turns at all times.
-//   * The server OVERRIDES the client ONLY on a real game-state conflict:
-//       - deadOnServer: server reports our snake not alive (collision, wall
-//         death, powerup interaction), or
-//       - bigJump: authoritative head moved more than one cell from our last
-//         confirmed head (respawn / teleport).
-//     Only then do we hard-resync and drop pending inputs.
-//   * A PLAIN positional difference (server a tick behind our predicted turn)
-//     is NOT a conflict. We rebase onto the authoritative body but KEEP the
-//     unconfirmed pending turns and keep leading, so turning does not jitter.
+//   * The server OVERRIDES only on a real conflict: deadOnServer (collision/
+//     wall/powerup) or bigJump (respawn/teleport). Then we hard-resync and
+//     drop pending inputs. Plain positional drift is absorbed (no override).
 //
 // Turn confirmation: when the server's authoritative dir matches our oldest
 // pending input, that input is confirmed and retired. Input retry re-sends an
@@ -21,7 +21,7 @@
 //
 // Debug recording is DISABLED until the UI opens the panel (setDebug(true)).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.7";
+(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.8";
 const DIR_VECTORS = {
   up: { x: 0, y: -1 },
   down: { x: 0, y: 1 },
@@ -30,6 +30,7 @@ const DIR_VECTORS = {
 };
 const RETRY_AFTER_TICKS = 2;
 const MAX_RETRIES = 3;
+const MAX_LEAD_CELLS = 2;   // how many predicted cells we may lead the server by
 class LocalPlayerPredictor {
   constructor(id) {
     this.id = id;
@@ -98,8 +99,6 @@ class LocalPlayerPredictor {
     }
     while (this.pending.length && this.pending[0].confirmed) this.pending.shift();
 
-    // A CONFLICT is ONLY death or teleport/respawn. Plain positional drift
-    // while a turn is in flight is absorbed without overriding the client.
     const conflict = this.deadOnServer || bigJump;
 
     if (this.debug && this.predictedBody && this.predictedBody.length) {
@@ -135,21 +134,30 @@ class LocalPlayerPredictor {
     if (!this.grid) return true;
     return h.x >= 0 && h.x < this.grid.cols && h.y >= 0 && h.y < this.grid.rows;
   }
+
+  // Build the sequence of heading vectors to apply, in order: the current
+  // confirmed heading is implicit; each unconfirmed queued turn changes the
+  // heading for the steps after it. We advance the head forward one cell per
+  // step (bounded by MAX_LEAD_CELLS) so a turn EXTENDS the path rather than
+  // pivoting the single predicted cell backward.
   recompute() {
     if (!this.confirmedBody) { this.predictedBody = null; return; }
-    const head0 = this.confirmedBody[0];
     const unconfirmed = this.pending.filter(x => !x.confirmed);
-    let chosen = null;
-    for (const it of unconfirmed) {
-      if (this.inBounds({ x: head0.x + it.vec.x, y: head0.y + it.vec.y })) { chosen = it.vec; break; }
+
+    // Number of forward steps to predict: at least 1, at most MAX_LEAD_CELLS,
+    // and never more than the count of distinct queued turns + 1.
+    const steps = Math.min(MAX_LEAD_CELLS, Math.max(1, unconfirmed.length));
+
+    let body = this.confirmedBody.slice();
+    let heading = this.dir;
+    for (let n = 0; n < steps; n++) {
+      // Adopt the nth queued turn as the heading for this step if present.
+      if (unconfirmed[n]) heading = unconfirmed[n].vec;
+      const head = { x: body[0].x + heading.x, y: body[0].y + heading.y };
+      if (!this.inBounds(head)) break;          // hold at wall; do not go off-board
+      body = [head, ...body.slice(0, -1)];      // advance one cell (tail drops)
     }
-    if (!chosen) {
-      const d = unconfirmed.length > 0 ? unconfirmed[0].vec : this.dir;
-      if (this.inBounds({ x: head0.x + d.x, y: head0.y + d.y })) chosen = d;
-    }
-    if (!chosen) { this.predictedBody = this.confirmedBody.slice(); return; }
-    const head = { x: head0.x + chosen.x, y: head0.y + chosen.y };
-    this.predictedBody = [head, ...this.confirmedBody.slice(0, -1)];
+    this.predictedBody = body;
   }
   renderBody(_alpha) { return this.predictedBody || this.confirmedBody; }
 }

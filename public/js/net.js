@@ -2,7 +2,7 @@
 // Networking: owns the WebSocket connection and keeps the last two
 // authoritative "state" snapshots, each stamped with browser receive time.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).net = "net 2026-07-12.7";
+(window.__BUILDS__ = window.__BUILDS__ || {}).net = "net 2026-07-12.8";
 const Net = (() => {
   let ws = null;
   let handlers = {};
