@@ -45,6 +45,7 @@ NODE_MAJOR="${NODE_MAJOR:-22}"               # Node.js LTS major version to inst
 STATE_DIR="${STATE_DIR:-/etc/multisnake}"    # holds installer state between runs
 STATE_FILE="${STATE_DIR}/last-domain"        # the hostname used on the last run
 PORT_FILE="${STATE_DIR}/last-port"           # the port used on the last run
+EMAIL_FILE="${STATE_DIR}/last-email"         # the Let's Encrypt notice email used on the last run
 PREFERRED_PORT="${PORT:-}"                   # optional explicit port override
 DEFAULT_PORT=8080                            # starting point for the free-port scan
 TEMPLATE_NAME="fillmeout.example.com.conf"   # placeholder vhost shipped in deploy/
@@ -76,6 +77,10 @@ echo "== simple-multi-snake installer =="
 LAST_DOMAIN=""
 if [ -r "$STATE_FILE" ]; then
   LAST_DOMAIN="$(cat "$STATE_FILE" 2>/dev/null || true)"
+fi
+LAST_EMAIL=""
+if [ -r "$EMAIL_FILE" ]; then
+  LAST_EMAIL="$(cat "$EMAIL_FILE" 2>/dev/null || true)"
 fi
 
 valid_hostname() {
@@ -129,6 +134,79 @@ VHOST_FILE="${CHOSEN_DOMAIN}.conf"
 LE_SSL_FILE="/etc/apache2/sites-available/${CHOSEN_DOMAIN}-le-ssl.conf"
 CF_CREDS_FILE="/etc/letsencrypt/cloudflare-${CHOSEN_DOMAIN}.ini"
 echo "Using hostname: ${CHOSEN_DOMAIN}"
+
+# ---------------------------------------------------------------------------
+# Old-install / alt-port-config check.
+#
+# The "retire the previous hostname's vhost" step further down only knows
+# about ONE previous hostname (whatever is in last-domain), so it misses
+# vhosts that predate the installer being used at all, or that were left
+# behind by hand-editing outside of it. This scans every enabled Apache site
+# for the distinctive "/ws" WebSocket ProxyPass line our own template writes,
+# which is specific enough that an unrelated vhost is very unlikely to match
+# it, and reports any such vhost that is not the one we are about to manage
+# for CHOSEN_DOMAIN. This is where a stale hostname pointed at a now-dead
+# port would show up (an "alt port config"), since nothing is listening
+# there once the app has moved to a different port.
+# ---------------------------------------------------------------------------
+detect_stale_vhosts() {
+  local sites_dir="/etc/apache2/sites-available"
+  [ -d "$sites_dir" ] || return 0
+
+  local found=0
+  local f host port listening
+  for f in "$sites_dir"/*.conf; do
+    [ -f "$f" ] || continue
+    case "$(basename "$f")" in
+      "$VHOST_FILE"|"${CHOSEN_DOMAIN}-le-ssl.conf") continue ;;
+    esac
+    # Our template's signature line, tolerant of the port having been edited.
+    port="$(grep -oE 'ProxyPass[[:space:]]+/ws[[:space:]]+ws://127\.0\.0\.1:[0-9]+/ws' "$f" \
+      | grep -oE '[0-9]+' | head -n1 || true)"
+    [ -n "$port" ] || continue
+    host="$(grep -oE 'ServerName[[:space:]]+\S+' "$f" | awk '{print $2}' | head -n1 || true)"
+    if [ "$found" -eq 0 ]; then
+      echo
+      echo "NOTICE: found other multisnake-managed Apache site(s):"
+      found=1
+    fi
+    if port_is_free "$port"; then
+      listening="nothing listening on ${port}, this vhost is dead"
+    else
+      listening="something is listening on ${port}"
+    fi
+    echo "  ${f} -> host ${host:-unknown}, port ${port} (${listening})"
+  done
+  [ "$found" -eq 1 ] || return 0
+
+  echo "These are left alone by default since they may be a separate,"
+  echo "intentionally-running instance on another hostname/port."
+  if [ -r /dev/tty ]; then
+    printf "Disable and remove the dead ones listed above? [y/N]: " > /dev/tty
+    local ans
+    read -r ans < /dev/tty || ans=""
+    case "$ans" in
+      [Yy]*)
+        for f in "$sites_dir"/*.conf; do
+          [ -f "$f" ] || continue
+          case "$(basename "$f")" in
+            "$VHOST_FILE"|"${CHOSEN_DOMAIN}-le-ssl.conf") continue ;;
+          esac
+          port="$(grep -oE 'ProxyPass[[:space:]]+/ws[[:space:]]+ws://127\.0\.0\.1:[0-9]+/ws' "$f" \
+            | grep -oE '[0-9]+' | head -n1 || true)"
+          [ -n "$port" ] || continue
+          if port_is_free "$port"; then
+            local base; base="$(basename "$f")"
+            [ -f "/etc/apache2/sites-enabled/${base}" ] && a2dissite "${base}" >/dev/null || true
+            rm -f "$f"
+            echo "  Removed ${f}."
+          fi
+        done
+        systemctl reload apache2 || true
+        ;;
+    esac
+  fi
+}
 
 # ---------------------------------------------------------------------------
 # Port helpers and selection.
@@ -241,6 +319,7 @@ resolve_port() {
   fi
 }
 
+detect_stale_vhosts
 detect_prior_failure
 resolve_port
 
@@ -256,10 +335,22 @@ resolve_tls_inputs() {
     return
   fi
 
-  # Email
+  # Email. Reused across runs the same way the hostname is: an explicit
+  # CERTBOT_EMAIL always wins, otherwise the prompt offers the last saved
+  # address as its default and an empty reply reuses it. This is the email
+  # Let's Encrypt (and, if you provide one, Cloudflare renewal-related mail)
+  # sends certificate expiry / renewal notices to, so it is worth persisting
+  # rather than re-typing on every re-run.
   if [ -z "$CERTBOT_EMAIL" ] && [ -r /dev/tty ]; then
-    printf "Email for Let's Encrypt expiry notices (blank to skip): " > /dev/tty
+    if [ -n "$LAST_EMAIL" ]; then
+      printf "Email for Let's Encrypt renewal notices [%s]: " "$LAST_EMAIL" > /dev/tty
+    else
+      printf "Email for Let's Encrypt renewal notices (blank to skip): " > /dev/tty
+    fi
     read -r CERTBOT_EMAIL < /dev/tty || CERTBOT_EMAIL=""
+    if [ -z "$CERTBOT_EMAIL" ] && [ -n "$LAST_EMAIL" ]; then
+      CERTBOT_EMAIL="$LAST_EMAIL"
+    fi
   fi
 
   # Cloudflare token
@@ -331,10 +422,31 @@ fi
 # ---------------------------------------------------------------------------
 echo "[4/9] Installing app files to ${APP_DIR}..."
 mkdir -p "${APP_DIR}/public"
-install -m 0644 "${SRC}/server.js"         "${APP_DIR}/server.js"
-install -m 0644 "${SRC}/config.json"       "${APP_DIR}/config.json"
-install -m 0644 "${SRC}/package.json"      "${APP_DIR}/package.json"
-install -m 0644 "${SRC}/public/index.html" "${APP_DIR}/public/index.html"
+install -m 0644 "${SRC}/server.js"    "${APP_DIR}/server.js"
+install -m 0644 "${SRC}/config.json"  "${APP_DIR}/config.json"
+install -m 0644 "${SRC}/package.json" "${APP_DIR}/package.json"
+
+# Every file under public/ (index.html, public/js/*.js, and anything added
+# later) is synced by walking the tree rather than naming files one at a
+# time. Naming them individually is exactly how public/js/*.js ended up
+# missing from a real deploy: the client was split into net.js, predict.js,
+# render.js, ui.js, and main.js, and this step was never updated to know
+# about the new directory, so the server 404'd on all of them. Walking the
+# tree means a future new client file deploys automatically.
+find "${SRC}/public" -type f -print0 | while IFS= read -r -d '' f; do
+  rel="${f#"${SRC}"/public/}"
+  dest="${APP_DIR}/public/${rel}"
+  mkdir -p "$(dirname "$dest")"
+  install -m 0644 "$f" "$dest"
+done
+
+# Remove anything under APP_DIR/public that no longer exists in the source
+# tree, so a renamed or deleted client file does not linger as dead weight
+# (or, worse, a stale version of itself) after an update.
+find "${APP_DIR}/public" -type f -print0 2>/dev/null | while IFS= read -r -d '' f; do
+  rel="${f#"${APP_DIR}"/public/}"
+  [ -f "${SRC}/public/${rel}" ] || { rm -f "$f"; echo "  Removed stale ${rel} (no longer shipped)."; }
+done
 
 # server.js ships with a default of 8080; set it to the chosen port.
 sed -i "s/const PORT = [0-9]\+;/const PORT = ${CHOSEN_PORT};/" "${APP_DIR}/server.js"
@@ -377,6 +489,31 @@ if ! curl -fsS "http://127.0.0.1:${CHOSEN_PORT}/" -o /dev/null 2>/dev/null; then
   exit 1
 fi
 echo "  App is responding on 127.0.0.1:${CHOSEN_PORT}."
+
+# index.html alone answering 200 does not prove the client's JS modules made
+# it onto disk (this is exactly how the public/js/*.js 404s happened: the
+# process was up and / worked fine, so the old check here passed while the
+# game was still broken in every browser). Check every static file the
+# shipped index.html actually references, straight out of that file, so this
+# check stays correct even as more client files get added in later phases.
+echo "  Verifying static client assets referenced by index.html..."
+ASSET_FAIL=0
+while IFS= read -r asset; do
+  [ -n "$asset" ] || continue
+  if ! curl -fsS "http://127.0.0.1:${CHOSEN_PORT}/${asset}" -o /dev/null 2>/dev/null; then
+    echo "ERROR: ${asset} did not load (404 or connection error)." >&2
+    ASSET_FAIL=1
+  fi
+done < <(grep -oE '(src|href)="[^"]+\.(js|css)"' "${APP_DIR}/public/index.html" \
+           | sed -E 's/^(src|href)="//; s/"$//')
+if [ "$ASSET_FAIL" -eq 1 ]; then
+  echo "ERROR: one or more static assets referenced by index.html are missing" >&2
+  echo "on disk under ${APP_DIR}/public/. The service process is up, but the" >&2
+  echo "site would be broken in a browser. Check that the source checkout" >&2
+  echo "actually contains those files under public/." >&2
+  exit 1
+fi
+echo "  All static client assets present and served correctly."
 
 # ---------------------------------------------------------------------------
 # 8. Apache reverse proxy. Enable modules, generate the vhost from the
@@ -495,11 +632,19 @@ else
   echo "[9/9] ENABLE_TLS=no, skipping certbot. Serving plain HTTP on port 80."
 fi
 
-# Remember the hostname and port so the next run can offer/reuse them.
+# Remember the hostname, port, and (if TLS is on) the renewal-notice email so
+# the next run can offer/reuse them. The email file is 0600 since an email
+# address is mildly sensitive; the domain and port files stay world-readable
+# as before.
 mkdir -p "${STATE_DIR}"
 printf "%s\n" "${CHOSEN_DOMAIN}" > "${STATE_FILE}"
 printf "%s\n" "${CHOSEN_PORT}" > "${PORT_FILE}"
 chmod 0644 "${STATE_FILE}" "${PORT_FILE}"
+if [ "$ENABLE_TLS" = "yes" ] && [ -n "$CERTBOT_EMAIL" ]; then
+  umask 077
+  printf "%s\n" "${CERTBOT_EMAIL}" > "${EMAIL_FILE}"
+  chmod 0600 "${EMAIL_FILE}"
+fi
 
 # ---------------------------------------------------------------------------
 # Remove the temp clone if we created one.
@@ -521,6 +666,10 @@ if [ "$ENABLE_TLS" = "yes" ]; then
   echo "- Port 443 must be reachable for players to connect."
   echo "- The Cloudflare token is stored at ${CF_CREDS_FILE} (chmod 600) and is"
   echo "  reused automatically at each renewal."
+  if [ -n "$CERTBOT_EMAIL" ]; then
+    echo "- Renewal notices go to ${CERTBOT_EMAIL} (saved at ${EMAIL_FILE},"
+    echo "  chmod 600, offered as the default on future runs)."
+  fi
   echo "- Open: https://${CHOSEN_DOMAIN}"
 else
   echo "- TLS was skipped. If fronting with Cloudflare, terminate TLS there and"

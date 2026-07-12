@@ -66,6 +66,13 @@ server.js and the Apache vhosts at it. The chosen port is saved to
   left the service crash-looping), the installer explains the problem, names
   the process currently holding the port, and offers to move the app to a free
   port and re-point the vhosts before continuing.
+- Before that, the installer also scans every enabled Apache site for the
+  distinctive `/ws` WebSocket ProxyPass line the vhost template writes, so it
+  can find other multisnake-managed vhosts left over from a previous hostname
+  or a manual edit, not just the immediately previous run. Any it finds are
+  reported with the hostname and port each one points at, flagged as dead if
+  nothing is listening on that port, and left alone by default; you are
+  offered the option to remove the dead ones.
 
 ## TLS (Let's Encrypt via DNS-01)
 
@@ -97,7 +104,10 @@ contents, so the file must remain in place.
 - ENABLE_TLS: "yes" (default) or "no". Set to "no" to skip certbot entirely,
   for example when you terminate TLS at Cloudflare with an Origin Certificate.
 - CF_API_TOKEN: Cloudflare token with Zone:DNS:Edit on the zone.
-- CERTBOT_EMAIL: email for expiry notices. Blank registers without an email.
+- CERTBOT_EMAIL: email for expiry/renewal notices. Blank registers without an
+  email. On an interactive run, if you have provided one before, it is
+  offered as the default (press Enter to reuse it) and saved to
+  /etc/multisnake/last-email (chmod 600) for next time.
 - CF_PROPAGATION: seconds to wait for DNS propagation before validation.
   Default 30.
 
@@ -165,6 +175,11 @@ entry point. To confirm which port is in use:
 
     cat /etc/multisnake/last-port
 
+The Let's Encrypt renewal-notice email, if you provided one, is saved the same
+way:
+
+    sudo cat /etc/multisnake/last-email
+
 ## Manual install
 
 The one-command installer above is the recommended path and handles everything:
@@ -184,9 +199,15 @@ installer does. Replace YOUR_HOST with your hostname throughout.
 
     sudo mkdir -p /opt/multisnake/public
     sudo cp server.js config.json package.json /opt/multisnake/
-    sudo cp public/index.html /opt/multisnake/public/
+    sudo cp -r public/. /opt/multisnake/public/
     cd /opt/multisnake
     sudo npm install --omit=dev
+
+Use `cp -r public/.` (everything under `public/`), not `cp public/index.html`
+alone. The client is split across `public/index.html` and `public/js/*.js`
+(`net.js`, `predict.js`, `render.js`, `ui.js`, `main.js`); copying only
+`index.html` leaves the game unable to load and every module 404ing in the
+browser console, even though the Node process itself comes up fine.
 
 ### 3. Choose the listening port
 
@@ -213,7 +234,14 @@ Use the same port everywhere below in place of 8080.
 Confirm the app is listening before continuing. This catches a port clash early,
 before Apache and TLS are set up:
 
-    curl -sI http://127.0.0.1:8080/     # expect HTTP/1.1 200 OK
+    curl -sI http://127.0.0.1:8080/            # expect HTTP/1.1 200 OK
+    curl -sI http://127.0.0.1:8080/js/main.js  # expect HTTP/1.1 200 OK
+
+Check both. The first only proves the Node process is up and index.html is in
+place; it will return 200 even if the public/js files from step 2 never made
+it onto disk, which is exactly the failure mode that produces a working-looking
+service with a broken game in every browser. The installer runs this same
+second check automatically after every install.
 
 If the service is failed or the port is in use, check the logs, pick a different
 port, redo step 3, and restart:
