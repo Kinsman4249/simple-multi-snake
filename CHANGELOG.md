@@ -51,3 +51,11 @@ here should be written, see CHANGELOG_TEMPLATE.md.
 - Decoupled the server simulation rate from the snake movement cadence. A fixed loop runs at config simHz (default 60) and samples input every tick, while the snake advances one cell only when a movement accumulator crosses the current move interval. This lowers the input sampling delay to about one sim frame without changing snake speed, which is still governed by the movement cadence.
 - Expressed the speed ramp as milliseconds per cell (config move.startIntervalMs, move.minIntervalMs, move.rampIntervalSec, move.rampStepMs) instead of the old tick-based speed block. Setting move.rampStepMs to zero gives a constant speed. Full state is broadcast only on movement ticks, so bandwidth is unchanged, and the network sequence still counts movement steps so client reconciliation is unaffected.
 - Added a simHz prompt to the installer, defaulting to 60 and offering the last used value on repeat runs, saved to /etc/multisnake/last-simhz. It can be forced non-interactively with SIM_HZ, is validated as a positive integer in the range 1 to 1000, and is written into the deployed config.json with Node so the file stays valid JSON.
+
+TODO
+
+TODO: 
+
+Implement move to spectator if no input is given over the course of 30 sec
+
+implement disconnect question after 5 minutes of spectating, disconnectng 30 seconds later if no answer is given
