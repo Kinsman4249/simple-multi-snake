@@ -1,9 +1,10 @@
 // ============================================================
-// Bootstrap. Client leads on movement; server corrections and the join
-// lifecycle are surfaced through the UI. Debug recording is only enabled
-// while the DEBUG panel is open.
+// Bootstrap. Client leads on movement + food prediction; server reconciles.
+// Passes the server ack and food into the predictor so reconciliation works,
+// and the predictor's provisionally-eaten food key into render so the food
+// hides on a predicted eat. Debug recording only while the panel is open.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-12.8";
+(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-12.13";
 const myPlayers = new Map();
 myPlayers.set("p1", new LocalPlayerPredictor("p1"));
 let myRole = null;
@@ -24,8 +25,8 @@ function handleState(curr) {
   myRole = curr.you;
   const p1 = myPlayers.get("p1");
   if (curr.you.role === "player") {
-    p1.reconcile(curr.you.slot, curr.players, curr.tickMs, curr.grid, curr.seq);
-    p1.retryUnconfirmed();
+    p1.reconcile(curr.you.slot, curr.players, curr.tickMs, curr.grid, curr.seq, curr.you.ack, curr.food);
+    p1.retryUnacked();
   }
   UI.updateStatus(curr);
   UI.updateLeaderboards(curr.highScores);
@@ -34,11 +35,14 @@ function frame() {
   const { prev, curr } = Net.snapshots();
   if (curr) {
     const localBodies = new Map();
+    let eatenKey = null;
     if (myRole && myRole.role === "player") {
-      const body = myPlayers.get("p1").renderBody(performance.now());
+      const p1 = myPlayers.get("p1");
+      const body = p1.renderBody(performance.now());
       if (body) localBodies.set(myRole.slot, body);
+      eatenKey = p1.eatenFoodKey();
     }
-    Render.draw(prev, curr, localBodies);
+    Render.draw(prev, curr, localBodies, eatenKey);
   }
   requestAnimationFrame(frame);
 }
@@ -66,7 +70,7 @@ window.__DEBUG_SOURCE__ = function () {
     tickMs: curr ? curr.tickMs : null,
     role: myRole ? myRole.role : null,
     slot: myRole ? myRole.slot : null,
-    pending: p1 ? p1.pending.map(x => ({ seq: x.seq, dir: x.dirName, retries: x.retries, confirmed: x.confirmed })) : [],
+    pending: p1 ? p1.inputBuffer.map(x => ({ seq: x.seq, dir: x.dirName, retries: x.retries })) : [],
     corrections: p1 ? p1.corrections.slice(-12) : [],
     correctionCount: p1 ? p1.correctionCount : 0
   };
