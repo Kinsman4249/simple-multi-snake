@@ -21,6 +21,13 @@
 # The chosen port is saved and reused on later runs. A previous install that
 # crash-looped on a port clash is detected and offered an automatic fix.
 #
+# Sim rate: the server runs a fixed-rate simulation loop, separate from how
+# often the snake moves one cell. The default is 60 Hz. A higher rate samples
+# input more finely (imperceptibly lower input latency) but does NOT change
+# snake speed, which is governed by the movement cadence in config.json. The
+# installer prompts for it, offering the last used value as the default, and
+# it can be forced non-interactively with SIM_HZ.
+#
 # TLS: by default the installer obtains a Let's Encrypt certificate using the
 # DNS-01 challenge via the Cloudflare API, then lets the Apache plugin install
 # the certificate and serve the game on 443. DNS-01 needs no inbound port 80,
@@ -46,6 +53,7 @@ STATE_DIR="${STATE_DIR:-/etc/multisnake}"    # holds installer state between run
 STATE_FILE="${STATE_DIR}/last-domain"        # the hostname used on the last run
 PORT_FILE="${STATE_DIR}/last-port"           # the port used on the last run
 EMAIL_FILE="${STATE_DIR}/last-email"         # the Let's Encrypt notice email used on the last run
+SIMHZ_FILE="${STATE_DIR}/last-simhz"         # the sim rate (Hz) used on the last run
 PREFERRED_PORT="${PORT:-}"                   # optional explicit port override
 DEFAULT_PORT=8080                            # starting point for the free-port scan
 TEMPLATE_NAME="fillmeout.example.com.conf"   # placeholder vhost shipped in deploy/
@@ -55,6 +63,7 @@ ENABLE_TLS="${ENABLE_TLS:-yes}"              # set to "no" to skip certbot / 443
 CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"           # optional; blank registers without email
 CF_API_TOKEN="${CF_API_TOKEN:-}"             # Cloudflare token, Zone:DNS:Edit scope
 CF_PROPAGATION="${CF_PROPAGATION:-30}"       # seconds to wait for DNS propagation
+DEFAULT_SIMHZ=60                             # default server simulation rate in Hz
 
 # ---------------------------------------------------------------------------
 # Must run as root: it writes to /opt, /etc/systemd, and /etc/apache2.
@@ -81,6 +90,10 @@ fi
 LAST_EMAIL=""
 if [ -r "$EMAIL_FILE" ]; then
   LAST_EMAIL="$(cat "$EMAIL_FILE" 2>/dev/null || true)"
+fi
+LAST_SIMHZ=""
+if [ -r "$SIMHZ_FILE" ]; then
+  LAST_SIMHZ="$(cat "$SIMHZ_FILE" 2>/dev/null || true)"
 fi
 
 valid_hostname() {
@@ -134,6 +147,41 @@ VHOST_FILE="${CHOSEN_DOMAIN}.conf"
 LE_SSL_FILE="/etc/apache2/sites-available/${CHOSEN_DOMAIN}-le-ssl.conf"
 CF_CREDS_FILE="/etc/letsencrypt/cloudflare-${CHOSEN_DOMAIN}.ini"
 echo "Using hostname: ${CHOSEN_DOMAIN}"
+
+# ---------------------------------------------------------------------------
+# Simulation rate resolution. Order of precedence:
+#   1. SIM_HZ environment variable, if set (non-interactive path).
+#   2. Interactive prompt, defaulting to the last used value, else 60.
+#   3. If there is no terminal, the last saved value, else 60.
+# The value is validated (positive integer, 1..1000) and saved near the end.
+# Higher = finer input sampling; it does NOT change snake speed.
+# ---------------------------------------------------------------------------
+resolve_simhz() {
+  local def="${SIM_HZ:-${LAST_SIMHZ:-$DEFAULT_SIMHZ}}"
+  if [ -n "${SIM_HZ:-}" ]; then
+    CHOSEN_SIMHZ="$SIM_HZ"
+  elif [ -r /dev/tty ]; then
+    printf "Server simulation rate in Hz [%s]: " "$def" > /dev/tty
+    local reply
+    read -r reply < /dev/tty || reply=""
+    [ -z "$reply" ] && reply="$def"
+    CHOSEN_SIMHZ="$reply"
+  else
+    CHOSEN_SIMHZ="$def"
+  fi
+  case "$CHOSEN_SIMHZ" in
+    ''|*[!0-9]*)
+      echo "ERROR: simHz must be a positive integer." >&2
+      exit 1
+      ;;
+  esac
+  if [ "$CHOSEN_SIMHZ" -lt 1 ] || [ "$CHOSEN_SIMHZ" -gt 1000 ]; then
+    echo "ERROR: simHz out of range (1-1000)." >&2
+    exit 1
+  fi
+}
+resolve_simhz
+echo "Using simHz: ${CHOSEN_SIMHZ}"
 
 # ---------------------------------------------------------------------------
 # Old-install / alt-port-config check.
@@ -417,8 +465,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Lay the app down in APP_DIR, then patch the port into server.js. An
-#    existing highscores.json is left in place.
+# 4. Lay the app down in APP_DIR, then patch the port into server.js and the
+#    chosen sim rate into config.json. An existing highscores.json is left in
+#    place.
 # ---------------------------------------------------------------------------
 echo "[4/9] Installing app files to ${APP_DIR}..."
 mkdir -p "${APP_DIR}/public"
@@ -450,6 +499,12 @@ done
 
 # server.js ships with a default of 8080; set it to the chosen port.
 sed -i "s/const PORT = [0-9]\+;/const PORT = ${CHOSEN_PORT};/" "${APP_DIR}/server.js"
+
+# config.json ships with a default simHz; set it to the chosen sim rate using
+# the Node runtime this installer just ensured is present. Editing JSON with
+# Node keeps the file valid regardless of key order or formatting.
+node -e "const f='${APP_DIR}/config.json';const c=JSON.parse(require('fs').readFileSync(f));c.simHz=${CHOSEN_SIMHZ};require('fs').writeFileSync(f,JSON.stringify(c,null,2)+'\n');"
+echo "  Set simHz=${CHOSEN_SIMHZ} in ${APP_DIR}/config.json."
 
 # ---------------------------------------------------------------------------
 # 5. Install production npm deps (ws) inside APP_DIR.
@@ -632,14 +687,15 @@ else
   echo "[9/9] ENABLE_TLS=no, skipping certbot. Serving plain HTTP on port 80."
 fi
 
-# Remember the hostname, port, and (if TLS is on) the renewal-notice email so
-# the next run can offer/reuse them. The email file is 0600 since an email
-# address is mildly sensitive; the domain and port files stay world-readable
-# as before.
+# Remember the hostname, port, sim rate, and (if TLS is on) the renewal-notice
+# email so the next run can offer/reuse them. The email file is 0600 since an
+# email address is mildly sensitive; the domain, port, and simhz files stay
+# world-readable as before.
 mkdir -p "${STATE_DIR}"
 printf "%s\n" "${CHOSEN_DOMAIN}" > "${STATE_FILE}"
 printf "%s\n" "${CHOSEN_PORT}" > "${PORT_FILE}"
-chmod 0644 "${STATE_FILE}" "${PORT_FILE}"
+printf "%s\n" "${CHOSEN_SIMHZ}" > "${SIMHZ_FILE}"
+chmod 0644 "${STATE_FILE}" "${PORT_FILE}" "${SIMHZ_FILE}"
 if [ "$ENABLE_TLS" = "yes" ] && [ -n "$CERTBOT_EMAIL" ]; then
   umask 077
   printf "%s\n" "${CERTBOT_EMAIL}" > "${EMAIL_FILE}"
@@ -657,6 +713,7 @@ echo
 echo "== Done =="
 echo "Service status:  systemctl status multisnake"
 echo "The app listens on 127.0.0.1:${CHOSEN_PORT} and Apache proxies ${CHOSEN_DOMAIN} to it."
+echo "Server simulation rate: ${CHOSEN_SIMHZ} Hz."
 echo
 echo "DNS / Cloudflare notes:"
 echo "- Point an A record for ${CHOSEN_DOMAIN} at this server public IP."
