@@ -1,21 +1,17 @@
 // ============================================================
-// Multiplayer Snake server.
+// Multiplayer Snake server (.14): DECOUPLED sim rate and movement cadence.
 //
-// Authority: server authoritative for collisions/powerups; the client leads
-// on movement (see predict.js). Server sends each player's authoritative dir
-// AND the last input sequence it processed (you.ack) so the client can do
-// Gambetta-style reconciliation: re-anchor + replay only unacked inputs.
+// A fixed simulation loop runs at CFG.simHz (default 60). Inputs are sampled
+// every sim tick (so a keypress is on the server within ~1000/simHz ms). The
+// snake advances ONE cell only when a movement accumulator crosses the current
+// move interval (moveIntervalMs), which carries the speed ramp. Full state is
+// broadcast only on movement ticks, so bandwidth is unchanged from before.
 //
-// Lifecycle:
-//   1. On qualifying death -> "awaitInitials"; no respawn until initials in.
-//   2. No initials within INITIALS_TIMEOUT_MS (20s) -> spectator.
-//   3. Spectators sit in a global queue; disconnected after SPECTATOR_IDLE_MS
-//      (5 min) idle. One shared (global) constant.
-//   4. Open slot -> front spectator OFFERED slot with explicit JOIN button
-//      (JOIN_OFFER_MS); no accept -> offer passes to next. Prevents AFK.
+// seq counts MOVEMENT steps (not sim frames), so client reconciliation and the
+// input ack model are unchanged. The client can align to the tiny sim tick
+// (option B) for zero positional offset with imperceptible input lag.
 //
-// Score resets to 0 on every (re)spawn. Input buffer up to INPUT_BUFFER (3).
-//
+// Authority + lifecycle + food + acks: same as .12/.13.
 // Run: npm install ws ; node server.js
 // ============================================================
 const http = require("http");
@@ -27,7 +23,11 @@ const CFG = JSON.parse(fs.readFileSync(path.join(__dirname, "config.json"), "utf
 const HS_FILE = path.join(__dirname, "highscores.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const PORT = 8080;
-const BUILD = "server 2026-07-12.12";
+const BUILD = "server 2026-07-12.14";
+
+const SIM_HZ = Number.isFinite(CFG.simHz) && CFG.simHz > 0 ? CFG.simHz : 60;
+const SIM_MS = 1000 / SIM_HZ;
+const MOVE = CFG.move || { startIntervalMs: 160, minIntervalMs: 70, rampIntervalSec: 30, rampStepMs: 10 };
 const WALL_GRACE_TICKS = Number.isInteger(CFG.wallGraceTicks) ? CFG.wallGraceTicks : 1;
 const INITIALS_TIMEOUT_MS = Number.isInteger(CFG.initialsTimeoutMs) ? CFG.initialsTimeoutMs : 20000;
 const SPECTATOR_IDLE_MS = Number.isInteger(CFG.spectatorIdleMs) ? CFG.spectatorIdleMs : 300000;
@@ -131,7 +131,7 @@ function spawnSnake(slotIndex) {
   s.awaitInitials = false;
   s.initialsDeadline = null;
   s.score = 0;
-  s.lastAck = 0;   // last processed input seq for this player
+  s.lastAck = 0;
 }
 function newPlayerSlot(connId) {
   return {
@@ -232,19 +232,41 @@ function movePlayerToSpectator(slotIndex) {
   }
   maybeOfferSlot();
 }
-function currentTickMs() {
-  if (sessionStart === null) return CFG.speed.startTickMs;
+// Current movement interval (ms per cell), carrying the ramp.
+function currentMoveIntervalMs() {
+  if (sessionStart === null) return MOVE.startIntervalMs;
   const elapsedSec = (Date.now() - sessionStart) / 1000;
-  const steps = Math.floor(elapsedSec / CFG.speed.rampIntervalSec);
-  const ms = CFG.speed.startTickMs - steps * CFG.speed.rampStepMs;
-  return Math.max(CFG.speed.minTickMs, ms);
+  const steps = Math.floor(elapsedSec / MOVE.rampIntervalSec);
+  const ms = MOVE.startIntervalMs - steps * MOVE.rampStepMs;
+  return Math.max(MOVE.minIntervalMs, ms);
 }
-let tickSeq = 0;
-function scheduleTick() { setTimeout(gameTick, currentTickMs()); }
-function gameTick() {
+let moveSeq = 0;         // counts MOVEMENT steps (used as network seq)
+let moveAccumMs = 0;     // accumulator toward the next movement step
+let lastSimAt = null;
+
+// Fixed-rate simulation loop: sample inputs every tick, move on cadence.
+function simLoop() {
+  const now = Date.now();
+  const dt = lastSimAt == null ? SIM_MS : (now - lastSimAt);
+  lastSimAt = now;
   lifecycleSweep();
+  moveAccumMs += dt;
+  const interval = currentMoveIntervalMs();
+  // Advance movement steps for each whole interval elapsed (usually 0 or 1).
+  let moved = false;
+  let guard = 0;
+  while (moveAccumMs >= interval && guard < 5) {
+    moveAccumMs -= interval;
+    movementStep();
+    moved = true;
+    guard++;
+  }
+  if (moved) broadcastState();
+  setTimeout(simLoop, SIM_MS);
+}
+function movementStep() {
   const active = slots.map((s, i) => ({ s, i })).filter(x => x.s && x.s.alive);
-  if (active.length === 0) { tickSeq++; broadcastState(); scheduleTick(); return; }
+  if (active.length === 0) { moveSeq++; return; }
   const newHeads = computeNewHeads(active);
   const died = new Map();
   const stalled = new Set();
@@ -254,9 +276,7 @@ function gameTick() {
   applyMovementAndFood(active, newHeads, died, stalled);
   applyKillBonuses(died);
   for (const [victimIndex] of died) handleDeath(victimIndex);
-  tickSeq++;
-  broadcastState();
-  scheduleTick();
+  moveSeq++;
 }
 function inBounds(h) { return h.x >= 0 && h.x < CFG.grid.cols && h.y >= 0 && h.y < CFG.grid.rows; }
 function consumeInboundsTurn(s) {
@@ -265,7 +285,6 @@ function consumeInboundsTurn(s) {
     const d = s.inputQueue[k];
     if (d.x === -s.dir.x && d.y === -s.dir.y) continue;
     if (inBounds({ x: head.x + d.x, y: head.y + d.y })) {
-      // mark everything up to and including this input as processed
       for (let j = 0; j <= k; j++) if (s.inputQueue[j].seq != null) s.lastAck = s.inputQueue[j].seq;
       s.inputQueue.splice(0, k + 1);
       return d;
@@ -279,7 +298,7 @@ function computeNewHeads(active) {
     if (s.inputQueue.length > 0) {
       const inp = s.inputQueue.shift();
       s.dir = inp;
-      if (inp.seq != null) s.lastAck = inp.seq;   // record processed input seq
+      if (inp.seq != null) s.lastAck = inp.seq;
     }
     const head = s.body[0];
     newHeads.set(i, { x: head.x + s.dir.x, y: head.y + s.dir.y });
@@ -357,8 +376,8 @@ function handleDeath(slotIndex) {
 function sendTo(ws, msg) { if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg)); }
 function broadcastState() {
   const state = {
-    type: "state", build: BUILD, seq: tickSeq, serverTime: Date.now(),
-    tickMs: currentTickMs(), grid: CFG.grid, food,
+    type: "state", build: BUILD, seq: moveSeq, serverTime: Date.now(),
+    tickMs: currentMoveIntervalMs(), simHz: SIM_HZ, grid: CFG.grid, food,
     players: slots.map((s, i) => s ? {
       slot: i, alive: s.alive, score: s.score, color: s.color, dir: s.dir, body: s.body
     } : null),
@@ -441,8 +460,6 @@ wss.on("connection", ws => {
       if (!nd) return;
       const cseq = Number.isFinite(msg.cseq) ? msg.cseq : null;
       if (slot.inputQueue.length >= INPUT_BUFFER) {
-        // Buffer full: still acknowledge receipt so the client can drop it and
-        // not spin on retries; the turn itself is dropped (rare, buffer full).
         if (cseq != null && cseq > slot.lastAck) slot.lastAck = cseq;
         return;
       }
@@ -450,7 +467,6 @@ wss.on("connection", ws => {
       const reversal = nd.x === -last.x && nd.y === -last.y;
       const duplicate = nd.x === last.x && nd.y === last.y;
       if (reversal || duplicate) {
-        // Rejected as a no-op, but acknowledge so the client stops retrying it.
         if (cseq != null && cseq > slot.lastAck) slot.lastAck = cseq;
         return;
       }
@@ -479,6 +495,7 @@ wss.on("connection", ws => {
   ws.on("close", () => { removeConnection(connId); broadcastState(); });
 });
 httpServer.listen(PORT, "127.0.0.1", () => {
-  console.log("Multisnake listening on http://127.0.0.1:" + PORT + " build " + BUILD);
+  console.log("Multisnake listening on http://127.0.0.1:" + PORT + " build " + BUILD +
+              " (simHz=" + SIM_HZ + ")");
 });
-scheduleTick();
+simLoop();
