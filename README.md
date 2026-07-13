@@ -15,6 +15,11 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
 - Speed starts slow and ramps up over time to a configurable floor.
 - Daily and all-time top 5 high scores with arcade-style 3 letter initials.
 - Simple math captcha on join, intended to sit behind a Cloudflare filter.
+- Client-side prediction with server reconciliation: local movement is
+  responsive while the server stays authoritative for collisions, food, and
+  score.
+- An on-page DEBUG button shows per-module build stamps and recent server
+  corrections, so a stale or partial deploy is obvious.
 - All gameplay tuning lives in config.json next to the server.
 
 ## Requirements
@@ -32,12 +37,14 @@ Run this on the server as root. It installs Node.js, deploys the app to
 /opt/multisnake, creates a systemd service, adds a single Apache vhost, and by
 default obtains a Let's Encrypt certificate. Existing sites are not modified.
 
-    curl -fsSL https://raw.githubusercontent.com/Kinsman4249/simple-multi-snake/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Kinsman4249/simple-multi-snake/main/install.sh | sudo bash
 
-The installer asks two things interactively:
+The installer asks a few things interactively:
 
 - Hostname to serve the game on. There is no default on the first run. On a
   later run it offers the previously used hostname; press Enter to reuse it.
+- Server simulation rate in Hz. Defaults to 60 (or the last used value on a
+  repeat run). Higher samples input more finely; it does not change snake speed.
 - Cloudflare API token (input hidden), unless TLS is disabled or a token was
   already provided.
 
@@ -46,8 +53,8 @@ The installer asks two things interactively:
 Under the curl pipe there is no keyboard, so pass values as environment
 variables:
 
-    curl -fsSL https://raw.githubusercontent.com/Kinsman4249/simple-multi-snake/main/install.sh \
-      | sudo DOMAIN=snek.example.com CF_API_TOKEN=your_token bash
+curl -fsSL https://raw.githubusercontent.com/Kinsman4249/simple-multi-snake/main/install.sh \
+  | sudo DOMAIN=snek.example.com CF_API_TOKEN=your_token SIM_HZ=60 bash
 
 ## Port selection
 
@@ -67,7 +74,7 @@ server.js and the Apache vhosts at it. The chosen port is saved to
   the process currently holding the port, and offers to move the app to a free
   port and re-point the vhosts before continuing.
 - Before that, the installer also scans every enabled Apache site for the
-  distinctive `/ws` WebSocket ProxyPass line the vhost template writes, so it
+  distinctive /ws WebSocket ProxyPass line the vhost template writes, so it
   can find other multisnake-managed vhosts left over from a previous hostname
   or a manual edit, not just the immediately previous run. Any it finds are
   reported with the hostname and port each one points at, flagged as dead if
@@ -129,7 +136,7 @@ Then open https://your-hostname in a browser.
 
 ## Uninstall (one command)
 
-    curl -fsSL https://raw.githubusercontent.com/Kinsman4249/simple-multi-snake/main/uninstall.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Kinsman4249/simple-multi-snake/main/uninstall.sh | sudo bash
 
 The uninstaller reads the hostname from the installer state file, so it removes
 the correct vhost, certificate, and Cloudflare credentials file no matter which
@@ -138,7 +145,7 @@ renewal timer and any other certificates are left untouched.
 
 Add --purge to also delete the service user:
 
-    curl -fsSL https://raw.githubusercontent.com/Kinsman4249/simple-multi-snake/main/uninstall.sh | sudo bash -s -- --purge
+curl -fsSL https://raw.githubusercontent.com/Kinsman4249/simple-multi-snake/main/uninstall.sh | sudo bash -s -- --purge
 
 Set REMOVE_CERT=no to keep the certificate and its Cloudflare credentials.
 
@@ -146,62 +153,75 @@ Set REMOVE_CERT=no to keep the certificate and its Cloudflare credentials.
 
 Edit /opt/multisnake/config.json, then restart:
 
-    sudo systemctl restart multisnake
+sudo systemctl restart multisnake
 
 Keys:
 
+- simHz: server simulation rate in Hz (default 60). Higher samples input more
+  finely (lower input latency) but does NOT change snake speed.
 - grid.cols / grid.rows / grid.cellSize: board dimensions and pixel scale.
-- speed.startTickMs: starting delay per step. Higher is a slower start.
-- speed.minTickMs: fastest allowed delay, the speed cap.
-- speed.rampIntervalSec / speed.rampStepMs: how often and by how much the
-  delay shrinks over time.
+- move.startIntervalMs: starting milliseconds per cell. Higher is a slower start.
+- move.minIntervalMs: fastest milliseconds per cell, the speed cap.
+- move.rampIntervalSec / move.rampStepMs: how often and by how much the
+  move interval shrinks over time. Set rampStepMs to 0 for a constant speed.
 - maxPlayers: number of active player slots before new joins go to spectate.
-- respawnDelayMs / spectatorPromoteDelayMs: timing for respawn and takeover.
 - killBonusScore / killBonusGrowth: points and growth awarded for a kill.
+- spectatorPromoteDelayMs: delay before a non-qualifying dead player respawns
+  or yields to the queue.
 - captchaTokenTtlMs: how long a solved-captcha token stays valid before the
   WebSocket must be opened.
+- wallGraceTicks: ticks a snake may stall against a wall waiting for a late but
+  valid turn before the wall wins. 0 disables the grace.
+- initialsTimeoutMs: time to enter initials on a qualifying death before the
+  player becomes a spectator.
+- spectatorIdleMs: global spectator idle disconnect time.
+- joinOfferMs: time a queued spectator has to accept an open slot before the
+  offer passes to the next spectator.
+- inputBuffer: maximum queued turns per snake.
 
 The listening port is not in config.json; it is chosen at install time and
 written into server.js. To change it, re-run the installer with PORT set.
 
-## Operating the service
+## Netcode and debugging
 
-    sudo systemctl status multisnake      # health and recent logs
-    sudo journalctl -u multisnake -f      # follow live logs
-    sudo systemctl restart multisnake     # apply a config change
+The client predicts its own movement and reconciles against the authoritative
+server using input acknowledgments. Each turn the client sends carries a
+sequence id; the server stamps the last sequence it processed into each
+snapshot, and the client drops acknowledged inputs and replays only the
+unacknowledged ones on top of the authoritative body. The server remains
+authoritative for collisions, food, and score, and only overrides the client
+position on a real conflict such as a death or a respawn.
 
-The app binds to 127.0.0.1 on the chosen port only. Apache is the sole public
-entry point. To confirm which port is in use:
-
-    cat /etc/multisnake/last-port
-
-The Let's Encrypt renewal-notice email, if you provided one, is saved the same
-way:
-
-    sudo cat /etc/multisnake/last-email
+A DEBUG button on the page toggles a panel that shows each client module build
+stamp, the server build, the current sequence and tick, the pending input
+buffer, and the most recent server corrections. Recording is off until the
+panel is opened so there is no cost during normal play. After any deploy, open
+the panel and confirm every build stamp matches the version you deployed before
+judging behavior; a stale Cloudflare edge cache serving old JS is the most
+common cause of "it did not change."
 
 ## Manual install
 
 The one-command installer above is the recommended path and handles everything:
-hostname selection, free-port selection, the systemd service, the Apache vhost,
-and TLS. This section is for doing it by hand or understanding what the
-installer does. Replace YOUR_HOST with your hostname throughout.
+hostname selection, sim rate, free-port selection, the systemd service, the
+Apache vhost, and TLS. This section is for doing it by hand or understanding
+what the installer does. Replace YOUR_HOST with your hostname throughout.
 
 ### 1. Node.js 22
 
-    sudo apt update
-    sudo apt install -y curl git ca-certificates
-    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-    sudo apt install -y nodejs
-    node --version
+sudo apt update
+sudo apt install -y curl git ca-certificates
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+node --version
 
 ### 2. Deploy the app
 
-    sudo mkdir -p /opt/multisnake/public
-    sudo cp server.js config.json package.json /opt/multisnake/
-    sudo cp -r public/. /opt/multisnake/public/
-    cd /opt/multisnake
-    sudo npm install --omit=dev
+sudo mkdir -p /opt/multisnake/public
+sudo cp server.js config.json package.json /opt/multisnake/
+sudo cp -r public/. /opt/multisnake/public/
+cd /opt/multisnake
+sudo npm install --omit=dev
 
 Use `cp -r public/.` (everything under `public/`), not `cp public/index.html`
 alone. The client is split across `public/index.html` and `public/js/*.js`
@@ -214,28 +234,28 @@ browser console, even though the Node process itself comes up fine.
 server.js ships with a default of 8080 (const PORT = 8080;). If 8080 is already
 used by another service, check what holds it and pick a free port:
 
-    sudo ss -ltnp | grep ':8080'
-    sudo sed -i 's/const PORT = 8080;/const PORT = 8091;/' /opt/multisnake/server.js
+sudo ss -ltnp | grep ':8080'
+sudo sed -i 's/const PORT = 8080;/const PORT = 8091;/' /opt/multisnake/server.js
 
 Use the same port everywhere below in place of 8080.
 
 ### 4. Service account and permissions
 
-    sudo useradd --system --no-create-home --shell /usr/sbin/nologin multisnake
-    sudo chown -R multisnake:multisnake /opt/multisnake
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin multisnake
+sudo chown -R multisnake:multisnake /opt/multisnake
 
 ### 5. systemd service
 
-    sudo cp deploy/multisnake.service /etc/systemd/system/multisnake.service
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now multisnake
-    sudo systemctl status multisnake
+sudo cp deploy/multisnake.service /etc/systemd/system/multisnake.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now multisnake
+sudo systemctl status multisnake
 
 Confirm the app is listening before continuing. This catches a port clash early,
 before Apache and TLS are set up:
 
-    curl -sI http://127.0.0.1:8080/            # expect HTTP/1.1 200 OK
-    curl -sI http://127.0.0.1:8080/js/main.js  # expect HTTP/1.1 200 OK
+curl -sI http://127.0.0.1:8080/            # expect HTTP/1.1 200 OK
+curl -sI http://127.0.0.1:8080/js/main.js  # expect HTTP/1.1 200 OK
 
 Check both. The first only proves the Node process is up and index.html is in
 place; it will return 200 even if the public/js files from step 2 never made
@@ -246,18 +266,18 @@ second check automatically after every install.
 If the service is failed or the port is in use, check the logs, pick a different
 port, redo step 3, and restart:
 
-    sudo journalctl -u multisnake -n 20 --no-pager
-    sudo systemctl restart multisnake
+sudo journalctl -u multisnake -n 20 --no-pager
+sudo systemctl restart multisnake
 
 ### 6. Apache reverse proxy
 
-    sudo a2enmod proxy proxy_http proxy_wstunnel
-    sudo sed -e 's/fillmeout.example.com/YOUR_HOST/g' \
-             deploy/fillmeout.example.com.conf \
-             > /etc/apache2/sites-available/YOUR_HOST.conf
-    sudo a2ensite YOUR_HOST.conf
-    sudo apache2ctl configtest
-    sudo systemctl reload apache2
+sudo a2enmod proxy proxy_http proxy_wstunnel
+sudo sed -e 's/fillmeout.example.com/YOUR_HOST/g' \
+  deploy/fillmeout.example.com.conf \
+  > /etc/apache2/sites-available/YOUR_HOST.conf
+sudo a2ensite YOUR_HOST.conf
+sudo apache2ctl configtest
+sudo systemctl reload apache2
 
 If you changed the port in step 3, also replace 127.0.0.1:8080 with your port in
 the generated vhost before enabling it.
@@ -267,25 +287,25 @@ the generated vhost before enabling it.
 DNS-01 needs no inbound port 80, so the record can stay proxied through
 Cloudflare. You need a Cloudflare API token scoped Zone:DNS:Edit for the zone.
 
-    sudo apt install -y certbot python3-certbot-apache python3-certbot-dns-cloudflare
+sudo apt install -y certbot python3-certbot-apache python3-certbot-dns-cloudflare
 
-    sudo mkdir -p /etc/letsencrypt
-    sudo sh -c 'umask 077; printf "dns_cloudflare_api_token = %s\n" "YOUR_TOKEN" \
-      > /etc/letsencrypt/cloudflare-YOUR_HOST.ini'
-    sudo chmod 600 /etc/letsencrypt/cloudflare-YOUR_HOST.ini
+sudo mkdir -p /etc/letsencrypt
+sudo sh -c 'umask 077; printf "dns_cloudflare_api_token = %s\n" "YOUR_TOKEN" \
+  > /etc/letsencrypt/cloudflare-YOUR_HOST.ini'
+sudo chmod 600 /etc/letsencrypt/cloudflare-YOUR_HOST.ini
 
-    sudo certbot --authenticator dns-cloudflare --installer apache \
-      --dns-cloudflare-credentials /etc/letsencrypt/cloudflare-YOUR_HOST.ini \
-      --dns-cloudflare-propagation-seconds 30 \
-      -d YOUR_HOST \
-      --non-interactive --agree-tos --keep-until-expiring --redirect \
-      --key-type ecdsa -m you@example.com
+sudo certbot --authenticator dns-cloudflare --installer apache \
+  --dns-cloudflare-credentials /etc/letsencrypt/cloudflare-YOUR_HOST.ini \
+  --dns-cloudflare-propagation-seconds 30 \
+  -d YOUR_HOST \
+  --non-interactive --agree-tos --keep-until-expiring --redirect \
+  --key-type ecdsa -m you@example.com
 
 The Apache plugin writes the :443 vhost (YOUR_HOST-le-ssl.conf) and the 80 to
 443 redirect. If you changed the app port, confirm the SSL vhost proxies to the
 right port, since certbot copies the proxy directives from the :80 vhost:
 
-    grep -i proxypass /etc/apache2/sites-available/YOUR_HOST-le-ssl.conf
+grep -i proxypass /etc/apache2/sites-available/YOUR_HOST-le-ssl.conf
 
 Installing certbot provides a systemd timer that renews all certificates twice
 daily. No cron entry is needed and none should be added.
@@ -297,28 +317,34 @@ make sure port 443 is reachable, then open https://YOUR_HOST in a browser.
 
 ## Repository layout
 
-    .
-    |-- server.js                         authoritative game server
-    |-- config.json                       gameplay tuning
-    |-- package.json                      npm metadata and the ws dependency
-    |-- public/
-    |   `-- index.html                    game client served to browsers
-    |-- deploy/
-    |   |-- multisnake.service            systemd unit
-    |   `-- fillmeout.example.com.conf    Apache vhost template (installer fills in the hostname and port)
-    |-- install.sh                        one-command installer
-    |-- uninstall.sh                      one-command uninstaller
-    |-- CHANGELOG.md
-    |-- CODE_OF_CONDUCT.md
-    |-- CONTRIBUTING.md
-    |-- SECURITY.md
-    `-- .github/
-        |-- ISSUE_TEMPLATE/
-        |   |-- bug_report.md
-        |   `-- feature_request.md
-        |-- PULL_REQUEST_TEMPLATE.md
-        `-- workflows/
-            `-- release.yml
+.
+|-- server.js                         authoritative game server
+|-- config.json                       gameplay tuning
+|-- package.json                      npm metadata and the ws dependency
+|-- public/
+|   |-- index.html                    game client shell
+|   `-- js/
+|       |-- net.js                    WebSocket transport and snapshots
+|       |-- predict.js                client prediction and reconciliation
+|       |-- render.js                 canvas drawing
+|       |-- ui.js                     captcha, status, boards, debug panel
+|       `-- main.js                   bootstrap and input
+|-- deploy/
+|   |-- multisnake.service            systemd unit
+|   `-- fillmeout.example.com.conf    Apache vhost template (installer fills in the hostname and port)
+|-- install.sh                        one-command installer
+|-- uninstall.sh                      one-command uninstaller
+|-- CHANGELOG.md
+|-- CODE_OF_CONDUCT.md
+|-- CONTRIBUTING.md
+|-- SECURITY.md
+`-- .github/
+    |-- ISSUE_TEMPLATE/
+    |   |-- bug_report.md
+    |   `-- feature_request.md
+    |-- PULL_REQUEST_TEMPLATE.md
+    `-- workflows/
+        `-- release.yml
 
 The vhost is a template. The installer copies deploy/fillmeout.example.com.conf
 and replaces the placeholder hostname and the placeholder port (8080) with the
