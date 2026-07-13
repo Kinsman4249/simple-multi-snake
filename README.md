@@ -315,37 +315,6 @@ daily. No cron entry is needed and none should be added.
 Point an A record for YOUR_HOST at this server public IP (it can stay Proxied),
 make sure port 443 is reachable, then open https://YOUR_HOST in a browser.
 
-## Repository layout
-
-.
-|-- server.js                         authoritative game server
-|-- config.json                       gameplay tuning
-|-- package.json                      npm metadata and the ws dependency
-|-- public/
-|   |-- index.html                    game client shell
-|   `-- js/
-|       |-- net.js                    WebSocket transport and snapshots
-|       |-- predict.js                client prediction and reconciliation
-|       |-- render.js                 canvas drawing
-|       |-- ui.js                     captcha, status, boards, debug panel
-|       `-- main.js                   bootstrap and input
-|-- deploy/
-|   |-- multisnake.service            systemd unit
-|   `-- fillmeout.example.com.conf    Apache vhost template (installer fills in the hostname and port)
-|-- install.sh                        one-command installer
-|-- uninstall.sh                      one-command uninstaller
-|-- CHANGELOG.md
-|-- CODE_OF_CONDUCT.md
-|-- CONTRIBUTING.md
-|-- SECURITY.md
-`-- .github/
-    |-- ISSUE_TEMPLATE/
-    |   |-- bug_report.md
-    |   `-- feature_request.md
-    |-- PULL_REQUEST_TEMPLATE.md
-    `-- workflows/
-        `-- release.yml
-
 The vhost is a template. The installer copies deploy/fillmeout.example.com.conf
 and replaces the placeholder hostname and the placeholder port (8080) with the
 values chosen at install, writing the result to
