@@ -2,8 +2,9 @@
 // Multiplayer Snake server.
 //
 // Authority: server authoritative for collisions/powerups; the client leads
-// on movement (see predict.js). The server sends each player's authoritative
-// dir so the client can confirm/retire predicted turns.
+// on movement (see predict.js). Server sends each player's authoritative dir
+// AND the last input sequence it processed (you.ack) so the client can do
+// Gambetta-style reconciliation: re-anchor + replay only unacked inputs.
 //
 // Lifecycle:
 //   1. On qualifying death -> "awaitInitials"; no respawn until initials in.
@@ -13,11 +14,7 @@
 //   4. Open slot -> front spectator OFFERED slot with explicit JOIN button
 //      (JOIN_OFFER_MS); no accept -> offer passes to next. Prevents AFK.
 //
-// Score resets to 0 on every (re)spawn, so a respawned snake cannot
-// re-qualify for the high-score table with a stale score.
-//
-// Input buffer: up to INPUT_BUFFER (3) queued turns per snake so buffered
-// inputs during rapid turns register rather than being dropped.
+// Score resets to 0 on every (re)spawn. Input buffer up to INPUT_BUFFER (3).
 //
 // Run: npm install ws ; node server.js
 // ============================================================
@@ -30,7 +27,7 @@ const CFG = JSON.parse(fs.readFileSync(path.join(__dirname, "config.json"), "utf
 const HS_FILE = path.join(__dirname, "highscores.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const PORT = 8080;
-const BUILD = "server 2026-07-12.8";
+const BUILD = "server 2026-07-12.12";
 const WALL_GRACE_TICKS = Number.isInteger(CFG.wallGraceTicks) ? CFG.wallGraceTicks : 1;
 const INITIALS_TIMEOUT_MS = Number.isInteger(CFG.initialsTimeoutMs) ? CFG.initialsTimeoutMs : 20000;
 const SPECTATOR_IDLE_MS = Number.isInteger(CFG.spectatorIdleMs) ? CFG.spectatorIdleMs : 300000;
@@ -133,16 +130,14 @@ function spawnSnake(slotIndex) {
   s.wallStalls = 0;
   s.awaitInitials = false;
   s.initialsDeadline = null;
-  // Reset score on (re)spawn. Without this a respawned snake keeps its old
-  // score, re-qualifies for the high-score table on its next death, and the
-  // initials prompt fires again and again.
   s.score = 0;
+  s.lastAck = 0;   // last processed input seq for this player
 }
 function newPlayerSlot(connId) {
   return {
     connId, color: null, body: [], dir: { x: 1, y: 0 }, inputQueue: [],
     alive: true, score: 0, wallStalls: 0,
-    awaitInitials: false, initialsDeadline: null
+    awaitInitials: false, initialsDeadline: null, lastAck: 0
   };
 }
 function assignConnection(connId, ws) {
@@ -269,14 +264,23 @@ function consumeInboundsTurn(s) {
   for (let k = 0; k < s.inputQueue.length; k++) {
     const d = s.inputQueue[k];
     if (d.x === -s.dir.x && d.y === -s.dir.y) continue;
-    if (inBounds({ x: head.x + d.x, y: head.y + d.y })) { s.inputQueue.splice(0, k + 1); return d; }
+    if (inBounds({ x: head.x + d.x, y: head.y + d.y })) {
+      // mark everything up to and including this input as processed
+      for (let j = 0; j <= k; j++) if (s.inputQueue[j].seq != null) s.lastAck = s.inputQueue[j].seq;
+      s.inputQueue.splice(0, k + 1);
+      return d;
+    }
   }
   return null;
 }
 function computeNewHeads(active) {
   const newHeads = new Map();
   for (const { s, i } of active) {
-    if (s.inputQueue.length > 0) s.dir = s.inputQueue.shift();
+    if (s.inputQueue.length > 0) {
+      const inp = s.inputQueue.shift();
+      s.dir = inp;
+      if (inp.seq != null) s.lastAck = inp.seq;   // record processed input seq
+    }
     const head = s.body[0];
     newHeads.set(i, { x: head.x + s.dir.x, y: head.y + s.dir.y });
   }
@@ -361,9 +365,13 @@ function broadcastState() {
     highScores: { daily: highScores.daily, allTime: highScores.allTime }
   };
   for (const [connId, conn] of connections) {
-    const you = conn.role === "player"
-      ? { role: "player", slot: conn.slotIndex }
-      : { role: "spectator", queuePos: spectatorQueue.findIndex(e => e.connId === connId) + 1, queueLen: spectatorQueue.length };
+    let you;
+    if (conn.role === "player") {
+      const s = slots[conn.slotIndex];
+      you = { role: "player", slot: conn.slotIndex, ack: s ? s.lastAck : 0 };
+    } else {
+      you = { role: "spectator", queuePos: spectatorQueue.findIndex(e => e.connId === connId) + 1, queueLen: spectatorQueue.length };
+    }
     sendTo(conn.ws, { ...state, you });
   }
 }
@@ -431,11 +439,22 @@ wss.on("connection", ws => {
       const dirMap = { up: { x: 0, y: -1 }, down: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 } };
       const nd = dirMap[msg.dir];
       if (!nd) return;
-      if (slot.inputQueue.length >= INPUT_BUFFER) return;
+      const cseq = Number.isFinite(msg.cseq) ? msg.cseq : null;
+      if (slot.inputQueue.length >= INPUT_BUFFER) {
+        // Buffer full: still acknowledge receipt so the client can drop it and
+        // not spin on retries; the turn itself is dropped (rare, buffer full).
+        if (cseq != null && cseq > slot.lastAck) slot.lastAck = cseq;
+        return;
+      }
       const last = slot.inputQueue.length > 0 ? slot.inputQueue[slot.inputQueue.length - 1] : slot.dir;
       const reversal = nd.x === -last.x && nd.y === -last.y;
       const duplicate = nd.x === last.x && nd.y === last.y;
-      if (!reversal && !duplicate) slot.inputQueue.push(nd);
+      if (reversal || duplicate) {
+        // Rejected as a no-op, but acknowledge so the client stops retrying it.
+        if (cseq != null && cseq > slot.lastAck) slot.lastAck = cseq;
+        return;
+      }
+      slot.inputQueue.push({ x: nd.x, y: nd.y, seq: cseq });
     }
     if (msg.type === "acceptJoin" && conn.role === "spectator") {
       acceptJoin(connId);
