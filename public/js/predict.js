@@ -1,9 +1,11 @@
 // ============================================================
 // Client-side prediction + SERVER RECONCILIATION (Gambetta model, option A).
 //
-// Movement: render the authoritative body plus a one-cell prediction of an
-// entered-but-unacked turn; re-anchor to the server body every snapshot.
-// No drift; a turn shows immediately; corrections are bounded to one cell.
+// Movement: re-anchor to the authoritative body every snapshot, then replay
+// every still-unacknowledged input on top of it, one cell per input, in the
+// order the inputs were queued. If there are no unacknowledged inputs the
+// authoritative body is rendered verbatim with no advance, so the server can
+// never appear to lag behind or be overridden on a plain straight run.
 //
 // Food: the client PREDICTS its own eat for instant feedback, but the server
 // is authoritative and the prediction is provisional:
@@ -23,7 +25,7 @@
 //
 // Debug recording is DISABLED until the UI opens the panel (setDebug(true)).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.13";
+(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.15";
 const DIR_VECTORS = {
   up: { x: 0, y: -1 },
   down: { x: 0, y: 1 },
@@ -107,9 +109,22 @@ class LocalPlayerPredictor {
 
   rebuild() {
     if (!this.authBody) { this.simBody = null; return; }
-    const body = this.authBody.map(s => ({ x: s.x, y: s.y }));
-    const nextDir = this.inputBuffer.length > 0 ? this.inputBuffer[0].vec : this.dir;
-    this.simBody = this.advance(body, nextDir, this.localGrow > 0);
+    let body = this.authBody.map(s => ({ x: s.x, y: s.y }));
+    // No unacknowledged input: render the authoritative body exactly. This is
+    // the fix for the .13 regression where a stale direction was replayed
+    // even with an empty buffer, leaving the head a constant cell ahead.
+    if (this.inputBuffer.length === 0) {
+      this.simBody = body;
+      return;
+    }
+    // Replay every unacknowledged input in order, one cell each. Only the
+    // final step carries predicted growth, since that is the step whose
+    // resulting head position is checked against the food cell below.
+    for (let i = 0; i < this.inputBuffer.length; i++) {
+      const isLast = i === this.inputBuffer.length - 1;
+      body = this.advance(body, this.inputBuffer[i].vec, isLast && this.localGrow > 0);
+    }
+    this.simBody = body;
   }
 
   // Food cell we are provisionally treating as eaten (for render to hide).
