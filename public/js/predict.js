@@ -2,13 +2,16 @@
 // Client-side prediction + SERVER RECONCILIATION (Gambetta model, option A).
 //
 // Movement: re-anchor to the authoritative body every snapshot, then predict
-// AT MOST one cell ahead using the most recently queued unacknowledged turn.
-// Corrections are always bounded to one cell; prediction never compounds
-// across multiple queued turns (queuing two turns before the first is acked
-// must not make the snake visibly jump two cells). If there are no
-// unacknowledged inputs the authoritative body is rendered verbatim with no
-// advance, so the server never appears to lag behind or be overridden on a
-// plain straight run.
+// AT MOST one cell ahead using the OLDEST unacknowledged turn (the one the
+// server is about to process next, since the server applies queued turns in
+// the order they were received). Predicting off the newest queued turn
+// instead of the oldest was wrong: if two turns queue up before the first is
+// acked, the server's next tick still applies the first one, so predicting
+// the second produces a spurious diagonal "resync" even though nothing was
+// actually mispredicted. Corrections are always bounded to one cell. If
+// there are no unacknowledged inputs the authoritative body is rendered
+// verbatim with no advance, so the server never appears to lag behind or be
+// overridden on a plain straight run.
 //
 // Food: the client PREDICTS its own eat for instant feedback, but the server
 // is authoritative and the prediction is provisional:
@@ -28,7 +31,7 @@
 //
 // Debug recording is DISABLED until the UI opens the panel (setDebug(true)).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.16";
+(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.17";
 const DIR_VECTORS = {
   up: { x: 0, y: -1 },
   down: { x: 0, y: 1 },
@@ -122,11 +125,12 @@ class LocalPlayerPredictor {
       this.predicted = false;
       return;
     }
-    // Predict exactly one cell using the MOST RECENT unacked turn. Do not
-    // replay one cell per queued input: if two turns queue up before the
-    // first is acked (double-tap, or a slow round trip), that must still
-    // read as a single one-cell prediction, not a multi-cell jump.
-    const nextDir = this.inputBuffer[this.inputBuffer.length - 1].vec;
+    // Predict exactly one cell using the OLDEST unacked turn: that is the
+    // one the server will process on its next tick, since it applies queued
+    // turns in receipt order. Using the newest turn instead was wrong and
+    // caused spurious diagonal resyncs whenever two turns queued up before
+    // the first was acked.
+    const nextDir = this.inputBuffer[0].vec;
     this.simBody = this.advance(body, nextDir, this.localGrow > 0);
     this.predicted = true;
   }
