@@ -4,14 +4,17 @@
 // Movement: re-anchor to the authoritative body every snapshot, then predict
 // AT MOST one cell ahead using the OLDEST unacknowledged turn (the one the
 // server is about to process next, since the server applies queued turns in
-// the order they were received). Predicting off the newest queued turn
-// instead of the oldest was wrong: if two turns queue up before the first is
-// acked, the server's next tick still applies the first one, so predicting
-// the second produces a spurious diagonal "resync" even though nothing was
-// actually mispredicted. Corrections are always bounded to one cell. If
-// there are no unacknowledged inputs the authoritative body is rendered
-// verbatim with no advance, so the server never appears to lag behind or be
-// overridden on a plain straight run.
+// the order they were received). If that turn would carry the head out of
+// bounds, mirror the server's wall-grace lookahead (server.js
+// consumeInboundsTurn): scan the remaining queued turns in order for the
+// first one that stays in bounds and use that instead. If none of the queued
+// turns stay in bounds, render no movement (mirrors the server's stall) and
+// do not log a debug correction for that tick, since whether the server
+// stalls or lets the snake die depends on wallGraceTicks state the client
+// does not track. Corrections are always bounded to one cell. If there are
+// no unacknowledged inputs the authoritative body is rendered verbatim with
+// no advance, so the server never appears to lag behind or be overridden on
+// a plain straight run.
 //
 // Food: the client PREDICTS its own eat for instant feedback, but the server
 // is authoritative and the prediction is provisional:
@@ -31,7 +34,7 @@
 //
 // Debug recording is DISABLED until the UI opens the panel (setDebug(true)).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.17";
+(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.18";
 const DIR_VECTORS = {
   up: { x: 0, y: -1 },
   down: { x: 0, y: 1 },
@@ -125,14 +128,39 @@ class LocalPlayerPredictor {
       this.predicted = false;
       return;
     }
-    // Predict exactly one cell using the OLDEST unacked turn: that is the
-    // one the server will process on its next tick, since it applies queued
-    // turns in receipt order. Using the newest turn instead was wrong and
-    // caused spurious diagonal resyncs whenever two turns queued up before
-    // the first was acked.
+    const grow = this.localGrow > 0;
+    // Predict using the OLDEST unacked turn: that is the one the server will
+    // process on its next tick, since it applies queued turns in receipt
+    // order.
     const nextDir = this.inputBuffer[0].vec;
-    this.simBody = this.advance(body, nextDir, this.localGrow > 0);
-    this.predicted = true;
+    const head = { x: body[0].x + nextDir.x, y: body[0].y + nextDir.y };
+    if (this.inBounds(head)) {
+      this.simBody = this.advance(body, nextDir, grow);
+      this.predicted = true;
+      return;
+    }
+    // The oldest queued turn would leave the grid. Mirror the server's
+    // wall-grace lookahead (consumeInboundsTurn in server.js): scan the
+    // remaining queued turns, skipping any that reverse the current
+    // authoritative direction, for the first one that stays in bounds.
+    let saved = null;
+    for (let k = 0; k < this.inputBuffer.length; k++) {
+      const d = this.inputBuffer[k].vec;
+      if (d.x === -this.dir.x && d.y === -this.dir.y) continue;
+      const h = { x: body[0].x + d.x, y: body[0].y + d.y };
+      if (this.inBounds(h)) { saved = d; break; }
+    }
+    if (saved) {
+      this.simBody = this.advance(body, saved, grow);
+      this.predicted = true;
+      return;
+    }
+    // No queued turn saves it. The server will either stall it in place
+    // (still under wallGraceTicks) or let it die; the client does not track
+    // wallGraceTicks state, so it renders no movement and skips the
+    // correction check rather than guess which outcome applies.
+    this.simBody = body;
+    this.predicted = false;
   }
 
   // Food cell we are provisionally treating as eaten (for render to hide).
