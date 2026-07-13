@@ -1,11 +1,14 @@
 // ============================================================
 // Client-side prediction + SERVER RECONCILIATION (Gambetta model, option A).
 //
-// Movement: re-anchor to the authoritative body every snapshot, then replay
-// every still-unacknowledged input on top of it, one cell per input, in the
-// order the inputs were queued. If there are no unacknowledged inputs the
-// authoritative body is rendered verbatim with no advance, so the server can
-// never appear to lag behind or be overridden on a plain straight run.
+// Movement: re-anchor to the authoritative body every snapshot, then predict
+// AT MOST one cell ahead using the most recently queued unacknowledged turn.
+// Corrections are always bounded to one cell; prediction never compounds
+// across multiple queued turns (queuing two turns before the first is acked
+// must not make the snake visibly jump two cells). If there are no
+// unacknowledged inputs the authoritative body is rendered verbatim with no
+// advance, so the server never appears to lag behind or be overridden on a
+// plain straight run.
 //
 // Food: the client PREDICTS its own eat for instant feedback, but the server
 // is authoritative and the prediction is provisional:
@@ -25,7 +28,7 @@
 //
 // Debug recording is DISABLED until the UI opens the panel (setDebug(true)).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.15";
+(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.16";
 const DIR_VECTORS = {
   up: { x: 0, y: -1 },
   down: { x: 0, y: 1 },
@@ -44,6 +47,7 @@ class LocalPlayerPredictor {
     this.clientSeq = 0;
     this.authBody = null;
     this.simBody = null;
+    this.predicted = false;
     this.grid = null;
     this.lastServerSeq = null;
     this.deadOnServer = false;
@@ -108,23 +112,23 @@ class LocalPlayerPredictor {
   }
 
   rebuild() {
-    if (!this.authBody) { this.simBody = null; return; }
-    let body = this.authBody.map(s => ({ x: s.x, y: s.y }));
+    if (!this.authBody) { this.simBody = null; this.predicted = false; return; }
+    const body = this.authBody.map(s => ({ x: s.x, y: s.y }));
     // No unacknowledged input: render the authoritative body exactly. This is
     // the fix for the .13 regression where a stale direction was replayed
     // even with an empty buffer, leaving the head a constant cell ahead.
     if (this.inputBuffer.length === 0) {
       this.simBody = body;
+      this.predicted = false;
       return;
     }
-    // Replay every unacknowledged input in order, one cell each. Only the
-    // final step carries predicted growth, since that is the step whose
-    // resulting head position is checked against the food cell below.
-    for (let i = 0; i < this.inputBuffer.length; i++) {
-      const isLast = i === this.inputBuffer.length - 1;
-      body = this.advance(body, this.inputBuffer[i].vec, isLast && this.localGrow > 0);
-    }
-    this.simBody = body;
+    // Predict exactly one cell using the MOST RECENT unacked turn. Do not
+    // replay one cell per queued input: if two turns queue up before the
+    // first is acked (double-tap, or a slow round trip), that must still
+    // read as a single one-cell prediction, not a multi-cell jump.
+    const nextDir = this.inputBuffer[this.inputBuffer.length - 1].vec;
+    this.simBody = this.advance(body, nextDir, this.localGrow > 0);
+    this.predicted = true;
   }
 
   // Food cell we are provisionally treating as eaten (for render to hide).
@@ -167,7 +171,12 @@ class LocalPlayerPredictor {
       this.localGrow = 0;
     }
 
-    if (this.debug && this.simBody && this.simBody.length) {
+    // Only check for a correction if the previous rebuild() actually made a
+    // one-cell prediction. With an empty buffer, simBody was just a mirror
+    // of the previous authoritative body, and the new snapshot naturally
+    // differs from it because the snake kept moving; that is normal
+    // movement, not a misprediction, and must not be logged as one.
+    if (this.debug && this.predicted && this.simBody && this.simBody.length) {
       const ph = this.simBody[0];
       const ah = p.body[0];
       if (ph.x !== ah.x || ph.y !== ah.y) {
