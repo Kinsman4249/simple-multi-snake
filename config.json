@@ -5,9 +5,10 @@
     "rows": 30,
     "cellSize": 20
   },
-  "speed": {
-    "startTickMs": 150,
-    "minTickMs": 80,
+  "simHz": 60,
+  "move": {
+    "startIntervalMs": 160,
+    "minIntervalMs": 70,
     "rampIntervalSec": 30,
     "rampStepMs": 10
   },
@@ -18,5 +19,6 @@
   "wallGraceTicks": 1,
   "initialsTimeoutMs": 20000,
   "spectatorIdleMs": 300000,
-  "joinOfferMs": 10000
+  "joinOfferMs": 10000,
+  "inputBuffer": 3
 }
