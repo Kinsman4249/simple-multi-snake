@@ -23,7 +23,7 @@ const CFG = JSON.parse(fs.readFileSync(path.join(__dirname, "config.json"), "utf
 const HS_FILE = path.join(__dirname, "highscores.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const PORT = 8080;
-const BUILD = "server 2026-07-12.14";
+const BUILD = "server 2026-07-12.15";
 
 const SIM_HZ = Number.isFinite(CFG.simHz) && CFG.simHz > 0 ? CFG.simHz : 60;
 const SIM_MS = 1000 / SIM_HZ;
@@ -436,6 +436,13 @@ httpServer.on("upgrade", (req, socket, head) => {
   if (url.pathname !== "/ws") { socket.destroy(); return; }
   const token = url.searchParams.get("token");
   if (!consumeJoinToken(token)) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
+  // Disable Nagle's algorithm (RFC 896) on the underlying TCP socket. Without
+  // this, the kernel can hold small writes (our frequent, small game-state
+  // broadcasts and dir messages) for tens of ms waiting to coalesce them with
+  // more outbound data before sending, which is pure added round-trip latency
+  // for a connection that is already small-and-frequent by nature. Must be
+  // set on the raw net.Socket here, before it is handed to the WebSocketServer.
+  socket.setNoDelay(true);
   wss.handleUpgrade(req, socket, head, ws => wss.emit("connection", ws));
 });
 setInterval(() => {
