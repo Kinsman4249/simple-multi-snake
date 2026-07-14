@@ -16,6 +16,13 @@
 // no advance, so the server never appears to lag behind or be overridden on
 // a plain straight run.
 //
+// If a queued turn exhausts all its retries without ever being acked (the
+// server most likely never received it, e.g. a dropped WebSocket frame), it
+// is dropped from the buffer rather than left stuck at the front forever.
+// Left in place, a permanently-unconfirmable entry would poison every future
+// one-cell prediction (always anchored on the oldest queued entry) and the
+// food-eat check that reads the same predicted head.
+//
 // Food: the client PREDICTS its own eat for instant feedback, but the server
 // is authoritative and the prediction is provisional:
 //   - When our predicted head lands on the current food cell we mark a
@@ -34,7 +41,7 @@
 //
 // Debug recording is DISABLED until the UI opens the panel (setDebug(true)).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.18";
+(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.19";
 const DIR_VECTORS = {
   up: { x: 0, y: -1 },
   down: { x: 0, y: 1 },
@@ -87,15 +94,30 @@ class LocalPlayerPredictor {
 
   retryUnacked() {
     if (this.deadOnServer || !this.sendFn) return;
-    for (const p of this.inputBuffer) {
+    let dropped = false;
+    // Iterate back-to-front so splicing an exhausted entry doesn't shift the
+    // index of entries not yet visited.
+    for (let i = this.inputBuffer.length - 1; i >= 0; i--) {
+      const p = this.inputBuffer[i];
       const waited = (this.lastServerSeq == null || p.sentTick == null)
         ? 0 : (this.lastServerSeq - p.sentTick);
-      if (waited >= RETRY_AFTER_TICKS && p.retries < MAX_RETRIES) {
+      if (waited < RETRY_AFTER_TICKS) continue;
+      if (p.retries < MAX_RETRIES) {
         p.retries++;
         p.sentTick = this.lastServerSeq;
         this.sendFn(p.dirName, p.seq);
+      } else {
+        // All retries exhausted with no ack: the server almost certainly
+        // never received this turn (a dropped WebSocket frame). Trusting a
+        // turn that will never be confirmed would poison every future
+        // one-cell prediction, since prediction always anchors on the
+        // oldest queued entry. Drop it and fall back to the authoritative
+        // body (or the next queued entry, if any).
+        this.inputBuffer.splice(i, 1);
+        dropped = true;
       }
     }
+    if (dropped) this.rebuild();
   }
 
   inBounds(h) {
