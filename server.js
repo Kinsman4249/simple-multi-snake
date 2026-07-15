@@ -23,11 +23,20 @@ const CFG = JSON.parse(fs.readFileSync(path.join(__dirname, "config.json"), "utf
 const HS_FILE = path.join(__dirname, "highscores.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const PORT = 8080;
-const BUILD = "server 2026-07-12.15";
+const BUILD = "server 2026-07-12.16";
 
 const SIM_HZ = Number.isFinite(CFG.simHz) && CFG.simHz > 0 ? CFG.simHz : 60;
 const SIM_MS = 1000 / SIM_HZ;
 const MOVE = CFG.move || { startIntervalMs: 160, minIntervalMs: 70, rampIntervalSec: 30, rampStepMs: 10 };
+// Purely cosmetic client-side effects (input flash, correction glide). Never
+// gameplay-affecting and never client-configurable by design: on by default
+// so the installer needs no prompt, with a single global on/off per effect
+// here for the operator. Defaults keep the feature on even if an older
+// config.json from before this key existed is still in place.
+const CLIENT_FX = Object.assign(
+  { inputFlash: true, inputFlashMs: 90, correctionGlide: true, correctionGlideMs: 90 },
+  CFG.clientFx || {}
+);
 const WALL_GRACE_TICKS = Number.isInteger(CFG.wallGraceTicks) ? CFG.wallGraceTicks : 1;
 const INITIALS_TIMEOUT_MS = Number.isInteger(CFG.initialsTimeoutMs) ? CFG.initialsTimeoutMs : 20000;
 const SPECTATOR_IDLE_MS = Number.isInteger(CFG.spectatorIdleMs) ? CFG.spectatorIdleMs : 300000;
@@ -397,6 +406,11 @@ function broadcastState() {
 const MIME = { ".html": "text/html", ".js": "application/javascript", ".json": "application/json", ".css": "text/css" };
 const httpServer = http.createServer((req, res) => {
   const url = new URL(req.url, "http://x");
+  if (url.pathname === "/api/config" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    res.end(JSON.stringify({ clientFx: CLIENT_FX }));
+    return;
+  }
   if (url.pathname === "/api/captcha" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     res.end(JSON.stringify(makeCaptcha()));
