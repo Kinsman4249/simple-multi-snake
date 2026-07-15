@@ -23,6 +23,12 @@
 // one-cell prediction (always anchored on the oldest queued entry) and the
 // food-eat check that reads the same predicted head.
 //
+// lastCorrectionEvent exposes the most recent predicted-vs-actual head
+// mismatch (regardless of debug state) so main.js/render.js can drive a
+// short, purely cosmetic correction-glide effect. This module has no opinion
+// on whether that effect is enabled; that is a server-controlled, client-only
+// config flag read elsewhere.
+//
 // Food: the client PREDICTS its own eat for instant feedback, but the server
 // is authoritative and the prediction is provisional:
 //   - When our predicted head lands on the current food cell we mark a
@@ -41,7 +47,7 @@
 //
 // Debug recording is DISABLED until the UI opens the panel (setDebug(true)).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.19";
+(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.20";
 const DIR_VECTORS = {
   up: { x: 0, y: -1 },
   down: { x: 0, y: 1 },
@@ -67,6 +73,12 @@ class LocalPlayerPredictor {
     this.debug = false;
     this.corrections = [];
     this.correctionCount = 0;
+    // Raw correction events (predicted vs actual head), for the client-only
+    // correction-glide visual effect. Always populated regardless of debug
+    // state; main.js/render.js decide independently whether to act on it,
+    // based on the server-controlled clientFx.correctionGlide flag.
+    this.lastCorrectionEvent = null;
+    this.correctionEventSeq = 0;
     this.sendFn = null;
     this.foodKey = null;
     this.pendingEat = null;      // { key, atServerSeq }
@@ -225,25 +237,35 @@ class LocalPlayerPredictor {
       this.localGrow = 0;
     }
 
-    // Only check for a correction if the previous rebuild() actually made a
-    // one-cell prediction. With an empty buffer, simBody was just a mirror
-    // of the previous authoritative body, and the new snapshot naturally
-    // differs from it because the snake kept moving; that is normal
-    // movement, not a misprediction, and must not be logged as one.
-    if (this.debug && this.predicted && this.simBody && this.simBody.length) {
+    // Detect a correction whenever the previous rebuild() actually made a
+    // one-cell prediction that didn't match. With an empty buffer, simBody
+    // was just a mirror of the previous authoritative body, and the new
+    // snapshot naturally differs from it because the snake kept moving; that
+    // is normal movement, not a misprediction, and must not count as one.
+    // This runs unconditionally (not gated on this.debug) because the
+    // correction-glide client effect needs it even with the panel closed;
+    // only the debug-panel log entry itself is gated below.
+    if (this.predicted && this.simBody && this.simBody.length) {
       const ph = this.simBody[0];
       const ah = p.body[0];
       if (ph.x !== ah.x || ph.y !== ah.y) {
-        const dist = Math.abs(ph.x - ah.x) + Math.abs(ph.y - ah.y);
-        this.correctionCount++;
-        this.corrections.push({
-          seq: (seq == null ? null : seq),
-          type: this.deadOnServer ? "death/collision"
-               : (dist > 1 ? "resync (>1 cell)" : "reconciled (1 cell)"),
-          predicted: { x: ph.x, y: ph.y },
-          actual: { x: ah.x, y: ah.y }
-        });
-        if (this.corrections.length > 50) this.corrections.shift();
+        this.lastCorrectionEvent = {
+          id: ++this.correctionEventSeq,
+          fromHead: { x: ph.x, y: ph.y },
+          toHead: { x: ah.x, y: ah.y }
+        };
+        if (this.debug) {
+          const dist = Math.abs(ph.x - ah.x) + Math.abs(ph.y - ah.y);
+          this.correctionCount++;
+          this.corrections.push({
+            seq: (seq == null ? null : seq),
+            type: this.deadOnServer ? "death/collision"
+                 : (dist > 1 ? "resync (>1 cell)" : "reconciled (1 cell)"),
+            predicted: { x: ph.x, y: ph.y },
+            actual: { x: ah.x, y: ah.y }
+          });
+          if (this.corrections.length > 50) this.corrections.shift();
+        }
       }
     }
 
