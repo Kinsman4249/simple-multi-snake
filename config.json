@@ -20,5 +20,11 @@
   "initialsTimeoutMs": 20000,
   "spectatorIdleMs": 300000,
   "joinOfferMs": 10000,
-  "inputBuffer": 3
+  "inputBuffer": 3,
+  "clientFx": {
+    "inputFlash": true,
+    "inputFlashMs": 90,
+    "correctionGlide": true,
+    "correctionGlideMs": 90
+  }
 }
