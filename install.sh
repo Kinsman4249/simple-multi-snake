@@ -497,6 +497,26 @@ find "${APP_DIR}/public" -type f -print0 2>/dev/null | while IFS= read -r -d '' 
   [ -f "${SRC}/public/${rel}" ] || { rm -f "$f"; echo "  Removed stale ${rel} (no longer shipped)."; }
 done
 
+# Server-side powerups/ modules (base.js, index.js, one file per powerup).
+# server.js does require("./powerups") at startup, so a missing tree crashes
+# the service on boot with MODULE_NOT_FOUND -- the exact same "named files
+# fell out of sync with a new directory" failure the public/ walk above was
+# written to prevent, so this walks the tree the same way. A future new
+# powerup file deploys automatically.
+mkdir -p "${APP_DIR}/powerups"
+find "${SRC}/powerups" -type f -print0 | while IFS= read -r -d '' f; do
+  rel="${f#"${SRC}"/powerups/}"
+  dest="${APP_DIR}/powerups/${rel}"
+  mkdir -p "$(dirname "$dest")"
+  install -m 0644 "$f" "$dest"
+done
+# Drop any powerup module no longer shipped, so a removed/renamed one does not
+# linger (and, e.g., keep getting picked up by the type registry).
+find "${APP_DIR}/powerups" -type f -print0 2>/dev/null | while IFS= read -r -d '' f; do
+  rel="${f#"${APP_DIR}"/powerups/}"
+  [ -f "${SRC}/powerups/${rel}" ] || { rm -f "$f"; echo "  Removed stale powerups/${rel} (no longer shipped)."; }
+done
+
 # server.js ships with a default of 8080; set it to the chosen port.
 sed -i "s/const PORT = [0-9]\+;/const PORT = ${CHOSEN_PORT};/" "${APP_DIR}/server.js"
 

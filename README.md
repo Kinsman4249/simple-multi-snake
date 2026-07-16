@@ -300,6 +300,7 @@ node --version
 sudo mkdir -p /opt/multisnake/public
 sudo cp server.js config.json package.json /opt/multisnake/
 sudo cp -r public/. /opt/multisnake/public/
+sudo cp -r powerups/. /opt/multisnake/powerups/
 cd /opt/multisnake
 sudo npm install --omit=dev
 
@@ -308,6 +309,11 @@ alone. The client is split across `public/index.html` and `public/js/*.js`
 (`net.js`, `predict.js`, `render.js`, `ui.js`, `main.js`); copying only
 `index.html` leaves the game unable to load and every module 404ing in the
 browser console, even though the Node process itself comes up fine.
+
+Likewise copy the whole `powerups/` directory (`base.js`, `index.js`, and one
+file per powerup): `server.js` does `require("./powerups")` at startup, so a
+missing tree crashes the service on boot with `Cannot find module
+'./powerups'` before it ever listens.
 
 ### 3. Choose the listening port
 

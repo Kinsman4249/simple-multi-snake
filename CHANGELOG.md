@@ -3,7 +3,10 @@
 This file tracks real changes to this repository. For the rules on how entries
 here should be written, see CHANGELOG_TEMPLATE.md.
 
-#### Powerups, and a shell with the leader's name on it (round twelve, Phase 4) -- v1.1.0
+#### Deploy fix: ship the powerups/ modules (round twelve hotfix) -- v2.0.1
+- Fixed the installer and the manual-install docs to deploy the new server-side `powerups/` directory. v2.0.0 added `require("./powerups")` to `server.js` but neither `install.sh` nor the README's manual steps copied that tree to the app directory, so a fresh install crashed on boot with `Cannot find module './powerups'` before the service ever listened (the exact "a new server-side directory fell out of the file list" failure the `public/` tree-walk was already written to prevent). `install.sh` now walks and syncs `powerups/` the same way it does `public/` (including stale-file cleanup), and the manual-install section copies it with a note explaining why it is required. No gameplay change.
+
+#### Powerups, and a shell with the leader's name on it (round twelve, Phase 4) -- v2.0.0
 - Added a powerups system: pickups spawn on the board on their own cadence (config powerups.spawnIntervalMs, capped at powerups.maxConcurrentPickups, default 1 at a time), each a distinct type with its own config block, all gated by an individual enabled flag. Every type's short player-facing description lives in its own module (powerups/*.js) and is served through /api/config, so the in-game help can never drift out of sync with what actually exists. The six types:
   - Wormhole: held in reserve as an independent charge -- no button. The instant a move would kill you (wall or another snake), it auto-fires, phasing you to the nearest safe spot or clear across the board, whichever is safer. One-time use; firing (even a failed landing) consumes it.
   - Growth Spurt: for a duration, food grows you twice as much and kills grant bonus length.
