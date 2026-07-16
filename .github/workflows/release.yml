@@ -90,10 +90,17 @@ jobs:
 
       # Attach both archives to the Release. fail_on_unmatched_files guards
       # against silently publishing an empty release if the glob matches nothing.
+      #
+      # `body` + `generate_release_notes: true` together: per the GitHub
+      # Releases API, a provided body is PREPENDED to the auto-generated
+      # notes (not replaced by them), so this banner shows above the usual
+      # commit/PR summary on every release.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          body: |
+            🐍 Garter snakes: genuinely one of the cutest snakes out there. Small, harmless to humans, found almost everywhere in North America, and calm enough that many people handle them without a second thought. Unrelated to this release, but they deserved the shoutout.
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
