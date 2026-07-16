@@ -454,7 +454,13 @@ const UI = (() => {
     const locals = info.locals || [];
     locals.forEach(loc => {
       lines.push("");
-      lines.push("== " + loc.label.toUpperCase() + " (slot " + (loc.slot == null ? "-" : loc.slot) + (loc.boost ? ", BOOST" : "") + ") ==");
+      const status = [loc.label.toUpperCase(), "slot " + (loc.slot == null ? "-" : loc.slot)];
+      if (loc.boost) status.push("BOOST");
+      if (loc.isDrifting) status.push("DRIFTING");
+      if (loc.isPressingActivation) status.push("PRESSING-ACTIVATE");
+      lines.push("== " + status.join(" | ") + " ==");
+      if (loc.heldPowerup) lines.push("  held:   " + loc.heldPowerup);
+      if (loc.activePowerup) lines.push("  active: " + loc.activePowerup);
       lines.push("-- PENDING INPUTS --");
       const pend = loc.pending || [];
       if (pend.length === 0) lines.push("  none");

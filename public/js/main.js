@@ -376,13 +376,21 @@ document.addEventListener("keydown", e => {
   // own branch, NOT folded into the movement loop's break-after-first-match
   // below, since "activate" is not a direction and the two must not compete
   // for the same physical key.
+  let didActivate = false;
   for (let localIdx = 0; localIdx < KEY_MAPS.length; localIdx++) {
     if (KEY_MAPS[localIdx].activate === e.code) {
       const entry = myLocals[localIdx];
       if (entry && entry.role === "player") Net.send({ type: "activatePowerup", local: localIdx });
       e.preventDefault();
-      return;
+      didActivate = true;
+      break; // activation key belongs to at most one local player
     }
+  }
+  if (didActivate) {
+    // Always refresh boost even after activation, since a keystroke doesn't
+    // erase the held direction keys. This ensures boost state is current.
+    refreshBoost();
+    return;
   }
   const key = e.key.toLowerCase();
   // Rejoin rule: pressing a seat's own movement keys when that seat does not
@@ -425,11 +433,21 @@ window.__DEBUG_SOURCE__ = function () {
   const locals = [];
   myPlayers.forEach((p, localIdx) => {
     const entry = myLocals ? myLocals[localIdx] : null;
+    let playerState = null;
+    if (entry && entry.role === "player" && curr && curr.players) {
+      playerState = curr.players[entry.slot];
+    }
+    const activationKey = KEY_MAPS[localIdx].activate;
+    const isPressingActivation = heldKeys.has(activationKey.toLowerCase()) || heldKeys.has(activationKey);
     locals.push({
       label: localIdx === 0 ? "p1" : "p2",
       role: entry ? entry.role : null,
       slot: (entry && entry.role === "player") ? entry.slot : null,
       boost: boostOn[localIdx],
+      heldPowerup: playerState ? playerState.heldPowerup : null,
+      activePowerup: playerState ? playerState.activePowerup : null,
+      isDrifting: playerState ? !!playerState.activePowerup && (playerState.activePowerup.type === "iceTrail" || playerState.activePowerup.type === "poisonTrail") : false,
+      isPressingActivation: isPressingActivation,
       pending: p.inputBuffer.map(x => ({ seq: x.seq, dir: x.dirName, retries: x.retries })),
       corrections: p.corrections.slice(-12),
       correctionCount: p.correctionCount
