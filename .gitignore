@@ -1,0 +1,5 @@
+node_modules/
+deno.lock
+highscores.json
+.test-config-*.json
+handoff.md

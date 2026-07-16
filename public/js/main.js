@@ -23,14 +23,17 @@
 //     debug button/panel/recording are never created at all -- the only
 //     residue is one boolean test at startup.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-15.1";
-let CLIENT_FX = { inputFlash: true, inputFlashMs: 90, correctionGlide: true, correctionGlideMs: 90 };
+(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-15.3";
+let CLIENT_FX = { inputFlash: true, inputFlashMs: 90, correctionGlide: true, correctionGlideMs: 90, boostTrail: true, slideDust: true };
 let CLIENT_RENDER = { interpolate: true };
-let BOOST_CFG = { enabled: true, boostSpeed: 1.5, slideDistance: 2 };
+let BOOST_CFG = { enabled: true, boostSpeed: 2.0, slideDistance: 3 };
+let POWERUPS_CFG = {};
 fetch("/api/config").then(r => r.json()).then(cfg => {
   if (cfg && cfg.clientFx) CLIENT_FX = Object.assign({}, CLIENT_FX, cfg.clientFx);
   if (cfg && cfg.clientRender) CLIENT_RENDER = Object.assign({}, CLIENT_RENDER, cfg.clientRender);
   if (cfg && cfg.boost) BOOST_CFG = Object.assign({}, BOOST_CFG, cfg.boost);
+  if (cfg && cfg.powerups) POWERUPS_CFG = cfg.powerups;
+  UI.setPowerupInfo((cfg && cfg.powerupInfo) || {});
   // The join-screen boost tip (index.html #boostTip) is irrelevant if the
   // operator disabled the mechanic entirely -- don't show players a tip for
   // something that will never boost them.
@@ -48,10 +51,42 @@ fetch("/api/config").then(r => r.json()).then(cfg => {
   UI.initDebug(window.__DEBUG_SOURCE__, on => myPlayers.forEach(p => p.setDebug(on)));
 });
 
-const KEY_MAPS = [
-  { arrowup: "up", arrowdown: "down", arrowleft: "left", arrowright: "right" }, // local 0 (p1): arrows
-  { w: "up", s: "down", a: "left", d: "right" }                                 // local 1 (p2): WASD
+// Keybind remap (Phase 4): 100% client-side, localStorage-persisted, never
+// sent to the server (the server only ever needs to know WHICH local index
+// activated, not the physical key). "activate" is a distinct action, not a
+// movement direction, stored per-seat alongside up/down/left/right -- it is
+// looked up against e.code (e.g. "Space", "ShiftRight") rather than e.key so
+// left/right Shift can be told apart, which e.key cannot do.
+const KEYMAP_STORAGE_PREFIX = "snake.keymap.local";
+const DEFAULT_KEY_MAPS = [
+  { arrowup: "up", arrowdown: "down", arrowleft: "left", arrowright: "right", activate: "Space" }, // local 0 (p1): arrows
+  { w: "up", s: "down", a: "left", d: "right", activate: "ShiftRight" }                             // local 1 (p2): WASD
 ];
+function loadKeyMaps() {
+  const maps = [];
+  for (let i = 0; i < DEFAULT_KEY_MAPS.length; i++) {
+    let map = null;
+    try {
+      const raw = localStorage.getItem(KEYMAP_STORAGE_PREFIX + i);
+      if (raw) map = JSON.parse(raw);
+    } catch (_) { /* localStorage unavailable or corrupt entry: fall back to default */ }
+    maps.push(map || Object.assign({}, DEFAULT_KEY_MAPS[i]));
+  }
+  return maps;
+}
+function saveKeyMap(localIdx, map) {
+  KEY_MAPS[localIdx] = map;
+  try { localStorage.setItem(KEYMAP_STORAGE_PREFIX + localIdx, JSON.stringify(map)); } catch (_) {}
+}
+// Swaps which local index uses WASD vs. arrows -- movement keys only, each
+// seat keeps its OWN activation key rebind across the swap.
+function swapKeyMaps() {
+  const a = KEY_MAPS[0], b = KEY_MAPS[1];
+  const moveOnly = m => { const o = {}; for (const k in m) if (k !== "activate") o[k] = m[k]; return o; };
+  saveKeyMap(0, Object.assign({ activate: a.activate }, moveOnly(b)));
+  saveKeyMap(1, Object.assign({ activate: b.activate }, moveOnly(a)));
+}
+const KEY_MAPS = loadKeyMaps();
 const DIR_TO_VEC = { up: { x: 0, y: -1 }, down: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 } };
 
 const myPlayers = new Map();
@@ -69,6 +104,13 @@ let lastSeenCorrectionEventId = [0, 0];
 // seat's boost is currently reported ON to the server.
 const heldKeys = new Set();
 const boostOn = [false, false];
+// Blue Shell explosions: state.explosions is a one-shot list (populated only
+// on the broadcast where an impact happened, per server.js). Each one is
+// stamped with a local start time here and aged out client-side over
+// EXPLOSION_DURATION_MS -- this module is the only place that owns that
+// timing; render.js just draws whatever age it's given.
+const EXPLOSION_DURATION_MS = 500;
+let activeExplosions = [];
 
 function wireLocalPlayer(localIdx) {
   const p = myPlayers.get(localIdx);
@@ -166,6 +208,7 @@ function startGame(token) {
   });
   UI.initCoOp(() => requestSeat(1));
   UI.initLeaveButtons(leaveSeat);
+  UI.initKeymapPanel(() => KEY_MAPS, saveKeyMap, swapKeyMaps);
 }
 function handleState(curr) {
   myLocals = curr.you.locals;
@@ -202,6 +245,10 @@ function handleState(curr) {
       activeGlide[idx] = { from: ev.fromHead, to: ev.toHead, slot: entry.slot, startTime: performance.now() };
     }
   }
+  if (curr.explosions && curr.explosions.length) {
+    const now = performance.now();
+    curr.explosions.forEach(e => activeExplosions.push(Object.assign({ startTime: now }, e)));
+  }
   refreshBoost(); // direction may have changed under a held key
   UI.updateStatus(curr);
   UI.updateLeaveButtons(myLocals);
@@ -236,12 +283,32 @@ function frame() {
         }
       });
     }
-    Render.draw(prev, curr, localBodies, eatenKeys, { flashes, glides }, { interpolate: CLIENT_RENDER.interpolate });
+    const now2 = performance.now();
+    activeExplosions = activeExplosions.filter(e => now2 - e.startTime < EXPLOSION_DURATION_MS);
+    const explosions = activeExplosions.map(e => Object.assign({}, e, { age: (now2 - e.startTime) / EXPLOSION_DURATION_MS }));
+    Render.draw(prev, curr, localBodies, eatenKeys, { flashes, glides, explosions }, {
+      interpolate: CLIENT_RENDER.interpolate,
+      boostTrail: CLIENT_FX.boostTrail,
+      slideDust: CLIENT_FX.slideDust
+    });
   }
   requestAnimationFrame(frame);
 }
 document.addEventListener("keydown", e => {
   if (!myLocals) return;
+  // Powerup activation: a distinct action from movement, looked up against
+  // e.code (not e.key) so left/right Shift can be told apart. This is its
+  // own branch, NOT folded into the movement loop's break-after-first-match
+  // below, since "activate" is not a direction and the two must not compete
+  // for the same physical key.
+  for (let localIdx = 0; localIdx < KEY_MAPS.length; localIdx++) {
+    if (KEY_MAPS[localIdx].activate === e.code) {
+      const entry = myLocals[localIdx];
+      if (entry && entry.role === "player") Net.send({ type: "activatePowerup", local: localIdx });
+      e.preventDefault();
+      return;
+    }
+  }
   const key = e.key.toLowerCase();
   // Rejoin rule: pressing a seat's own movement keys when that seat does not
   // currently exist (never joined, or left via the Leave button) re-requests
@@ -297,6 +364,8 @@ window.__DEBUG_SOURCE__ = function () {
     serverBuild: curr ? curr.build : null,
     seq: curr ? curr.seq : null,
     tickMs: curr ? curr.tickMs : null,
+    boostSpeed: BOOST_CFG.boostSpeed,
+    slideDistance: BOOST_CFG.slideDistance,
     locals
   };
 };

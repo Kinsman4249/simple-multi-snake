@@ -25,7 +25,11 @@ const path = require("path");
 const crypto = require("crypto");
 const { execSync } = require("child_process");
 const { WebSocketServer } = require("ws");
-const CFG = JSON.parse(fs.readFileSync(path.join(__dirname, "config.json"), "utf8"));
+const POWERUP_MODULES = require("./powerups");
+// SNAKE_CONFIG lets tests point at an alternate config file (e.g. faster
+// powerup spawn cadence) without touching the real config.json; unset in
+// normal operation, so production behavior is unchanged.
+const CFG = JSON.parse(fs.readFileSync(path.join(__dirname, process.env.SNAKE_CONFIG || "config.json"), "utf8"));
 const PKG = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
 const HS_FILE = path.join(__dirname, "highscores.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -95,6 +99,40 @@ const INPUT_BUFFER = Number.isInteger(CFG.inputBuffer) ? CFG.inputBuffer : 3;
 // effect after slideDistance further cells of straight travel (the snake
 // "drifts" through the turn). Both knobs live in config.json.
 const BOOST = Object.assign({ enabled: true, boostSpeed: 1.5, slideDistance: 2 }, CFG.boost || {});
+// Global floor on snake length. Drives both the initial spawn length
+// (spawnSnake) and the poison-trail damage floor -- one source of truth so
+// the two can never drift out of sync.
+const MIN_SNAKE_LENGTH = Number.isInteger(CFG.minSnakeLength) && CFG.minSnakeLength > 0 ? CFG.minSnakeLength : 3;
+// Powerups. Each type is its own sub-config, shallow-merged over defaults
+// exactly like BOOST/CLIENT_FX above so an older config.json missing the
+// whole section (or missing one type) still works.
+const POWERUPS = Object.assign({ spawnIntervalMs: 8000, maxConcurrentPickups: 1 }, CFG.powerups || {});
+POWERUPS.wormhole    = Object.assign({ enabled: true, lookaheadDepth: 3 }, POWERUPS.wormhole || {});
+POWERUPS.growthSpurt = Object.assign({ enabled: true, durationMs: 8000, foodMultiplier: 2, killBonusGrowth: 2 }, POWERUPS.growthSpurt || {});
+POWERUPS.iceTrail    = Object.assign({ enabled: true, durationMs: 8000, tileDurationMs: 10000, slowDurationMs: 4000, slowMultiplierPerStack: 0.15, minSpeedMultiplier: 0.4 }, POWERUPS.iceTrail || {});
+POWERUPS.poisonTrail = Object.assign({ enabled: true, durationMs: 8000, tileDurationMs: 10000 }, POWERUPS.poisonTrail || {});
+POWERUPS.speedBoost  = Object.assign({ enabled: true, durationMs: 6000, speedMult: 1.6 }, POWERUPS.speedBoost || {});
+// Blue Shell: not a self-buff -- activating it launches a seeking
+// projectile (see updateBlueShells). segmentLossPercent hits whoever is
+// CURRENTLY longest (re-targeted every tick, including the activator);
+// splashLossPercent hits every other living snake within explosionRadius
+// cells of the impact point. moveIntervalMs governs how often the
+// projectile itself steps (independent of any snake's speed).
+// NOTE: disabled by default (TODO -- see README). The mechanic works, but a
+// robust end-to-end splash-damage test still needs building; until then the
+// operator can opt in via config.json.
+POWERUPS.blueShell = Object.assign(
+  { enabled: false, segmentLossPercent: 0.33, explosionRadius: 3, splashLossPercent: 1 / 6, moveIntervalMs: 90 },
+  POWERUPS.blueShell || {}
+);
+const POWERUP_TYPES = ["wormhole", "growthSpurt", "iceTrail", "poisonTrail", "speedBoost", "blueShell"];
+// Short, ESL-friendly title/description per powerup, sourced from each
+// module (not duplicated here) so the client's info popup and the modules
+// themselves can never drift out of sync with each other.
+const POWERUP_INFO = {};
+for (const t of POWERUP_TYPES) {
+  POWERUP_INFO[t] = { title: POWERUP_MODULES[t].title || t, description: POWERUP_MODULES[t].description || "" };
+}
 // Zero-resource debug switch. When enableDebug is false, dlog is null and
 // every debug call site is a single falsy short-circuit (`dlog && dlog(...)`)
 // -- no string building, no buffering, no I/O. The client is told via
@@ -167,6 +205,16 @@ let connections = new Map();
 let food = null;
 let sessionStart = null;
 let joinOffer = null;
+// Powerups: pickups on the board (like food, but multi-entity) and laid
+// trails (ice/poison). Both are separate from any snake's body -- neither
+// permanently modifies board cells. One trail entry per (x,y): a later lay
+// on an occupied cell replaces it rather than stacking (confirmed design).
+let powerupPickups = [];      // [{ id, type, x, y }]
+let trails = [];              // [{ id, type, x, y, ownerSlot, expiresAtTick }]
+let blueShells = [];          // [{ id, x, y, ownerSlot, moveAccumMs }]
+let explosions = [];          // one-shot, broadcast once then cleared: [{ x, y, radius }]
+let nextPowerupId = 1;
+let lastPowerupSpawnAt = null;
 
 function cellFree(x, y, ignoreSlotIndex = -1) {
   for (let i = 0; i < slots.length; i++) {
@@ -181,18 +229,21 @@ function placeFood() {
   do {
     x = Math.floor(Math.random() * CFG.grid.cols);
     y = Math.floor(Math.random() * CFG.grid.rows);
-  } while (!cellFree(x, y));
+  } while (!cellFree(x, y) || powerupPickups.some(p => p.x === x && p.y === y));
   food = { x, y };
 }
 function spawnSnake(slotIndex) {
   let x, y, attempts = 0;
+  const len = MIN_SNAKE_LENGTH;
   do {
     x = 3 + Math.floor(Math.random() * (CFG.grid.cols - 6));
     y = 3 + Math.floor(Math.random() * (CFG.grid.rows - 6));
     attempts++;
   } while ((!cellFree(x, y, slotIndex) || !cellFree(x - 1, y, slotIndex) || !cellFree(x - 2, y, slotIndex)) && attempts < 100);
   const s = slots[slotIndex];
-  s.body = [{ x, y }, { x: x - 1, y }, { x: x - 2, y }];
+  const body = [];
+  for (let n = 0; n < len; n++) body.push({ x: x - n, y });
+  s.body = body;
   s.dir = { x: 1, y: 0 };
   s.inputQueue = [];
   s.alive = true;
@@ -205,13 +256,46 @@ function spawnSnake(slotIndex) {
   // on automatic respawns, and an AFK player who keeps dying and respawning
   // must not keep resetting their own inactivity clock -- only real input
   // (dir/boost) and seat creation (newPlayerSlot) count as activity.
+  // Powerup state, by contrast, DOES reset on every (re)spawn -- deliberately
+  // diverging from the lastInputAt precedent above. Powerup state is tied to
+  // a specific run; letting a wormhole charge or an active timed effect
+  // survive a death would let a player "bank" it across a run that should be
+  // a clean slate. Do not "fix" this to match lastInputAt's behavior.
+  s.heldPowerup = null;
+  s.wormholeCharge = false;
+  s.activePowerup = null;
+  s.iceStacks = 0;
+  s.iceExpiresAtTick = 0;
+  s.teleportedThisTick = false;
 }
 function newPlayerSlot(connId) {
   return {
     connId, color: null, body: [], dir: { x: 1, y: 0 }, inputQueue: [],
     alive: true, score: 0, wallStalls: 0, lastAck: 0,
-    boost: false, moveAccumMs: 0, lastInputAt: Date.now()
+    boost: false, moveAccumMs: 0, lastInputAt: Date.now(),
+    heldPowerup: null, wormholeCharge: false, activePowerup: null,
+    iceStacks: 0, iceExpiresAtTick: 0, teleportedThisTick: false
   };
+}
+function growSegment(s) {
+  const tail = s.body[s.body.length - 1];
+  s.body.push({ ...tail });
+}
+// Shared floor-respecting shrink, used by both poison trail (via
+// powerups/poisonTrail.js's own pop) and blue shell's percentage damage.
+function removeSegments(s, count) {
+  const n = Math.min(count, s.body.length - MIN_SNAKE_LENGTH);
+  for (let i = 0; i < n; i++) s.body.pop();
+}
+// The living snake with the most segments (ties broken by lowest slot
+// index, for determinism). Returns null if nobody is alive.
+function currentLeaderIndex() {
+  let bestIdx = null, bestLen = -1;
+  for (let i = 0; i < slots.length; i++) {
+    const s = slots[i];
+    if (s && s.alive && s.body.length > bestLen) { bestLen = s.body.length; bestIdx = i; }
+  }
+  return bestIdx;
 }
 // Connection record. pendingInitials is the connection-scoped high-score
 // queue ([{ local, targets, score }]); activeInitials is the one prompt
@@ -411,6 +495,30 @@ function lifecycleSweep() {
     broadcastState();
   }
 }
+// Powerup pickup spawn cadence: independent of food's reactive placement.
+// Interval-gated, capped at maxConcurrentPickups, one random enabled type
+// per spawn, rejection-sampled onto a cell with no snake/food/other pickup.
+function maybeSpawnPowerupPickup(now) {
+  if (lastPowerupSpawnAt === null) lastPowerupSpawnAt = now;
+  if (now - lastPowerupSpawnAt < POWERUPS.spawnIntervalMs) return;
+  if (powerupPickups.length >= POWERUPS.maxConcurrentPickups) return;
+  const enabledTypes = POWERUP_TYPES.filter(t => POWERUPS[t].enabled);
+  if (enabledTypes.length === 0) { lastPowerupSpawnAt = now; return; }
+  const type = enabledTypes[Math.floor(Math.random() * enabledTypes.length)];
+  let x, y, attempts = 0;
+  do {
+    x = Math.floor(Math.random() * CFG.grid.cols);
+    y = Math.floor(Math.random() * CFG.grid.rows);
+    attempts++;
+  } while (
+    attempts < 200 &&
+    (!cellFree(x, y) || (food && food.x === x && food.y === y) || powerupPickups.some(p => p.x === x && p.y === y))
+  );
+  if (attempts >= 200) { lastPowerupSpawnAt = now; return; } // board too crowded, try again next interval
+  powerupPickups.push({ id: nextPowerupId++, type, x, y });
+  lastPowerupSpawnAt = now;
+  dlog && dlog("powerup spawned", { type, x, y });
+}
 function movePlayerToSpectator(slotIndex) {
   const s = slots[slotIndex];
   if (!s) return;
@@ -452,11 +560,16 @@ function simLoop() {
   const dt = lastSimAt == null ? SIM_MS : Math.min(now - lastSimAt, 250);
   lastSimAt = now;
   lifecycleSweep();
+  maybeSpawnPowerupPickup(now);
   const interval = currentMoveIntervalMs();
   // Per-snake movement accumulators. A boosting snake's accumulator fills
   // BOOST.boostSpeed times faster, so it crosses the shared ramped interval
   // sooner and takes extra movement steps -- speed is per snake while
   // collision resolution stays step-synchronous (movers vs. everyone).
+  // Speed Boost (powerup) and Ice Trail slow both multiply into this SAME
+  // increment rather than forking the loop, so hold-to-boost and the
+  // speed-boost powerup stack multiplicatively (confirmed design) and ice
+  // slow composes the same way.
   let moved = false;
   let guard = 0;
   do {
@@ -464,7 +577,13 @@ function simLoop() {
     for (let i = 0; i < slots.length; i++) {
       const s = slots[i];
       if (!s || !s.alive) continue;
-      if (guard === 0) s.moveAccumMs += dt * (BOOST.enabled && s.boost ? BOOST.boostSpeed : 1);
+      if (guard === 0) {
+        let mult = 1;
+        if (BOOST.enabled && s.boost) mult *= BOOST.boostSpeed;
+        mult *= POWERUP_MODULES.speedBoost.speedMultiplier(s, POWERUPS);
+        mult *= POWERUP_MODULES.iceTrail.speedMultiplier(s, POWERUPS);
+        s.moveAccumMs += dt * mult;
+      }
       if (s.moveAccumMs >= interval) { s.moveAccumMs -= interval; movers.push({ s, i }); }
     }
     if (movers.length === 0) break;
@@ -472,6 +591,10 @@ function simLoop() {
     moved = true;
     guard++;
   } while (guard < 5); // guard: a huge dt (event-loop stall) can owe several steps
+  // Blue Shell projectiles move on their OWN cadence (POWERUPS.blueShell.
+  // moveIntervalMs), independent of any snake's speed -- driven straight off
+  // dt rather than the per-snake accumulator loop above.
+  if (updateBlueShells(dt)) moved = true;
   if (moved) broadcastState();
   nextSimAt = (nextSimAt == null ? now : nextSimAt) + SIM_MS;
   if (nextSimAt < now) nextSimAt = now + SIM_MS; // fell too far behind: re-anchor
@@ -494,6 +617,7 @@ function movementStep(movers) {
   applyMovementAndFood(movers, newHeads, died, stalled);
   applyKillBonuses(died);
   for (const [victimIndex] of died) handleDeath(victimIndex);
+  expirePowerupsAndTrails();
   moveSeq++;
 }
 function inBounds(h) { return h.x >= 0 && h.x < CFG.grid.cols && h.y >= 0 && h.y < CFG.grid.rows; }
@@ -533,6 +657,47 @@ function computeNewHeads(active) {
   }
   return newHeads;
 }
+// ---------------------------------------------------------------
+// Wormhole: independent single-charge auto-trigger, state machine.
+//
+// States (per slot):
+//   ARMED -- s.wormholeCharge === true. Picked up, waiting.
+//   IDLE  -- s.wormholeCharge === false. No charge held.
+//
+// The ONLY transition out of ARMED is a fatal-collision INTERCEPTION at
+// resolveWallCollisions/resolveSelfCollisions/resolveSnakeCollisions time,
+// for THIS slot's own new head this step. There is no manual activation
+// message and no re-arm: firing always sets wormholeCharge back to false,
+// win or lose -- a failed landing (nowhere safe to phase to) still consumes
+// the charge and the snake dies normally; it is not a repeatable shield.
+// ---------------------------------------------------------------
+function tryWormholeOrDie(idx, killerIdxOrNull, died, stalled, newHeads) {
+  const s = slots[idx];
+  if (s && s.wormholeCharge) {
+    const fatalHead = newHeads.get(idx);
+    const result = POWERUP_MODULES.wormhole.attemptWormhole(idx, s, fatalHead, slots, CFG.grid, POWERUPS.wormhole.lookaheadDepth);
+    s.wormholeCharge = false;
+    if (result) {
+      // Regrow the whole body trailing behind the landing cell along the
+      // winning phase direction, preserving length -- an instant relocation,
+      // not a glide (predict.js's teleport flag skips the correction-glide
+      // path entirely for this).
+      const len = s.body.length;
+      const newBody = [];
+      for (let n = 0; n < len; n++) {
+        newBody.push({ x: result.landing.x - result.dir.x * n, y: result.landing.y - result.dir.y * n });
+      }
+      s.body = newBody;
+      s.dir = result.dir;
+      s.teleportedThisTick = true;
+      stalled.add(idx); // this step's normal movement/food/pickup logic is skipped for the teleported snake
+      dlog && dlog("wormhole fired", { slot: idx, landing: result.landing });
+      return;
+    }
+    dlog && dlog("wormhole fizzled, no landing", { slot: idx });
+  }
+  died.set(idx, killerIdxOrNull);
+}
 function resolveWallCollisions(active, newHeads, died, stalled) {
   for (const { s, i } of active) {
     if (died.has(i)) continue;
@@ -541,7 +706,8 @@ function resolveWallCollisions(active, newHeads, died, stalled) {
     const saved = consumeInboundsTurn(s);
     if (saved) { s.dir = saved; h = { x: s.body[0].x + saved.x, y: s.body[0].y + saved.y }; newHeads.set(i, h); s.wallStalls = 0; continue; }
     if (s.wallStalls < WALL_GRACE_TICKS) { s.wallStalls++; stalled.add(i); newHeads.set(i, { x: s.body[0].x, y: s.body[0].y }); continue; }
-    died.set(i, null); s.wallStalls = 0;
+    tryWormholeOrDie(i, null, died, stalled, newHeads);
+    s.wallStalls = 0;
   }
 }
 // hitsBody: does (h) land on any segment of `body` except the tail? The tail
@@ -558,7 +724,7 @@ function hitsBody(body, h, skipTail) {
 function resolveSelfCollisions(active, newHeads, died, stalled) {
   for (const { s, i } of active) {
     if (died.has(i) || stalled.has(i)) continue;
-    if (hitsBody(s.body, newHeads.get(i), true)) died.set(i, null);
+    if (hitsBody(s.body, newHeads.get(i), true)) tryWormholeOrDie(i, null, died, stalled, newHeads);
   }
 }
 // Movers are checked against EVERY living snake (allAlive), not just other
@@ -574,8 +740,19 @@ function resolveSnakeCollisions(active, newHeads, died, stalled, allAlive) {
     for (const { s: other, i: j } of allAlive) {
       if (j === i || died.has(j)) continue;
       const otherHead = newHeads.get(j); // undefined when j isn't moving this step
-      if (otherHead && !stalled.has(j) && h.x === otherHead.x && h.y === otherHead.y) { died.set(i, null); died.set(j, null); continue; }
-      if (hitsBody(other.body, h, otherHead !== undefined && !stalled.has(j))) died.set(i, j);
+      if (otherHead && !stalled.has(j) && h.x === otherHead.x && h.y === otherHead.y) {
+        // Head-on: each side is checked INDEPENDENTLY for a wormhole charge,
+        // so one snake phasing away does not block the other's own charge
+        // from also firing (or dying normally) this same collision.
+        tryWormholeOrDie(i, null, died, stalled, newHeads);
+        tryWormholeOrDie(j, null, died, stalled, newHeads);
+        if (died.has(i) || stalled.has(i)) break; // i is resolved; stop checking further pairs against it
+        continue;
+      }
+      if (hitsBody(other.body, h, otherHead !== undefined && !stalled.has(j))) {
+        tryWormholeOrDie(i, j, died, stalled, newHeads);
+        break; // i is resolved (died or teleported); stop checking further pairs
+      }
     }
   }
 }
@@ -584,8 +761,58 @@ function applyMovementAndFood(active, newHeads, died, stalled) {
     if (died.has(i) || stalled.has(i)) continue;
     const h = newHeads.get(i);
     s.body.unshift(h);
-    if (food && h.x === food.x && h.y === food.y) { s.score += 1; placeFood(); }
-    else s.body.pop();
+    let grew = false;
+    if (food && h.x === food.x && h.y === food.y) {
+      s.score += 1;
+      const mult = POWERUP_MODULES.growthSpurt.foodGrowthMultiplier(s, POWERUPS);
+      for (let n = 1; n < mult; n++) growSegment(s);
+      placeFood();
+      grew = true;
+    }
+    // Powerup pickup collection, mirroring the food check above (head lands
+    // on the entity). See the confirmed inventory model: a type that would
+    // be "wasted" (wormhole charge already armed, or the held slot/active
+    // effect already occupied by this type) instead grants the same +1
+    // segment fallback bonus food eating gives, no state change.
+    const pk = powerupPickups.find(p => p.x === h.x && p.y === h.y);
+    if (pk) {
+      const blocked = pk.type === "wormhole"
+        ? s.wormholeCharge
+        : (s.heldPowerup != null || (s.activePowerup && s.activePowerup.type === pk.type));
+      if (blocked) { growSegment(s); grew = true; }
+      else if (pk.type === "wormhole") s.wormholeCharge = true;
+      else s.heldPowerup = pk.type;
+      powerupPickups = powerupPickups.filter(p => p.id !== pk.id);
+      dlog && dlog("powerup collected", { slot: i, type: pk.type, blocked });
+    }
+    if (!grew) s.body.pop();
+    // Trail crossing: this mover's new head landed on a laid tile. The
+    // laying snake is NOT immune to its own trail (confirmed override).
+    const trail = trails.find(t => t.x === h.x && t.y === h.y);
+    if (trail) {
+      if (trail.type === "iceTrail") {
+        POWERUP_MODULES.iceTrail.onCross(s);
+        s.iceExpiresAtTick = moveSeq + Math.ceil(POWERUPS.iceTrail.slowDurationMs / currentMoveIntervalMs());
+        dlog && dlog("ice trail crossed", { slot: i, stacks: s.iceStacks });
+      } else if (trail.type === "poisonTrail") {
+        const before = s.body.length;
+        POWERUP_MODULES.poisonTrail.onCross(s, null, trail, MIN_SNAKE_LENGTH);
+        if (s.body.length < before) dlog && dlog("poison trail crossed", { slot: i, length: s.body.length });
+      }
+    }
+    // Trail laying: one tile per movement step while this mover's
+    // activePowerup is a trail type, laid at the vacated (previous) cell so
+    // the trail sits behind the snake rather than under its new head. One
+    // entry per (x,y) -- a later lay on an occupied cell replaces it.
+    if (s.activePowerup && (s.activePowerup.type === "iceTrail" || s.activePowerup.type === "poisonTrail")) {
+      const type = s.activePowerup.type;
+      const layCell = s.body[1] || h;
+      trails = trails.filter(t => !(t.x === layCell.x && t.y === layCell.y));
+      trails.push({
+        id: nextPowerupId++, type, x: layCell.x, y: layCell.y, ownerSlot: i,
+        expiresAtTick: moveSeq + Math.ceil(POWERUPS[type].tileDurationMs / currentMoveIntervalMs())
+      });
+    }
     s.wallStalls = 0;
   }
 }
@@ -595,9 +822,70 @@ function applyKillBonuses(died) {
     const killer = slots[killerIndex];
     if (!killer || !killer.alive) continue;
     killer.score += CFG.killBonusScore;
+    const growthAmt = CFG.killBonusGrowth + POWERUP_MODULES.growthSpurt.killBonusGrowthBonus(killer, POWERUPS);
     const tail = killer.body[killer.body.length - 1];
-    for (let n = 0; n < CFG.killBonusGrowth; n++) killer.body.push({ ...tail });
+    for (let n = 0; n < growthAmt; n++) killer.body.push({ ...tail });
   }
+}
+// Sim-clock-based expiry (moveSeq ticks, not setTimeout) for laid trail
+// tiles, each player's currently-active timed powerup effect, and the
+// victim-side ice-slow status. Called once per movement step.
+function expirePowerupsAndTrails() {
+  trails = trails.filter(t => moveSeq < t.expiresAtTick);
+  for (const s of slots) {
+    if (!s) continue;
+    if (s.activePowerup && moveSeq >= s.activePowerup.expiresAtTick) {
+      dlog && dlog("powerup expired", { type: s.activePowerup.type });
+      s.activePowerup = null;
+    }
+    if (s.iceStacks > 0 && moveSeq >= s.iceExpiresAtTick) s.iceStacks = 0;
+  }
+}
+// Advances every in-flight Blue Shell one cell toward whoever is CURRENTLY
+// the longest living snake (re-targeted fresh every step, so a shell keeps
+// homing on a new leader if the lead changes mid-flight -- and will happily
+// hit its own launcher if they are or become the leader). Passes through
+// every other snake with no effect; only landing on the target's body
+// triggers impact. Returns true if any shell moved (so simLoop broadcasts
+// even on a tick where no snake itself advanced).
+function updateBlueShells(dt) {
+  let moved = false;
+  for (const shell of blueShells.slice()) {
+    shell.moveAccumMs = (shell.moveAccumMs || 0) + dt;
+    if (shell.moveAccumMs < POWERUPS.blueShell.moveIntervalMs) continue;
+    shell.moveAccumMs -= POWERUPS.blueShell.moveIntervalMs;
+    const targetIdx = currentLeaderIndex();
+    if (targetIdx === null) { blueShells = blueShells.filter(b => b.id !== shell.id); continue; }
+    const targetHead = slots[targetIdx].body[0];
+    const dx = targetHead.x - shell.x, dy = targetHead.y - shell.y;
+    if (dx !== 0) shell.x += dx > 0 ? 1 : -1;
+    else if (dy !== 0) shell.y += dy > 0 ? 1 : -1;
+    moved = true;
+    const target = slots[targetIdx];
+    if (target.body.some(seg => seg.x === shell.x && seg.y === shell.y)) {
+      triggerBlueShellImpact(shell, targetIdx);
+      blueShells = blueShells.filter(b => b.id !== shell.id);
+    }
+  }
+  return moved;
+}
+function triggerBlueShellImpact(shell, targetIdx) {
+  const target = slots[targetIdx];
+  const loss = POWERUP_MODULES.blueShell.segmentsLost(target.body.length, POWERUPS.blueShell.segmentLossPercent, MIN_SNAKE_LENGTH);
+  removeSegments(target, loss);
+  const cx = shell.x, cy = shell.y, r = POWERUPS.blueShell.explosionRadius;
+  for (let i = 0; i < slots.length; i++) {
+    if (i === targetIdx) continue;
+    const s = slots[i];
+    if (!s || !s.alive) continue;
+    const inRadius = s.body.some(seg => Math.max(Math.abs(seg.x - cx), Math.abs(seg.y - cy)) <= r);
+    if (inRadius) {
+      const splash = POWERUP_MODULES.blueShell.segmentsLost(s.body.length, POWERUPS.blueShell.splashLossPercent, MIN_SNAKE_LENGTH);
+      removeSegments(s, splash);
+    }
+  }
+  explosions.push({ x: cx, y: cy, radius: r });
+  dlog && dlog("blueShell impact", { targetIdx, loss, x: cx, y: cy });
 }
 // ---------------------------------------------------------------
 // High-score initials: connection-scoped state machine.
@@ -689,16 +977,37 @@ function broadcastState() {
   const state = {
     type: "state", build: BUILD, seq: moveSeq, serverTime: Date.now(),
     tickMs: interval, simHz: SIM_HZ, grid: CFG.grid, food,
+    powerupPickups, trails, blueShells, explosions,
     players: slots.map((s, i) => s ? {
       slot: i, alive: s.alive, score: s.score, color: s.color, dir: s.dir, body: s.body,
-      // Effective per-player movement rate (ms per cell), boost included.
-      // Purely informational for CLIENT-SIDE render smoothing: the client
-      // interpolates each snake's on-screen travel in lock step with this
-      // known fixed cadence. Server collision/authority are untouched.
-      moveMs: Math.round(BOOST.enabled && s.boost ? interval / BOOST.boostSpeed : interval)
+      // Effective per-player movement rate (ms per cell), boost + speed
+      // powerup + ice slow all included. Purely informational for
+      // CLIENT-SIDE render smoothing: the client interpolates each snake's
+      // on-screen travel in lock step with this known fixed cadence. Server
+      // collision/authority are untouched.
+      moveMs: Math.round(
+        interval /
+        ((BOOST.enabled && s.boost ? BOOST.boostSpeed : 1) *
+          POWERUP_MODULES.speedBoost.speedMultiplier(s, POWERUPS) *
+          POWERUP_MODULES.iceTrail.speedMultiplier(s, POWERUPS))
+      ),
+      // Visual-only flags for the client's boost jetstream / slide dust
+      // effects (no gameplay meaning beyond what moveMs already carries).
+      boost: !!s.boost,
+      sliding: s.inputQueue.length > 0 && s.inputQueue[0].delay > 0,
+      heldPowerup: s.heldPowerup,
+      wormholeCharge: s.wormholeCharge,
+      activePowerup: s.activePowerup ? s.activePowerup.type : null,
+      iceStacks: s.iceStacks,
+      teleport: s.teleportedThisTick ? true : undefined
     } : null),
     highScores: { daily: highScores.daily, allTime: highScores.allTime }
   };
+  // One-shot flags: true for exactly the one broadcast right after a
+  // successful wormhole fire or a blue shell impact, then cleared so
+  // neither repeats.
+  for (const s of slots) if (s) s.teleportedThisTick = false;
+  explosions = [];
   // Latency/CPU: the shared portion of the state is identical for every
   // connection, so serialize it ONCE and splice each connection's small
   // per-you payload into the JSON string, instead of re-stringifying the
@@ -740,7 +1049,10 @@ const httpServer = http.createServer((req, res) => {
   const url = new URL(req.url, "http://x");
   if (url.pathname === "/api/config" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-    res.end(JSON.stringify({ clientFx: CLIENT_FX, clientRender: CLIENT_RENDER, enableDebug: ENABLE_DEBUG, boost: BOOST }));
+    res.end(JSON.stringify({
+      clientFx: CLIENT_FX, clientRender: CLIENT_RENDER, enableDebug: ENABLE_DEBUG,
+      boost: BOOST, powerups: POWERUPS, powerupInfo: POWERUP_INFO
+    }));
     return;
   }
   if (url.pathname === "/api/captcha" && req.method === "GET") {
@@ -851,6 +1163,33 @@ wss.on("connection", ws => {
       if (!slot || !slot.alive) return;
       slot.lastInputAt = Date.now();
       slot.boost = msg.on === true;
+    }
+    if (msg.type === "activatePowerup") {
+      // Fires the seat's held (non-wormhole) powerup. Wormhole never
+      // occupies heldPowerup (see tryWormholeOrDie) so this naturally no-ops
+      // for it. Deliberately does NOT touch lastInputAt -- see
+      // lifecycleSweep's PLAYER_IDLE_MS comment; a powerup activation must
+      // not silently keep an AFK lobby alive.
+      const localIdx = Number.isInteger(msg.local) ? msg.local : 0;
+      const entry = conn.locals[localIdx];
+      if (!entry || entry.role !== "player") return;
+      const slot = slots[entry.slotIndex];
+      if (!slot || !slot.alive || !slot.heldPowerup) return;
+      const type = slot.heldPowerup;
+      slot.heldPowerup = null;
+      if (type === "blueShell") {
+        // Not a timed self-buff: launches an independent seeking projectile
+        // from the activator's current head. See updateBlueShells -- it
+        // re-targets the current leader every step, so the launcher is not
+        // exempt from being hit by their own shell.
+        const head = slot.body[0];
+        blueShells.push({ id: nextPowerupId++, x: head.x, y: head.y, ownerSlot: entry.slotIndex, moveAccumMs: 0 });
+        dlog && dlog("blueShell launched", { slot: entry.slotIndex, x: head.x, y: head.y });
+      } else {
+        const durationMs = POWERUPS[type].durationMs;
+        slot.activePowerup = { type, expiresAtTick: moveSeq + Math.ceil(durationMs / currentMoveIntervalMs()) };
+        dlog && dlog("powerup activated", { slot: entry.slotIndex, type });
+      }
     }
     if (msg.type === "leaveLocal") {
       // Explicit exit for one local seat (Leave button). If it was the

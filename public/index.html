@@ -45,6 +45,24 @@
   }
   #boostTip.acked { opacity: 0.45; }
   #boostTip.acked button { display: none; }
+  #powerupInfoBtn {
+    background: #241a2e; color: #c9f; border: 1px solid #758;
+    padding: 4px 10px; font-size: 12px; cursor: pointer; font-family: monospace;
+    margin-bottom: 10px;
+  }
+  /* Sized by JS per-popup (ui.js initPowerupInfo) based on how many powerups
+     the server reports -- these are just the base look + a scroll fallback
+     for an unusually large list. */
+  #powerupInfoPopup {
+    display: none; background: #1a1428; border: 1px solid #758; padding: 12px 16px;
+    margin-bottom: 14px; text-align: left; width: 320px; max-height: 60vh;
+    overflow-y: auto; font-size: 12px; line-height: 1.5; color: #dcf;
+  }
+  #powerupInfoPopup h4 { margin: 0 0 6px 0; font-size: 13px; color: #c9f; }
+  #powerupInfoPopup .entry { margin-bottom: 10px; }
+  #powerupInfoPopup .entry:last-child { margin-bottom: 0; }
+  #powerupInfoPopup .entry .name { color: #c9f; font-weight: bold; }
+  #powerupInfoPopup.open { display: block; }
 </style>
 </head>
 <body>
@@ -76,6 +94,14 @@
       &mdash; let off boost first for a sharp turn.
       <div><button id="boostTipAck">Got it</button></div>
     </div>
+    <!-- Powerup explainer: a plain toggle button + popup (see ui.js
+         initPowerupInfo), independent of the boost tip above and not gated
+         on captcha state either. Content and popup size come from the
+         server's /api/config powerupInfo (sourced from each powerup's own
+         JS file, see powerups/*.js), so this list never has to be
+         hand-kept in sync with what powerups actually exist. -->
+    <button id="powerupInfoBtn" type="button">? What do the powerups do?</button>
+    <div id="powerupInfoPopup"></div>
     <div id="captchaQuestion">Loading...</div>
     <div><input id="captchaAnswer" maxlength="2" autofocus></div>
     <button id="captchaSubmit">Join</button>

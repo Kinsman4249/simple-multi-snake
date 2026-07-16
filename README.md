@@ -18,6 +18,18 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
   up; turning while boosting drifts a couple of squares before the turn takes
   effect. A brief tip explaining this is shown on the join screen while the
   captcha is being solved. Configurable, and can be turned off entirely.
+- Powerups: pickups spawn on the board and are held until you press your seat's
+  activation key (default Space for the arrows seat, Right Shift for the WASD
+  seat). Wormhole is the exception -- it holds as an independent charge and
+  auto-fires the instant a move would kill you, teleporting you somewhere safe.
+  The set: Wormhole, Growth Spurt, Speed Boost, Ice Trail, Poison Trail, and
+  Blue Shell (a projectile that hunts whoever is longest -- even the player who
+  fired it). Each type has its own config block and on/off switch. A "What do
+  the powerups do?" button on the join screen explains them, and every powerup
+  can be disabled. See Configuration.
+- Rebindable activation keys and a WASD/Arrows swap, from a small panel in the
+  bottom-left corner. Saved in the browser (localStorage); nothing is sent to
+  the server but which seat activated.
 - Spectator queue past four players. A spectator takes over shortly after a
   player dies; if four or fewer are connected the dead player just respawns.
 - Killing another player (they run into your body) gives you a 10 point bonus
@@ -192,6 +204,9 @@ Keys:
   free slot immediately or joins the spectator queue fairly like anyone
   else.
 - killBonusScore / killBonusGrowth: points and growth awarded for a kill.
+- minSnakeLength: the length a snake spawns at, and the floor below which
+  poison-trail damage cannot shrink it (default 3). One value drives both so
+  they can never disagree.
 - spectatorPromoteDelayMs: delay before a non-qualifying dead player respawns
   or yields to the queue.
 - captchaTokenTtlMs: how long a solved-captcha token stays valid before the
@@ -211,9 +226,22 @@ Keys:
   offer passes to the next spectator.
 - inputBuffer: maximum queued turns per snake.
 - boost.enabled: turns the boost/slide mechanic on or off (default true).
-- boost.boostSpeed: multiplier on movement rate while boosting (default 1.5).
+- boost.boostSpeed: multiplier on movement rate while boosting (default 2.0).
 - boost.slideDistance: cells a boosted turn drifts straight before it takes
-  effect (default 2).
+  effect (default 3).
+- clientFx.boostTrail / clientFx.slideDust: purely-cosmetic client visuals for
+  a boosting head and a sliding drift (both default true). No gameplay effect.
+- powerups.spawnIntervalMs: how often a pickup spawn is attempted (default 8000).
+- powerups.maxConcurrentPickups: most pickups on the board at once (default 1).
+- powerups.<type>.enabled: on/off per powerup type. Types: wormhole,
+  growthSpurt, speedBoost, iceTrail, poisonTrail, blueShell. All default on
+  EXCEPT blueShell, which is off by default (see Notes and limitations). Each
+  type has its own tuning keys alongside enabled -- for example
+  growthSpurt.durationMs / foodMultiplier / killBonusGrowth,
+  speedBoost.durationMs / speedMult, iceTrail.slowMultiplierPerStack /
+  minSpeedMultiplier / tileDurationMs, wormhole.lookaheadDepth, and
+  blueShell.segmentLossPercent / explosionRadius / splashLossPercent. See the
+  powerups block in config.json for the full set and defaults.
 - enableDebug: master switch for the debug system (default true). When set
   to false, the server never builds or logs a debug line (a single null
   check at every call site) and the client never constructs the DEBUG
@@ -375,6 +403,15 @@ committed to the repo.
 
 ## Notes and limitations
 
+- Blue Shell is off by default (TODO). The mechanic is complete -- it launches
+  a seeking projectile at the current leader (including the player who fired
+  it), deals a large direct hit and a smaller splash to nearby snakes, and is
+  consumed on impact. What is not yet done is a reliable end-to-end test for
+  the SPLASH portion: staging two live snakes so the second is above the length
+  floor and still alive at the exact tick the shell lands is a test-harness
+  navigation problem, not a gameplay one. The direct hit, targeting, and
+  consumption are covered and pass consistently. Until the splash test is
+  solid, an operator can enable it with powerups.blueShell.enabled: true.
 - A 30 second WebSocket keepalive ping is built into the server because
   Cloudflare closes idle proxied WebSocket connections after about 100 seconds.
 - Dead snake bodies are drawn until respawn but are not solid obstacles; the

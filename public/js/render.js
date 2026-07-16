@@ -44,12 +44,23 @@
 // Segments that teleport (respawn, growth, first sight) snap instantly.
 // Purely cosmetic and entirely client-side: server collision, authority and
 // the wire format of inputs are untouched.
-(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-15.1";
+(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-15.3";
 const Render = (() => {
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");
   let grid = null;
   const FLASH_DIR_VECTORS = { up: { x: 0, y: -1 }, down: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 } };
+  // Powerup pickup + trail styling. Purely cosmetic lookups, no gameplay
+  // meaning -- see server.js POWERUPS for the actual config/behavior.
+  const POWERUP_STYLE = {
+    wormhole: "#a3f",
+    growthSpurt: "#fd6",
+    iceTrail: "#9df",
+    poisonTrail: "#4a2",
+    speedBoost: "#f93",
+    blueShell: "#39f"
+  };
+  const TRAIL_STYLE = { iceTrail: "rgba(140,220,255,0.35)", poisonTrail: "rgba(70,160,50,0.4)" };
   function resize(g) {
     grid = g;
     canvas.width = g.cols * g.cellSize;
@@ -61,6 +72,102 @@ const Render = (() => {
   }
   function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
   function lerp(a, b, t) { return a + (b - a) * t; }
+  // Powerup pickups: a small pulsing square colored per type, so a pickup
+  // reads as "alive" on the board without needing a sprite/animation asset.
+  function drawPickup(p, now) {
+    const cs = grid.cellSize;
+    const color = POWERUP_STYLE[p.type] || "#fff";
+    const pulse = 0.5 + 0.5 * Math.sin(now / 220 + p.id);
+    const size = (cs - 2) * (0.7 + 0.3 * pulse);
+    const offset = (cs - size) / 2;
+    ctx.save();
+    ctx.globalAlpha = 0.6 + 0.4 * pulse;
+    ctx.fillStyle = color;
+    ctx.fillRect(p.x * cs + offset, p.y * cs + offset, size, size);
+    ctx.restore();
+  }
+  // Laid trail tiles (ice/poison): flat, dim tint drawn UNDER snake bodies.
+  function drawTrails(trailList) {
+    if (!trailList) return;
+    const cs = grid.cellSize;
+    for (const t of trailList) {
+      ctx.fillStyle = TRAIL_STYLE[t.type] || "rgba(255,255,255,0.2)";
+      ctx.fillRect(t.x * cs, t.y * cs, cs - 1, cs - 1);
+    }
+  }
+  // Boost jetstream: a few semi-transparent squares trailing behind the head
+  // opposite the direction of travel. Visual only -- no gameplay effect,
+  // gated by CLIENT_FX.boostTrail (opts.boostTrail).
+  function drawBoostTrail(headPx, headPy, dir, now) {
+    const cs = grid.cellSize;
+    ctx.save();
+    for (let n = 0; n < 3; n++) {
+      const phase = (now / 90 + n * 0.33) % 1;
+      const dist = phase * cs * 1.5;
+      ctx.globalAlpha = 0.5 * (1 - phase);
+      ctx.fillStyle = "#9df";
+      const px = headPx + cs / 2 - dir.x * dist - cs * 0.15;
+      const py = headPy + cs / 2 - dir.y * dist - cs * 0.15;
+      ctx.fillRect(px, py, cs * 0.3, cs * 0.3);
+    }
+    ctx.restore();
+  }
+  // Slide dust: a light particle scatter at the head while a queued turn is
+  // drifting (boost slide penalty). Visual only, gated by
+  // CLIENT_FX.slideDust (opts.slideDust).
+  function drawSlideDust(headPx, headPy, now) {
+    const cs = grid.cellSize;
+    ctx.save();
+    for (let n = 0; n < 4; n++) {
+      const phase = (now / 140 + n * 0.25) % 1;
+      const angle = (n / 4) * Math.PI * 2;
+      const dist = phase * cs * 0.6;
+      ctx.globalAlpha = 0.35 * (1 - phase);
+      ctx.fillStyle = "#ccc";
+      const px = headPx + cs / 2 + Math.cos(angle) * dist - cs * 0.08;
+      const py = headPy + cs / 2 + Math.sin(angle) * dist - cs * 0.08;
+      ctx.fillRect(px, py, cs * 0.16, cs * 0.16);
+    }
+    ctx.restore();
+  }
+  // Blue Shell projectile: a small spinning shell shape, colored distinctly
+  // from every pickup/trail so it reads as "a moving threat," not a static
+  // tile.
+  function drawBlueShell(shell, now) {
+    const cs = grid.cellSize;
+    const cx = shell.x * cs + cs / 2, cy = shell.y * cs + cs / 2;
+    const spin = (now / 300) % (Math.PI * 2);
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(spin);
+    ctx.fillStyle = "#39f";
+    ctx.beginPath();
+    ctx.ellipse(0, 0, cs * 0.42, cs * 0.32, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#dff";
+    ctx.beginPath();
+    ctx.arc(0, -cs * 0.05, cs * 0.12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+  // Blue Shell explosion: one-shot expanding, fading ring at the impact
+  // point, radius scaled to the server's actual explosionRadius so the
+  // visual honestly reflects the splash area. `age` is 0..1 elapsed
+  // fraction of EXPLOSION_DURATION_MS (see main.js, which owns the timing
+  // since this module has no per-call memory of its own).
+  function drawExplosion(x, y, radiusCells, age) {
+    const cs = grid.cellSize;
+    const cx = x * cs + cs / 2, cy = y * cs + cs / 2;
+    const maxR = radiusCells * cs;
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, 1 - age);
+    ctx.strokeStyle = "#39f";
+    ctx.lineWidth = Math.max(2, cs * 0.15);
+    ctx.beginPath();
+    ctx.arc(cx, cy, maxR * age, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
   // Draws a short fading strip on the leading edge of the head cell at
   // (px, py), in the direction the player just pressed.
   function drawInputFlash(px, py, dirName, alpha) {
@@ -110,10 +217,15 @@ const Render = (() => {
     const cs = grid.cellSize;
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    drawTrails(currSnap.trails);
     if (currSnap.food) {
       const key = currSnap.food.x + "," + currSnap.food.y;
       if (!eatenKeys || eatenKeys.indexOf(key) === -1) drawCell(currSnap.food, "#e33");
     }
+    if (currSnap.powerupPickups) currSnap.powerupPickups.forEach(p => drawPickup(p, now));
+    if (currSnap.blueShells) currSnap.blueShells.forEach(sh => drawBlueShell(sh, now));
+    const explosions = (fx && fx.explosions) || [];
+    explosions.forEach(e => drawExplosion(e.x, e.y, e.radius, e.age));
     currSnap.players.forEach((p, i) => {
       if (!p) return;
       const isLocal = localBodies && localBodies.has(i);
@@ -151,6 +263,8 @@ const Render = (() => {
         ctx.fillStyle = "rgba(0,0,0,0.5)";
         body.forEach(seg => ctx.fillRect(seg.x * cs, seg.y * cs, cs - 1, cs - 1));
       }
+      if (p.alive && p.boost && opts && opts.boostTrail && p.dir) drawBoostTrail(headPx, headPy, p.dir, now);
+      if (p.alive && p.sliding && opts && opts.slideDust) drawSlideDust(headPx, headPy, now);
       const flash = flashes.find(f => f.slot === i);
       if (flash) {
         const alpha = Math.max(0, 1 - (now - flash.t) / flash.durationMs);

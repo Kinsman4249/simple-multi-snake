@@ -53,7 +53,7 @@
 // applying it, and the client cannot know the exact landing tick, so rebuild()
 // simply does not pre-play a delayed turn. The server's authoritative steps
 // (plus the correction glide, if enabled) show the drift-then-turn.
-(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-15.1";
+(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-15.2";
 const DIR_VECTORS = {
   up: { x: 0, y: -1 },
   down: { x: 0, y: 1 },
@@ -224,6 +224,23 @@ class LocalPlayerPredictor {
 
     const authDir = p.dir || this.inferDirFromBody(p.body);
     if (authDir) this.dir = authDir;
+
+    // Wormhole snap: instant, no glide, no correction-event. Checked BEFORE
+    // the normal food-prediction/correction-detection logic below (an early
+    // return) so a teleport can never fall through into the correction-glide
+    // path even by accident -- it would otherwise look like a >1-cell resync
+    // and animate a slide across the board instead of an instant snap.
+    if (p.teleport) {
+      this.authBody = p.body.map(s => ({ x: s.x, y: s.y }));
+      this.simBody = this.authBody.map(s => ({ ...s }));
+      this.predicted = false;
+      this.inputBuffer = [];
+      this.pendingEat = null;
+      this.localGrow = 0;
+      this.foodKey = food ? (food.x + "," + food.y) : null;
+      this.lastServerLen = p.body.length;
+      return;
+    }
 
     const foodKey = food ? (food.x + "," + food.y) : null;
     const serverLen = p.body.length;

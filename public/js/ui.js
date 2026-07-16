@@ -3,7 +3,7 @@
 // prompt with countdown, spectator overlay, explicit JOIN offer button,
 // and a DEBUG button/panel (recording enabled only while open).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-15.1";
+(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-15.3";
 const UI = (() => {
   const statusEl = document.getElementById("status");
   let captchaId = null;
@@ -15,18 +15,51 @@ const UI = (() => {
     document.getElementById("captchaQuestion").textContent = data.a + " + " + data.b + " = ?";
   }
   // One-tap, non-blocking acknowledgement of the boost/slide tip (see
-  // index.html #boostTip): dims the box and hides the button. Does not gate
-  // Join -- if boost is disabled server-side the tip is simply irrelevant
-  // and skipping it costs nothing.
+  // index.html #boostTip): hides the tip text entirely (not just dimmed --
+  // dimming alone made the click look like it did nothing). Does not gate
+  // Join, and is entirely independent of captcha state -- dismissing this
+  // tip has nothing to do with whether the captcha has been solved yet.
   function initBoostTip() {
     const tip = document.getElementById("boostTip");
     const btn = document.getElementById("boostTipAck");
     if (!tip || !btn) return;
-    btn.onclick = () => tip.classList.add("acked");
+    btn.onclick = () => { tip.style.display = "none"; };
+  }
+  // Plain toggle button + popup explaining ALL powerups (see index.html
+  // #powerupInfoBtn/#powerupInfoPopup). Independent of the captcha form and
+  // the boost tip -- purely informational, never gates Join. The button is
+  // wired up immediately so it's clickable from page load; its CONTENT is
+  // filled in later by setPowerupInfo(), once main.js's /api/config fetch
+  // resolves with each powerup's title/description (sourced from the
+  // powerup's own JS file -- see powerups/*.js -- so this list can never
+  // drift out of sync with what powerups actually exist).
+  function initPowerupInfo() {
+    const btn = document.getElementById("powerupInfoBtn");
+    const popup = document.getElementById("powerupInfoPopup");
+    if (!btn || !popup) return;
+    btn.onclick = () => popup.classList.toggle("open");
+  }
+  // Builds the popup's content from { type: {title, description} } and
+  // sizes the popup to the number of entries -- a couple of powerups gets a
+  // small, tight box; many get a taller one, capped and scrollable (see the
+  // max-height/overflow-y in index.html's #powerupInfoPopup rule) so it
+  // never runs off the top of the screen.
+  function setPowerupInfo(info) {
+    const popup = document.getElementById("powerupInfoPopup");
+    if (!popup) return;
+    const entries = Object.values(info || {});
+    if (entries.length === 0) { popup.innerHTML = "<h4>Powerups</h4>No powerups are enabled."; return; }
+    popup.innerHTML = "<h4>Powerups</h4>" + entries.map(e =>
+      "<div class=\"entry\"><span class=\"name\">" + e.title + ":</span> " + e.description + "</div>"
+    ).join("");
+    // Scale the popup's height with entry count (small list = tight box,
+    // large list = taller box up to the CSS max-height/scroll fallback).
+    popup.style.minHeight = Math.min(400, 40 + entries.length * 55) + "px";
   }
   function initCaptchaGate(onSuccess) {
     loadCaptcha();
     initBoostTip();
+    initPowerupInfo();
     document.getElementById("captchaSubmit").onclick = async () => {
       const answer = document.getElementById("captchaAnswer").value;
       const res = await fetch("/api/verify", {
@@ -323,6 +356,8 @@ const UI = (() => {
     lines.push("  seq:    " + (info.seq == null ? "-" : info.seq));
     lines.push("  tickMs: " + (info.tickMs == null ? "-" : info.tickMs));
     lines.push("  role:   " + (info.role || "-"));
+    lines.push("  boostSpeed:    " + (info.boostSpeed == null ? "-" : info.boostSpeed));
+    lines.push("  slideDistance: " + (info.slideDistance == null ? "-" : info.slideDistance));
     const locals = info.locals || [];
     locals.forEach(loc => {
       lines.push("");
@@ -342,8 +377,71 @@ const UI = (() => {
     panel.textContent = lines.join("\n");
   }
 
+  // ---- Keybind remap panel (bottom-left corner, the one free corner:
+  // top-left is DEBUG, top-right is coop, bottom-right is the Leave bar) --
+  // rebind each seat's activation key, or swap which local index uses WASD
+  // vs. arrows. 100% client-side; getKeyMapsFn/saveKeyMapFn/swapFn are
+  // main.js's localStorage-backed KEY_MAPS accessors -- this module has no
+  // opinion on persistence, it only drives the UI.
+  function initKeymapPanel(getKeyMapsFn, saveKeyMapFn, swapFn) {
+    if (document.getElementById("keymapBtn")) return;
+    const btn = document.createElement("button");
+    btn.id = "keymapBtn";
+    btn.textContent = "KEYS";
+    btn.style.cssText = "position:fixed;bottom:6px;left:6px;z-index:9999;background:#222;color:#fc6;border:1px solid #666;font-family:monospace;font-size:12px;padding:4px 8px;cursor:pointer;";
+    document.body.appendChild(btn);
+
+    const panel = document.createElement("div");
+    panel.id = "keymapPanel";
+    panel.style.cssText = "position:fixed;bottom:34px;left:6px;z-index:9999;display:none;width:260px;background:rgba(0,0,0,0.9);color:#ddd;border:1px solid #666;font-family:monospace;font-size:12px;padding:10px;";
+    document.body.appendChild(panel);
+
+    let capturing = null; // local index currently waiting for a keypress, or null
+    function renderPanel() {
+      const maps = getKeyMapsFn();
+      panel.innerHTML = "";
+      maps.forEach((map, idx) => {
+        const row = document.createElement("div");
+        row.style.cssText = "margin-bottom:8px;";
+        const label = document.createElement("div");
+        label.textContent = "P" + (idx + 1) + " activate: " + (capturing === idx ? "press a key..." : map.activate);
+        row.appendChild(label);
+        const rebindBtn = document.createElement("button");
+        rebindBtn.textContent = "Rebind";
+        rebindBtn.style.cssText = "margin-top:4px;background:#333;color:#eee;border:1px solid #666;padding:2px 8px;cursor:pointer;font-family:monospace;font-size:11px;";
+        rebindBtn.onclick = () => { capturing = idx; renderPanel(); };
+        row.appendChild(rebindBtn);
+        panel.appendChild(row);
+      });
+      const swapBtn = document.createElement("button");
+      swapBtn.textContent = "Swap P1/P2 controls (Arrows <-> WASD)";
+      swapBtn.style.cssText = "margin-top:6px;background:#333;color:#eee;border:1px solid #666;padding:4px 8px;cursor:pointer;font-family:monospace;font-size:11px;width:100%;";
+      swapBtn.onclick = () => { swapFn(); renderPanel(); };
+      panel.appendChild(swapBtn);
+    }
+    // Capture phase, ahead of main.js's own (bubble-phase) keydown handler,
+    // so a keypress used to rebind is never ALSO processed as movement/
+    // activate by the game itself.
+    document.addEventListener("keydown", e => {
+      if (capturing == null) return;
+      const maps = getKeyMapsFn();
+      const newMap = Object.assign({}, maps[capturing], { activate: e.code });
+      saveKeyMapFn(capturing, newMap);
+      capturing = null;
+      e.preventDefault();
+      e.stopPropagation();
+      renderPanel();
+    }, true);
+    btn.onclick = () => {
+      const open = panel.style.display === "none";
+      panel.style.display = open ? "block" : "none";
+      if (open) renderPanel();
+    };
+  }
+
   return { initCaptchaGate, setConnectionStatus, updateStatus, updateLeaderboards,
            askInitials, showSpectator, offerJoin, initDebug,
            initCoOp, coOpJoined, coOpLeft, notifyJoinLocalDenied,
-           initLeaveButtons, updateLeaveButtons, showRejoin };
+           initLeaveButtons, updateLeaveButtons, showRejoin, initKeymapPanel,
+           setPowerupInfo };
 })();
