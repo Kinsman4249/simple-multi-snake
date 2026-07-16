@@ -60,6 +60,24 @@ const BUILD = "server " + resolveBuild();
 
 const SIM_HZ = Number.isFinite(CFG.simHz) && CFG.simHz > 0 ? CFG.simHz : 60;
 const SIM_MS = 1000 / SIM_HZ;
+// Phase 5: board size presets. grid.preset names a 16:9 cell count at the
+// configured cellSize ("1080p" fills a 1920x1080 display, "4k" a 3840x2160
+// one -- 4k is intentionally MORE cells, not bigger ones, for high-end
+// servers). Explicit grid.cols/rows ALWAYS win over a preset (this is what
+// keeps every tests/pw_*.js startServer({grid:{cols,rows}}) override, and
+// any operator's hand-tuned board, working unchanged). The resolved
+// cols/rows are written back into CFG.grid so the rest of this file -- and
+// the grid object broadcast in every state message -- needs no changes.
+const GRID_PRESETS = {
+  "1080p": { cols: 96, rows: 54 },
+  "4k":    { cols: 192, rows: 108 }
+};
+CFG.grid = Object.assign({ cellSize: 20 }, CFG.grid || {});
+if (!Number.isInteger(CFG.grid.cols) || !Number.isInteger(CFG.grid.rows)) {
+  const preset = GRID_PRESETS[CFG.grid.preset] || GRID_PRESETS["1080p"];
+  CFG.grid.cols = preset.cols;
+  CFG.grid.rows = preset.rows;
+}
 const MOVE = CFG.move || { startIntervalMs: 160, minIntervalMs: 70, rampIntervalSec: 30, rampStepMs: 10 };
 // Phase 3: dual local controls (couch co-op). A single WS connection may
 // control more than one local seat -- conn.locals is an array indexed by

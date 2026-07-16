@@ -2,19 +2,45 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Multisnake</title>
 <style>
+  /* Phase 5: the board is the page. A full-viewport flex column holds the
+     status line and the letterboxed board; the leaderboard is a fixed
+     hover-to-reveal overlay (it no longer competes with the much wider
+     board for layout space), and the corner buttons live in a fading top
+     bar built by ui.js. */
+  html, body { height: 100%; }
   body {
     background: #111;
     color: #eee;
     font-family: monospace;
+    margin: 0;
     display: flex;
-    justify-content: center;
-    margin-top: 20px;
+    flex-direction: column;
+    align-items: center;
+    overflow: hidden;
   }
-  #layout { display: flex; gap: 20px; align-items: flex-start; }
-  canvas { background: #000; border: 2px solid #555; }
-  .panel { width: 220px; }
+  #layout {
+    flex: 1 1 auto; min-height: 0; width: 100%;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  #boardWrap {
+    flex: 1 1 auto; min-height: 0; width: 100%;
+    display: flex; align-items: center; justify-content: center;
+  }
+  /* The canvas's INTERNAL resolution stays cols*cellSize x rows*cellSize
+     (render.js resize()); its CSS size is set by render.js fitCanvas() to
+     the largest 16:9 fit in #boardWrap, preferring integer scales.
+     Pixelated keeps upscaled cells crisp instead of blurry. */
+  canvas { background: #000; border: 2px solid #555; image-rendering: pixelated; touch-action: none; }
+  /* Leaderboard overlay: barely-there during play, solid on hover/tap. */
+  .panel {
+    position: fixed; top: 40px; right: 8px; width: 220px; z-index: 9990;
+    background: rgba(17,17,17,0.92); border: 1px solid #444; padding: 8px 12px;
+    opacity: 0.08; transition: opacity 0.25s;
+  }
+  .panel:hover, .panel:focus-within { opacity: 1; }
   .panel h3 { margin: 0 0 6px 0; font-size: 14px; border-bottom: 1px solid #444; padding-bottom: 4px; }
   .panel ol { margin: 4px 0 16px 0; padding-left: 20px; font-size: 13px; }
   #overlay {
@@ -58,6 +84,14 @@
     margin-bottom: 14px; text-align: left; width: 320px; max-height: 60vh;
     overflow-y: auto; font-size: 12px; line-height: 1.5; color: #dcf;
   }
+  #powerupLegend {
+    display: flex; flex-wrap: wrap; gap: 4px 14px; justify-content: center;
+    max-width: 340px; margin: 0 auto 12px auto; font-size: 12px; color: #bbb;
+  }
+  #powerupLegend .sw {
+    display: inline-block; width: 10px; height: 10px; margin-right: 5px;
+    vertical-align: baseline;
+  }
   #powerupInfoPopup h4 { margin: 0 0 6px 0; font-size: 13px; color: #c9f; }
   #powerupInfoPopup .entry { margin-bottom: 10px; }
   #powerupInfoPopup .entry:last-child { margin-bottom: 0; }
@@ -68,16 +102,18 @@
 <body>
 
 <div id="layout">
-  <div>
-    <div id="status">connecting...</div>
-    <canvas id="game" width="800" height="544"></canvas>
+  <div id="status">connecting...</div>
+  <div id="boardWrap">
+    <canvas id="game" width="1920" height="1080"></canvas>
   </div>
-  <div class="panel">
-    <h3>Daily Top 5</h3>
-    <ol id="dailyList"></ol>
-    <h3>All-Time Top 5</h3>
-    <ol id="allTimeList"></ol>
-  </div>
+</div>
+<!-- Fixed hover-to-reveal overlay (see .panel CSS above), not part of the
+     board's layout flow. -->
+<div class="panel">
+  <h3>Daily Top 5</h3>
+  <ol id="dailyList"></ol>
+  <h3>All-Time Top 5</h3>
+  <ol id="allTimeList"></ol>
 </div>
 
 <!-- Captcha / gate overlay, shown before a WebSocket connection is attempted -->
@@ -101,6 +137,11 @@
          JS file, see powerups/*.js), so this list never has to be
          hand-kept in sync with what powerups actually exist. -->
     <button id="powerupInfoBtn" type="button">? What do the powerups do?</button>
+    <!-- Color legend: one swatch+name per ENABLED powerup, filled in by
+         ui.js setPowerupInfo from the same /api/config data as the popup
+         and colored from render.js's own POWERUP_STYLE, so what a new
+         player reads here is exactly what the board will draw. -->
+    <div id="powerupLegend"></div>
     <div id="powerupInfoPopup"></div>
     <div id="captchaQuestion">Loading...</div>
     <div><input id="captchaAnswer" maxlength="2" autofocus></div>

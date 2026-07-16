@@ -44,7 +44,7 @@
 // Segments that teleport (respawn, growth, first sight) snap instantly.
 // Purely cosmetic and entirely client-side: server collision, authority and
 // the wire format of inputs are untouched.
-(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-15.3";
+(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-16.1";
 const Render = (() => {
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");
@@ -65,7 +65,27 @@ const Render = (() => {
     grid = g;
     canvas.width = g.cols * g.cellSize;
     canvas.height = g.rows * g.cellSize;
+    fitCanvas();
   }
+  // Phase 5 display scaling: the canvas's INTERNAL resolution above never
+  // changes, but its CSS size is fit to the #boardWrap box at the board's
+  // own aspect ratio (16:9 with the shipped presets) -- letterbox/pillarbox,
+  // never distort. Upscales snap DOWN to an integer multiple so cells stay
+  // pixel-crisp (with image-rendering: pixelated in index.html); downscales
+  // use the fractional fit, since there is no integer scale below 1.
+  function fitCanvas() {
+    if (!grid) return;
+    const box = canvas.parentElement;
+    if (!box) return;
+    const borderPx = 4; // 2px canvas border each side sits OUTSIDE the CSS size
+    const availW = Math.max(1, box.clientWidth - borderPx);
+    const availH = Math.max(1, box.clientHeight - borderPx);
+    let scale = Math.min(availW / canvas.width, availH / canvas.height);
+    if (scale >= 1) scale = Math.floor(scale);
+    canvas.style.width = Math.floor(canvas.width * scale) + "px";
+    canvas.style.height = Math.floor(canvas.height * scale) + "px";
+  }
+  window.addEventListener("resize", fitCanvas);
   function drawCell(seg, color) {
     ctx.fillStyle = color;
     ctx.fillRect(seg.x * grid.cellSize, seg.y * grid.cellSize, grid.cellSize - 1, grid.cellSize - 1);
@@ -272,5 +292,8 @@ const Render = (() => {
       }
     });
   }
-  return { draw };
+  // POWERUP_STYLE is exported (read-only by convention) so ui.js's captcha-
+  // screen color legend shows exactly the colors this module draws with --
+  // one source of truth, the legend can never drift from the board.
+  return { draw, POWERUP_STYLE };
 })();

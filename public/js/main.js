@@ -23,7 +23,7 @@
 //     debug button/panel/recording are never created at all -- the only
 //     residue is one boolean test at startup.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-15.3";
+(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-16.1";
 let CLIENT_FX = { inputFlash: true, inputFlashMs: 90, correctionGlide: true, correctionGlideMs: 90, boostTrail: true, slideDust: true };
 let CLIENT_RENDER = { interpolate: true };
 let BOOST_CFG = { enabled: true, boostSpeed: 2.0, slideDistance: 3 };
@@ -33,7 +33,7 @@ fetch("/api/config").then(r => r.json()).then(cfg => {
   if (cfg && cfg.clientRender) CLIENT_RENDER = Object.assign({}, CLIENT_RENDER, cfg.clientRender);
   if (cfg && cfg.boost) BOOST_CFG = Object.assign({}, BOOST_CFG, cfg.boost);
   if (cfg && cfg.powerups) POWERUPS_CFG = cfg.powerups;
-  UI.setPowerupInfo((cfg && cfg.powerupInfo) || {});
+  UI.setPowerupInfo((cfg && cfg.powerupInfo) || {}, POWERUPS_CFG);
   // The join-screen boost tip (index.html #boostTip) is irrelevant if the
   // operator disabled the mechanic entirely -- don't show players a tip for
   // something that will never boost them.
@@ -111,6 +111,16 @@ const boostOn = [false, false];
 // timing; render.js just draws whatever age it's given.
 const EXPLOSION_DURATION_MS = 500;
 let activeExplosions = [];
+// Phase 6 -- mobile/touch (single seat only: seat 0). Coarse-pointer
+// detection gates ALL touch surfaces; desktop behavior is untouched. A
+// touchscreen laptop matches too and simply gets both input surfaces --
+// harmless, since WASD still auto-joins P2 the keyboard way.
+const IS_TOUCH = (window.matchMedia && window.matchMedia("(pointer: coarse)").matches) ||
+  "ontouchstart" in window;
+// Hold-to-boost button state, OR-ed into refreshBoost()'s want for seat 0 so
+// the server keeps seeing only on/off transitions through the one code path.
+let touchBoost = false;
+const SWIPE_MIN_PX = 24;
 
 function wireLocalPlayer(localIdx) {
   const p = myPlayers.get(localIdx);
@@ -180,6 +190,9 @@ function refreshBoost() {
       const dirName = dirNameOfVec(pending);
       const key = dirName && keyForDir(localIdx, dirName);
       want = !!(key && heldKeys.has(key));
+      // The touch BOOST button has no direction of its own: holding it
+      // boosts seat 0's current travel, whatever that is.
+      if (localIdx === 0 && touchBoost) want = true;
     }
     if (want !== boostOn[localIdx]) {
       boostOn[localIdx] = want;
@@ -206,9 +219,59 @@ function startGame(token) {
     onOfferJoin: msg => UI.offerJoin(msg, () => Net.send({ type: "acceptJoin", local: msg.local }), myPlayers.size > 1),
     onJoinLocalDenied: () => { seatPending[1] = false; UI.notifyJoinLocalDenied({ reason: "max local players reached" }); }
   });
-  UI.initCoOp(() => requestSeat(1));
+  // Mobile is single-seat only (maintainer decision, Phase 6): no co-op
+  // button on coarse-pointer devices -- swipe + PWR + BOOST replace the
+  // keyboard surfaces instead.
+  if (IS_TOUCH) {
+    UI.initTouchControls({
+      onActivate: () => {
+        const entry = myLocals && myLocals[0];
+        if (entry && entry.role === "player") Net.send({ type: "activatePowerup", local: 0 });
+      },
+      onBoost: on => { touchBoost = on; refreshBoost(); }
+    });
+    initSwipeSteering();
+  } else {
+    UI.initCoOp(() => requestSeat(1));
+  }
   UI.initLeaveButtons(leaveSeat);
   UI.initKeymapPanel(() => KEY_MAPS, saveKeyMap, swapKeyMaps);
+}
+// Swipe-to-turn (Phase 6): dominant axis of the drag, one turn per swipe
+// (the start point is consumed once the threshold trips; a new turn needs a
+// new touch). Feeds the exact same predictor path as a keypress --
+// queueInput + input flash -- so netcode and prediction need no changes.
+// A swipe when seat 0 doesn't exist is the rejoin gesture, mirroring the
+// keydown rejoin rule ("the input itself is the join request").
+function steerTouch(dir) {
+  if (!myLocals) return;
+  const entry = myLocals[0];
+  if (!entry) {
+    if (!seatPending[0]) requestSeat(0);
+    return;
+  }
+  if (entry.role !== "player") return;
+  const p = myPlayers.get(0);
+  if (!p) return;
+  const accepted = p.queueInput(dir, boostOn[0]);
+  if (accepted && CLIENT_FX.inputFlash) lastInputFlash[0] = { dir, t: performance.now() };
+}
+function initSwipeSteering() {
+  const board = document.getElementById("game");
+  let start = null;
+  board.addEventListener("touchstart", e => {
+    const t = e.touches[0];
+    start = { x: t.clientX, y: t.clientY };
+  }, { passive: true });
+  board.addEventListener("touchmove", e => {
+    if (!start) return;
+    const t = e.touches[0];
+    const dx = t.clientX - start.x, dy = t.clientY - start.y;
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE_MIN_PX) return;
+    start = null; // consumed: one turn per swipe
+    steerTouch(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up"));
+  }, { passive: true });
+  board.addEventListener("touchend", () => { start = null; });
 }
 function handleState(curr) {
   myLocals = curr.you.locals;

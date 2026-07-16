@@ -2,8 +2,7 @@
   "maxPlayers": 4,
   "maxLocalPlayers": 2,
   "grid": {
-    "cols": 50,
-    "rows": 30,
+    "preset": "1080p",
     "cellSize": 20
   },
   "simHz": 60,

@@ -3,7 +3,7 @@
 // prompt with countdown, spectator overlay, explicit JOIN offer button,
 // and a DEBUG button/panel (recording enabled only while open).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-15.3";
+(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-16.1";
 const UI = (() => {
   const statusEl = document.getElementById("status");
   let captchaId = null;
@@ -44,7 +44,7 @@ const UI = (() => {
   // small, tight box; many get a taller one, capped and scrollable (see the
   // max-height/overflow-y in index.html's #powerupInfoPopup rule) so it
   // never runs off the top of the screen.
-  function setPowerupInfo(info) {
+  function setPowerupInfo(info, powerupsCfg) {
     const popup = document.getElementById("powerupInfoPopup");
     if (!popup) return;
     const entries = Object.values(info || {});
@@ -55,6 +55,24 @@ const UI = (() => {
     // Scale the popup's height with entry count (small list = tight box,
     // large list = taller box up to the CSS max-height/scroll fallback).
     popup.style.minHeight = Math.min(400, 40 + entries.length * 55) + "px";
+    // Captcha-screen color legend (index.html #powerupLegend): swatch +
+    // name per powerup so a new player knows what each pickup color means
+    // before their snake ever moves. Colors come from render.js's own
+    // POWERUP_STYLE (the exact draw colors); types the operator disabled
+    // (powerupsCfg[type].enabled === false) are skipped -- never teach a
+    // color that can't appear on this server's board.
+    const legend = document.getElementById("powerupLegend");
+    if (!legend) return;
+    // Render is a top-level const (script load order: render.js before
+    // ui.js), so it's a global binding but NOT a window property.
+    const style = (typeof Render !== "undefined" && Render.POWERUP_STYLE) || {};
+    legend.innerHTML = Object.keys(info || {}).filter(type => {
+      const pc = powerupsCfg && powerupsCfg[type];
+      return !(pc && pc.enabled === false);
+    }).map(type =>
+      "<span><span class=\"sw\" style=\"background:" + (style[type] || "#fff") + "\"></span>" +
+      (info[type].title || type) + "</span>"
+    ).join("");
   }
   function initCaptchaGate(onSuccess) {
     loadCaptcha();
@@ -100,6 +118,63 @@ const UI = (() => {
     const fmt = list => list.map(e => "<li>" + e.initials + " - " + e.score + "</li>").join("");
     document.getElementById("dailyList").innerHTML = fmt(hs.daily);
     document.getElementById("allTimeList").innerHTML = fmt(hs.allTime);
+  }
+
+  // ---- Fading top menu (Phase 5) --------------------------------------
+  // One shared bar replaces the four always-on corner buttons (DEBUG,
+  // coop, KEYS, Leave). It sits hidden at the top edge and fades in when
+  // the pointer nears the top (or on a tap up there, for touch), fading
+  // back out after a short idle. While any of its panels (DEBUG/KEYS) is
+  // open the bar is pinned visible so its toggle button can't vanish from
+  // under an open panel. Buttons keep their exact behavior -- this is a
+  // relocation, not a redesign.
+  const TOPBAR_REVEAL_PX = 80;
+  const TOPBAR_HIDE_DELAY_MS = 1500;
+  let topBarEl = null;
+  let topBarHideTimer = null;
+  let topBarPinned = 0;
+  function topBarSetVisible(on) {
+    if (!topBarEl) return;
+    topBarEl.style.opacity = on ? "1" : "0";
+    topBarEl.style.pointerEvents = on ? "auto" : "none";
+  }
+  function topBarShow() {
+    if (topBarHideTimer) { clearTimeout(topBarHideTimer); topBarHideTimer = null; }
+    topBarSetVisible(true);
+  }
+  function topBarScheduleHide() {
+    if (topBarPinned > 0 || topBarHideTimer) return;
+    topBarHideTimer = setTimeout(() => {
+      topBarHideTimer = null;
+      if (topBarPinned === 0) topBarSetVisible(false);
+    }, TOPBAR_HIDE_DELAY_MS);
+  }
+  // Panels opened FROM the bar call this with true/false so the bar stays
+  // up while they're open (counted, since DEBUG and KEYS can both be open).
+  function topBarPin(on) {
+    topBarPinned = Math.max(0, topBarPinned + (on ? 1 : -1));
+    if (topBarPinned > 0) topBarShow();
+    else topBarScheduleHide();
+  }
+  function topBar() {
+    if (topBarEl) return topBarEl;
+    topBarEl = document.createElement("div");
+    topBarEl.id = "topBar";
+    topBarEl.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;" +
+      "display:flex;gap:6px;align-items:center;padding:4px 8px;" +
+      "background:rgba(17,17,17,0.92);border-bottom:1px solid #444;" +
+      "opacity:0;pointer-events:none;transition:opacity 0.25s;";
+    document.body.appendChild(topBarEl);
+    // pointermove covers mouse; pointerdown covers a tap near the top edge
+    // on touch (touch produces no hover-style moves worth trusting).
+    document.addEventListener("pointermove", e => {
+      if (e.clientY <= TOPBAR_REVEAL_PX) topBarShow();
+      else topBarScheduleHide();
+    });
+    document.addEventListener("pointerdown", e => {
+      if (e.clientY <= TOPBAR_REVEAL_PX) { topBarShow(); topBarScheduleHide(); }
+    });
+    return topBarEl;
   }
 
   function overlayBox(id) {
@@ -222,21 +297,21 @@ const UI = (() => {
     }, 250);
   }
 
-  // Phase 3: couch co-op. A small always-visible button that requests a
-  // second local player (WASD) on the same connection. Disabled once
-  // clicked; re-enabled if the server refuses (denial toast below).
+  // Phase 3: couch co-op. A button in the top bar that requests a second
+  // local player (WASD) on the same connection. Disabled once clicked;
+  // re-enabled if the server refuses (denial toast below).
   function initCoOp(onRequest) {
     if (document.getElementById("coopBtn")) return;
     const btn = document.createElement("button");
     btn.id = "coopBtn";
     btn.textContent = "+ Add Player 2 (or just press WASD)";
-    btn.style.cssText = "position:fixed;top:6px;right:6px;z-index:9999;background:#222;color:#6cf;border:1px solid #666;font-family:monospace;font-size:12px;padding:4px 8px;cursor:pointer;";
+    btn.style.cssText = "background:#222;color:#6cf;border:1px solid #666;font-family:monospace;font-size:12px;padding:4px 8px;cursor:pointer;";
     btn.onclick = () => {
       btn.disabled = true;
       btn.textContent = "Player 2 requested...";
       onRequest();
     };
-    document.body.appendChild(btn);
+    topBar().appendChild(btn);
   }
   function coOpJoined() {
     const btn = document.getElementById("coopBtn");
@@ -261,8 +336,10 @@ const UI = (() => {
     if (document.getElementById("leaveBar")) return;
     const bar = document.createElement("div");
     bar.id = "leaveBar";
-    bar.style.cssText = "position:fixed;bottom:6px;right:6px;z-index:9999;display:flex;gap:6px;";
-    document.body.appendChild(bar);
+    // margin-left:auto pushes the Leave group to the bar's right edge, away
+    // from the join/debug/keys buttons on the left.
+    bar.style.cssText = "margin-left:auto;display:flex;gap:6px;";
+    topBar().appendChild(bar);
   }
   function updateLeaveButtons(locals) {
     const bar = document.getElementById("leaveBar");
@@ -319,8 +396,8 @@ const UI = (() => {
     const btn = document.createElement("button");
     btn.id = "debugBtn";
     btn.textContent = "DEBUG";
-    btn.style.cssText = "position:fixed;top:6px;left:6px;z-index:9999;background:#222;color:#6f6;border:1px solid #666;font-family:monospace;font-size:12px;padding:4px 8px;cursor:pointer;";
-    document.body.appendChild(btn);
+    btn.style.cssText = "background:#222;color:#6f6;border:1px solid #666;font-family:monospace;font-size:12px;padding:4px 8px;cursor:pointer;";
+    topBar().appendChild(btn);
 
     const panel = document.createElement("div");
     panel.id = "debugPanel";
@@ -330,6 +407,7 @@ const UI = (() => {
     btn.onclick = () => {
       const open = panel.style.display === "none";
       panel.style.display = open ? "block" : "none";
+      topBarPin(open); // keep the fading bar up while its panel is open
       debugToggleFn(open);
       if (open) {
         renderDebug();
@@ -377,23 +455,22 @@ const UI = (() => {
     panel.textContent = lines.join("\n");
   }
 
-  // ---- Keybind remap panel (bottom-left corner, the one free corner:
-  // top-left is DEBUG, top-right is coop, bottom-right is the Leave bar) --
-  // rebind each seat's activation key, or swap which local index uses WASD
-  // vs. arrows. 100% client-side; getKeyMapsFn/saveKeyMapFn/swapFn are
-  // main.js's localStorage-backed KEY_MAPS accessors -- this module has no
-  // opinion on persistence, it only drives the UI.
+  // ---- Keybind remap panel (top bar, next to DEBUG) -- rebind each seat's
+  // activation key, or swap which local index uses WASD vs. arrows. 100%
+  // client-side; getKeyMapsFn/saveKeyMapFn/swapFn are main.js's
+  // localStorage-backed KEY_MAPS accessors -- this module has no opinion on
+  // persistence, it only drives the UI.
   function initKeymapPanel(getKeyMapsFn, saveKeyMapFn, swapFn) {
     if (document.getElementById("keymapBtn")) return;
     const btn = document.createElement("button");
     btn.id = "keymapBtn";
     btn.textContent = "KEYS";
-    btn.style.cssText = "position:fixed;bottom:6px;left:6px;z-index:9999;background:#222;color:#fc6;border:1px solid #666;font-family:monospace;font-size:12px;padding:4px 8px;cursor:pointer;";
-    document.body.appendChild(btn);
+    btn.style.cssText = "background:#222;color:#fc6;border:1px solid #666;font-family:monospace;font-size:12px;padding:4px 8px;cursor:pointer;";
+    topBar().appendChild(btn);
 
     const panel = document.createElement("div");
     panel.id = "keymapPanel";
-    panel.style.cssText = "position:fixed;bottom:34px;left:6px;z-index:9999;display:none;width:260px;background:rgba(0,0,0,0.9);color:#ddd;border:1px solid #666;font-family:monospace;font-size:12px;padding:10px;";
+    panel.style.cssText = "position:fixed;top:34px;left:76px;z-index:9999;display:none;width:260px;background:rgba(0,0,0,0.9);color:#ddd;border:1px solid #666;font-family:monospace;font-size:12px;padding:10px;";
     document.body.appendChild(panel);
 
     let capturing = null; // local index currently waiting for a keypress, or null
@@ -435,13 +512,46 @@ const UI = (() => {
     btn.onclick = () => {
       const open = panel.style.display === "none";
       panel.style.display = open ? "block" : "none";
+      topBarPin(open); // keep the fading bar up while its panel is open
       if (open) renderPanel();
     };
+  }
+
+  // ---- Touch controls (Phase 6) ---------------------------------------
+  // Two semi-transparent buttons overlaying the bottom corners on
+  // coarse-pointer devices (main.js decides WHEN to build these; this
+  // module only builds the DOM). PWR fires the activation action on tap;
+  // BOOST is hold-to-boost -- handlers.onBoost(true/false) on press/release,
+  // with touchcancel treated as release so an interrupted touch can never
+  // leave a snake boosting forever (same reasoning as main.js's window blur
+  // handler for held keys). Steering is swipe-on-board, handled in main.js.
+  function initTouchControls(handlers) {
+    if (document.getElementById("touchPwrBtn")) return;
+    const base = "position:fixed;bottom:16px;z-index:9995;width:76px;height:76px;" +
+      "border-radius:50%;font-family:monospace;font-size:14px;opacity:0.45;" +
+      "touch-action:none;-webkit-user-select:none;user-select:none;";
+    const pwr = document.createElement("button");
+    pwr.id = "touchPwrBtn";
+    pwr.textContent = "PWR";
+    pwr.style.cssText = base + "left:16px;background:#241a2e;color:#c9f;border:2px solid #758;";
+    pwr.addEventListener("touchstart", e => { e.preventDefault(); handlers.onActivate(); }, { passive: false });
+    document.body.appendChild(pwr);
+
+    const boost = document.createElement("button");
+    boost.id = "touchBoostBtn";
+    boost.textContent = "BOOST";
+    boost.style.cssText = base + "right:16px;background:#14201a;color:#9f9;border:2px solid #3a5;";
+    const press = e => { e.preventDefault(); boost.style.opacity = "0.8"; handlers.onBoost(true); };
+    const release = e => { e.preventDefault(); boost.style.opacity = "0.45"; handlers.onBoost(false); };
+    boost.addEventListener("touchstart", press, { passive: false });
+    boost.addEventListener("touchend", release, { passive: false });
+    boost.addEventListener("touchcancel", release, { passive: false });
+    document.body.appendChild(boost);
   }
 
   return { initCaptchaGate, setConnectionStatus, updateStatus, updateLeaderboards,
            askInitials, showSpectator, offerJoin, initDebug,
            initCoOp, coOpJoined, coOpLeft, notifyJoinLocalDenied,
            initLeaveButtons, updateLeaveButtons, showRejoin, initKeymapPanel,
-           setPowerupInfo };
+           setPowerupInfo, initTouchControls };
 })();
