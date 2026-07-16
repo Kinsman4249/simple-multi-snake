@@ -24,7 +24,7 @@
 // debug panel) is tracked per local index so p1 and p2 never step on each
 // other's cosmetic state.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-12.16";
+(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-12.17";
 let CLIENT_FX = { inputFlash: true, inputFlashMs: 90, correctionGlide: true, correctionGlideMs: 90 };
 fetch("/api/config").then(r => r.json()).then(cfg => {
   if (cfg && cfg.clientFx) CLIENT_FX = Object.assign({}, CLIENT_FX, cfg.clientFx);
@@ -51,8 +51,10 @@ function wireLocalPlayer(localIdx) {
   const p = myPlayers.get(localIdx);
   p.setSender((dir, clientSeq) => Net.send({ type: "dir", dir, cseq: clientSeq, local: localIdx }));
 }
-// Requests a second local player (WASD) on this same connection. This is
-// ALWAYS granted a seat (up to config.maxLocalPlayers) -- it is never
+// Requests a second local player (WASD) on this same connection -- called
+// either from the "+ Add Player 2" button (ui.js) or automatically the
+// first time a WASD key is pressed (see the keydown listener below). This
+// is ALWAYS granted a seat (up to config.maxLocalPlayers) -- it is never
 // refused for lack of a free slot, since a co-op seat is round-robin fair
 // like anyone else and simply queues as a spectator if the board is full or
 // others are already waiting. See UI.notifyJoinLocalDenied for the one
@@ -145,6 +147,16 @@ function frame() {
 document.addEventListener("keydown", e => {
   if (!myLocals) return;
   const key = e.key.toLowerCase();
+  // Auto-join P2 the first time a WASD key is pressed -- same effect as
+  // clicking "+ Add Player 2", just discovered naturally instead of
+  // requiring the button. This keypress itself becomes the join request; it
+  // doesn't queue a move, since there's no seat to queue one for yet (the
+  // server hasn't granted it). The very next WASD press, once the state
+  // broadcast confirms the seat, moves the snake normally.
+  if (!myPlayers.has(1) && KEY_MAPS[1][key] !== undefined) {
+    requestCoOp();
+    return;
+  }
   for (let localIdx = 0; localIdx < KEY_MAPS.length; localIdx++) {
     const dir = KEY_MAPS[localIdx][key];
     if (!dir) continue;

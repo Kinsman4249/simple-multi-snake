@@ -23,7 +23,7 @@ const CFG = JSON.parse(fs.readFileSync(path.join(__dirname, "config.json"), "utf
 const HS_FILE = path.join(__dirname, "highscores.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const PORT = 8080;
-const BUILD = "server 2026-07-12.18";
+const BUILD = "server 2026-07-12.19";
 
 const SIM_HZ = Number.isFinite(CFG.simHz) && CFG.simHz > 0 ? CFG.simHz : 60;
 const SIM_MS = 1000 / SIM_HZ;
@@ -162,7 +162,7 @@ function newPlayerSlot(connId) {
   };
 }
 function assignConnection(connId, ws) {
-  connections.set(connId, { ws, locals: [] });
+  connections.set(connId, { ws, locals: [], pendingInitials: [] });
   admitLocal(connId, 0);
 }
 // Seat a (new or re-requested) local player slot for connId at localIdx.
@@ -289,9 +289,11 @@ function lifecycleSweep() {
   for (let i = 0; i < slots.length; i++) {
     const s = slots[i];
     if (s && s.awaitInitials && s.initialsDeadline && now >= s.initialsDeadline) {
+      const connId = s.connId;
       s.awaitInitials = false;
       s.initialsDeadline = null;
       respawnOrSpectate(i);
+      startNextPendingInitials(connections.get(connId));
     }
   }
 }
@@ -436,6 +438,20 @@ function applyKillBonuses(died) {
     for (let n = 0; n < CFG.killBonusGrowth; n++) killer.body.push({ ...tail });
   }
 }
+// If this connection has another local seat's high-score prompt queued
+// (see handleDeath), start it now. Used after an initials prompt resolves
+// (submitted or timed out) so a couch-co-op connection never has two
+// initials prompts live at once -- see handleDeath for why.
+function startNextPendingInitials(conn) {
+  if (!conn || !conn.pendingInitials || conn.pendingInitials.length === 0) return;
+  const next = conn.pendingInitials.shift();
+  const s = slots[next.slotIndex];
+  if (!s) { startNextPendingInitials(conn); return; } // slot no longer exists, try the next queued one
+  s.awaitInitials = true;
+  s.initialsDeadline = Date.now() + INITIALS_TIMEOUT_MS;
+  const localIdx = conn.locals.findIndex(l => l && l.slotIndex === next.slotIndex);
+  sendTo(conn.ws, { type: "askInitials", targets: next.targets, score: next.score, deadlineMs: INITIALS_TIMEOUT_MS, local: localIdx });
+}
 function handleDeath(slotIndex) {
   const s = slots[slotIndex];
   if (!s) return;
@@ -444,6 +460,17 @@ function handleDeath(slotIndex) {
   const conn = connections.get(s.connId);
   const localIdx = conn ? conn.locals.findIndex(l => l && l.role === "player" && l.slotIndex === slotIndex) : -1;
   if (targets.length > 0 && conn && localIdx !== -1) {
+    // Couch co-op: if another local seat on THIS connection already has an
+    // initials prompt live, don't show a second one at the same time -- one
+    // human, one keyboard, one prompt. Queue it instead; startNextPendingInitials
+    // starts it (deadline included) once the first one resolves, so the
+    // countdown never runs down unseen while queued.
+    const anotherPromptLive = conn.locals.some((l, i) =>
+      i !== localIdx && l && l.role === "player" && slots[l.slotIndex] && slots[l.slotIndex].awaitInitials);
+    if (anotherPromptLive) {
+      conn.pendingInitials.push({ slotIndex, targets, score: s.score });
+      return;
+    }
     s.awaitInitials = true;
     s.initialsDeadline = Date.now() + INITIALS_TIMEOUT_MS;
     sendTo(conn.ws, { type: "askInitials", targets, score: s.score, deadlineMs: INITIALS_TIMEOUT_MS, local: localIdx });
@@ -597,6 +624,7 @@ wss.on("connection", ws => {
           s.awaitInitials = false;
           s.initialsDeadline = null;
           respawnOrSpectate(entry.slotIndex);
+          startNextPendingInitials(conn);
         }
       }
       broadcastState();

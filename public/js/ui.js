@@ -3,7 +3,7 @@
 // prompt with countdown, spectator overlay, explicit JOIN offer button,
 // and a DEBUG button/panel (recording enabled only while open).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-12.10";
+(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-12.11";
 const UI = (() => {
   const statusEl = document.getElementById("status");
   let captchaId = null;
@@ -183,7 +183,7 @@ const UI = (() => {
     if (document.getElementById("coopBtn")) return;
     const btn = document.createElement("button");
     btn.id = "coopBtn";
-    btn.textContent = "+ Add Player 2 (WASD)";
+    btn.textContent = "+ Add Player 2 (or just press WASD)";
     btn.style.cssText = "position:fixed;top:6px;right:6px;z-index:9999;background:#222;color:#6cf;border:1px solid #666;font-family:monospace;font-size:12px;padding:4px 8px;cursor:pointer;";
     btn.onclick = () => {
       btn.disabled = true;
