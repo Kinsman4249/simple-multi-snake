@@ -2,7 +2,7 @@
 // Networking: owns the WebSocket connection and keeps the last two
 // authoritative "state" snapshots, each stamped with browser receive time.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).net = "net 2026-07-12.8";
+(window.__BUILDS__ = window.__BUILDS__ || {}).net = "net 2026-07-12.9";
 const Net = (() => {
   let ws = null;
   let handlers = {};
@@ -28,6 +28,8 @@ const Net = (() => {
       handlers.onSpectator && handlers.onSpectator(msg);
     } else if (msg.type === "offerJoin") {
       handlers.onOfferJoin && handlers.onOfferJoin(msg);
+    } else if (msg.type === "joinLocalDenied") {
+      handlers.onJoinLocalDenied && handlers.onJoinLocalDenied(msg);
     }
   }
   function send(obj) {

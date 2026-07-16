@@ -16,17 +16,24 @@
 //     frame remain exactly grid-snapped as before.
 //
 // Both effects are purely cosmetic (never affect gameplay), apply only to
-// the local player's own snake, and are entirely controlled by the fx object
-// main.js passes in (which itself reflects the server-side clientFx config;
-// this module has no independent on/off logic of its own -- pass null/absent
-// to disable either effect).
+// the LOCAL player's own snake(s), and are entirely controlled by the fx
+// object main.js passes in (which itself reflects the server-side clientFx
+// config; this module has no independent on/off logic of its own -- pass an
+// empty/absent array to disable either effect).
 //
-// The optional eatenKey argument is the food cell the local predictor is
-// provisionally treating as eaten; we hide that food immediately so the
-// client's predicted eat looks consistent. If the server later rejects the
-// eat, predict.js rolls back and the food reappears.
+// Phase 3 (dual local controls): a single connection may control more than
+// one snake (couch co-op). fx.flashes and fx.glides are therefore arrays
+// (0-2 entries), each tagged with the server slot it applies to, rather
+// than a single object -- render.js looks up the matching entry, if any,
+// per player while drawing. Everything else about the draw loop is
+// unchanged and slot-count-agnostic.
+//
+// The optional eatenKeys argument is an array of food cells the local
+// predictor(s) are provisionally treating as eaten; we hide those foods
+// immediately so predicted eats look consistent. If the server later
+// rejects an eat, predict.js rolls it back and the food reappears.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-12.14";
+(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-12.15";
 const Render = (() => {
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");
@@ -59,28 +66,28 @@ const Render = (() => {
     else if (v.y === -1) ctx.fillRect(px, py, cs - 1, stripW);
     ctx.restore();
   }
-  function draw(prevSnap, currSnap, localBodies, eatenKey, fx) {
+  function draw(prevSnap, currSnap, localBodies, eatenKeys, fx) {
     if (!currSnap) return;
     if (!grid || grid.cols !== currSnap.grid.cols || grid.cellSize !== currSnap.grid.cellSize) {
       resize(currSnap.grid);
     }
-    const flash = fx && fx.flash;
-    const glide = fx && fx.glide;
+    const flashes = (fx && fx.flashes) || [];
+    const glides = (fx && fx.glides) || [];
     const now = performance.now();
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     if (currSnap.food) {
       const key = currSnap.food.x + "," + currSnap.food.y;
-      if (key !== eatenKey) drawCell(currSnap.food, "#e33");
+      if (!eatenKeys || eatenKeys.indexOf(key) === -1) drawCell(currSnap.food, "#e33");
     }
     currSnap.players.forEach((p, i) => {
       if (!p) return;
       const body = (localBodies && localBodies.has(i)) ? localBodies.get(i) : p.body;
       if (!body || !body.length) return;
-      const isGliding = glide && glide.slot === i;
+      const glide = glides.find(g => g.slot === i);
       let headPx = body[0].x * grid.cellSize;
       let headPy = body[0].y * grid.cellSize;
-      if (isGliding) {
+      if (glide) {
         const t = Math.min(1, (now - glide.startTime) / glide.durationMs);
         const et = easeOutCubic(t);
         headPx = lerp(glide.from.x * grid.cellSize, glide.to.x * grid.cellSize, et);
@@ -95,7 +102,8 @@ const Render = (() => {
         ctx.fillStyle = "rgba(0,0,0,0.5)";
         body.forEach(seg => ctx.fillRect(seg.x * grid.cellSize, seg.y * grid.cellSize, grid.cellSize - 1, grid.cellSize - 1));
       }
-      if (flash && flash.slot === i) {
+      const flash = flashes.find(f => f.slot === i);
+      if (flash) {
         const alpha = Math.max(0, 1 - (now - flash.t) / flash.durationMs);
         drawInputFlash(headPx, headPy, flash.dir, alpha);
       }

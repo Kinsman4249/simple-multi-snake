@@ -1,5 +1,6 @@
 {
   "maxPlayers": 4,
+  "maxLocalPlayers": 2,
   "grid": {
     "cols": 50,
     "rows": 30,

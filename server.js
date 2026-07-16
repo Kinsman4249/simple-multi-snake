@@ -23,11 +23,23 @@ const CFG = JSON.parse(fs.readFileSync(path.join(__dirname, "config.json"), "utf
 const HS_FILE = path.join(__dirname, "highscores.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const PORT = 8080;
-const BUILD = "server 2026-07-12.16";
+const BUILD = "server 2026-07-12.18";
 
 const SIM_HZ = Number.isFinite(CFG.simHz) && CFG.simHz > 0 ? CFG.simHz : 60;
 const SIM_MS = 1000 / SIM_HZ;
 const MOVE = CFG.move || { startIntervalMs: 160, minIntervalMs: 70, rampIntervalSec: 30, rampStepMs: 10 };
+// Phase 3: dual local controls (couch co-op). A single WS connection may
+// control more than one local seat -- conn.locals is an array indexed by
+// local index (0 is "p1", arrow keys client-side; 1 is "p2", WASD). Each
+// entry is { role: "player", slotIndex } or { role: "spectator",
+// slotIndex: null }. Every local seat is admitted and queued exactly like a
+// fresh solo connection would be (see admitLocal): a co-op connection gets
+// NO fairness advantage over anyone else. If a slot isn't free and no one
+// is waiting, the seat's connection gets it immediately; otherwise it goes
+// to the back of the spectatorQueue and is offered a slot later like any
+// other spectator. Capped by MAX_LOCAL_PLAYERS so one connection cannot
+// occupy an unbounded number of seats.
+const MAX_LOCAL_PLAYERS = Number.isInteger(CFG.maxLocalPlayers) && CFG.maxLocalPlayers > 0 ? CFG.maxLocalPlayers : 2;
 // Purely cosmetic client-side effects (input flash, correction glide). Never
 // gameplay-affecting and never client-configurable by design: on by default
 // so the installer needs no prompt, with a single global on/off per effect
@@ -150,31 +162,66 @@ function newPlayerSlot(connId) {
   };
 }
 function assignConnection(connId, ws) {
+  connections.set(connId, { ws, locals: [] });
+  admitLocal(connId, 0);
+}
+// Seat a (new or re-requested) local player slot for connId at localIdx.
+// This is the single admission path used by a fresh connect (localIdx 0),
+// a couch-co-op joinLocal request (localIdx 1+), and nowhere else -- there
+// is exactly one fairness rule, applied per LOCAL SEAT, not per connection:
+// take a free slot immediately only if no one else is waiting, otherwise go
+// to the back of the spectator queue like anyone else. A co-op connection
+// gets no special treatment; each of its seats is round-robin fair on its
+// own.
+function admitLocal(connId, localIdx) {
+  const conn = connections.get(connId);
+  if (!conn) return;
   const freeIndex = slots.findIndex(s => s === null);
   if (freeIndex !== -1 && spectatorQueue.length === 0 && !joinOffer) {
     slots[freeIndex] = newPlayerSlot(connId);
     slots[freeIndex].color = COLORS[freeIndex];
     spawnSnake(freeIndex);
-    connections.set(connId, { ws, role: "player", slotIndex: freeIndex });
+    conn.locals[localIdx] = { role: "player", slotIndex: freeIndex };
     if (sessionStart === null) sessionStart = Date.now();
     if (!food) placeFood();
   } else {
-    spectatorQueue.push({ connId, since: Date.now() });
-    connections.set(connId, { ws, role: "spectator", slotIndex: null });
+    spectatorQueue.push({ connId, local: localIdx, since: Date.now() });
+    conn.locals[localIdx] = { role: "spectator", slotIndex: null };
     maybeOfferSlot();
   }
+}
+// Add a second (or later) local player seat to an existing connection
+// (couch co-op). Only refused once config.maxLocalPlayers is reached --
+// otherwise the new seat is admitted exactly like a fresh join, including
+// going to the back of the spectator queue if one is already forming. This
+// is deliberate: a co-op connection must not be able to hog two board slots
+// while other connections wait; each local seat stands in line on its own.
+function addLocalPlayer(connId) {
+  const conn = connections.get(connId);
+  if (!conn) return "not connected";
+  if (conn.locals.length >= MAX_LOCAL_PLAYERS) return "max local players reached";
+  admitLocal(connId, conn.locals.length);
+  return null;
+}
+// After a death that does not need (or has finished) the initials prompt:
+// round robin, no exceptions. If anyone is waiting, THIS seat yields its
+// slot to the queue, exactly the same whether it belongs to a solo
+// connection or one seat of a co-op pair. The other seat on a co-op
+// connection (if any) is unaffected either way.
+function respawnOrSpectate(slotIndex) {
+  if (spectatorQueue.length > 0) movePlayerToSpectator(slotIndex);
+  else spawnSnake(slotIndex);
 }
 function removeConnection(connId) {
   const conn = connections.get(connId);
   if (!conn) return;
   connections.delete(connId);
-  if (conn.role === "player") {
-    slots[conn.slotIndex] = null;
-    maybeOfferSlot();
-  } else {
-    spectatorQueue = spectatorQueue.filter(e => e.connId !== connId);
-    if (joinOffer && joinOffer.connId === connId) { joinOffer = null; maybeOfferSlot(); }
+  for (const entry of conn.locals) {
+    if (entry && entry.role === "player" && entry.slotIndex != null) slots[entry.slotIndex] = null;
   }
+  spectatorQueue = spectatorQueue.filter(e => e.connId !== connId);
+  if (joinOffer && joinOffer.connId === connId) joinOffer = null;
+  maybeOfferSlot();
   if (slots.every(s => s === null) && spectatorQueue.length === 0) {
     sessionStart = null; food = null;
   }
@@ -186,45 +233,65 @@ function maybeOfferSlot() {
   if (spectatorQueue.length === 0) return;
   const front = spectatorQueue[0];
   const conn = connections.get(front.connId);
-  if (!conn) { spectatorQueue.shift(); return maybeOfferSlot(); }
-  joinOffer = { connId: front.connId, expiresAt: Date.now() + JOIN_OFFER_MS };
-  sendTo(conn.ws, { type: "offerJoin", acceptMs: JOIN_OFFER_MS });
+  const seat = conn && conn.locals[front.local];
+  if (!conn || !seat || seat.role !== "spectator") {
+    // Stale entry (disconnected, or this seat already left the queue some
+    // other way) -- drop it and try the next one in line.
+    spectatorQueue.shift();
+    return maybeOfferSlot();
+  }
+  joinOffer = { connId: front.connId, local: front.local, expiresAt: Date.now() + JOIN_OFFER_MS };
+  sendTo(conn.ws, { type: "offerJoin", local: front.local, acceptMs: JOIN_OFFER_MS });
 }
-function acceptJoin(connId) {
-  if (!joinOffer || joinOffer.connId !== connId) return;
+function acceptJoin(connId, localIdx) {
+  if (!joinOffer || joinOffer.connId !== connId || joinOffer.local !== localIdx) return;
   const openIndex = slots.findIndex(s => s === null);
   if (openIndex === -1) { joinOffer = null; return; }
-  spectatorQueue = spectatorQueue.filter(e => e.connId !== connId);
+  spectatorQueue = spectatorQueue.filter(e => !(e.connId === connId && e.local === localIdx));
   joinOffer = null;
   const conn = connections.get(connId);
   if (!conn) { maybeOfferSlot(); return; }
   slots[openIndex] = newPlayerSlot(connId);
   slots[openIndex].color = COLORS[openIndex];
   spawnSnake(openIndex);
-  conn.role = "player";
-  conn.slotIndex = openIndex;
+  conn.locals[localIdx] = { role: "player", slotIndex: openIndex };
   if (sessionStart === null) sessionStart = Date.now();
   if (!food) placeFood();
 }
 function lifecycleSweep() {
   const now = Date.now();
   if (joinOffer && now >= joinOffer.expiresAt) {
-    const idx = spectatorQueue.findIndex(e => e.connId === joinOffer.connId);
-    if (idx !== -1) { const [e] = spectatorQueue.splice(idx, 1); spectatorQueue.push({ connId: e.connId, since: now }); }
+    const idx = spectatorQueue.findIndex(e => e.connId === joinOffer.connId && e.local === joinOffer.local);
+    if (idx !== -1) { const [e] = spectatorQueue.splice(idx, 1); spectatorQueue.push({ connId: e.connId, local: e.local, since: now }); }
     joinOffer = null;
     maybeOfferSlot();
   }
   for (const e of spectatorQueue.slice()) {
     if (now - e.since >= SPECTATOR_IDLE_MS) {
       const conn = connections.get(e.connId);
-      if (conn && conn.ws) { try { conn.ws.close(); } catch (_) {} }
-      removeConnection(e.connId);
+      const otherSeatStillPlaying = conn && conn.locals.some((l, idx) => idx !== e.local && l && l.role === "player");
+      if (!otherSeatStillPlaying) {
+        // Nothing else on this connection is active: close the socket, as
+        // before.
+        if (conn && conn.ws) { try { conn.ws.close(); } catch (_) {} }
+        removeConnection(e.connId);
+      } else {
+        // A co-op connection where the OTHER local seat is still actively
+        // playing: closing the whole connection would eject that seat too,
+        // which would be wrong. Simplification, not yet live-tested: this
+        // seat just abandons the queue rather than the socket closing; the
+        // player can request it again later with joinLocal. See TODO.md.
+        spectatorQueue = spectatorQueue.filter(x => !(x.connId === e.connId && x.local === e.local));
+        if (conn) conn.locals[e.local] = { role: "spectator", slotIndex: null, abandoned: true };
+      }
     }
   }
   for (let i = 0; i < slots.length; i++) {
     const s = slots[i];
     if (s && s.awaitInitials && s.initialsDeadline && now >= s.initialsDeadline) {
-      movePlayerToSpectator(i);
+      s.awaitInitials = false;
+      s.initialsDeadline = null;
+      respawnOrSpectate(i);
     }
   }
 }
@@ -234,10 +301,15 @@ function movePlayerToSpectator(slotIndex) {
   const conn = connections.get(s.connId);
   slots[slotIndex] = null;
   if (conn) {
-    conn.role = "spectator";
-    conn.slotIndex = null;
-    spectatorQueue.push({ connId: s.connId, since: Date.now() });
-    sendTo(conn.ws, { type: "spectator", queuePos: spectatorQueue.length, queueLen: spectatorQueue.length, disconnectMs: SPECTATOR_IDLE_MS });
+    const localIdx = conn.locals.findIndex(l => l && l.role === "player" && l.slotIndex === slotIndex);
+    if (localIdx !== -1) {
+      conn.locals[localIdx] = { role: "spectator", slotIndex: null };
+      spectatorQueue.push({ connId: s.connId, local: localIdx, since: Date.now() });
+      sendTo(conn.ws, {
+        type: "spectator", local: localIdx,
+        queuePos: spectatorQueue.length, queueLen: spectatorQueue.length, disconnectMs: SPECTATOR_IDLE_MS
+      });
+    }
   }
   maybeOfferSlot();
 }
@@ -370,16 +442,16 @@ function handleDeath(slotIndex) {
   s.alive = false;
   const targets = qualifies(s.score);
   const conn = connections.get(s.connId);
-  if (targets.length > 0 && conn) {
+  const localIdx = conn ? conn.locals.findIndex(l => l && l.role === "player" && l.slotIndex === slotIndex) : -1;
+  if (targets.length > 0 && conn && localIdx !== -1) {
     s.awaitInitials = true;
     s.initialsDeadline = Date.now() + INITIALS_TIMEOUT_MS;
-    sendTo(conn.ws, { type: "askInitials", targets, score: s.score, deadlineMs: INITIALS_TIMEOUT_MS });
+    sendTo(conn.ws, { type: "askInitials", targets, score: s.score, deadlineMs: INITIALS_TIMEOUT_MS, local: localIdx });
     return;
   }
   setTimeout(() => {
     if (!slots[slotIndex] || slots[slotIndex].connId !== s.connId) return;
-    if (spectatorQueue.length > 0) movePlayerToSpectator(slotIndex);
-    else spawnSnake(slotIndex);
+    respawnOrSpectate(slotIndex);
   }, CFG.spectatorPromoteDelayMs);
 }
 function sendTo(ws, msg) { if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg)); }
@@ -393,13 +465,17 @@ function broadcastState() {
     highScores: { daily: highScores.daily, allTime: highScores.allTime }
   };
   for (const [connId, conn] of connections) {
-    let you;
-    if (conn.role === "player") {
-      const s = slots[conn.slotIndex];
-      you = { role: "player", slot: conn.slotIndex, ack: s ? s.lastAck : 0 };
-    } else {
-      you = { role: "spectator", queuePos: spectatorQueue.findIndex(e => e.connId === connId) + 1, queueLen: spectatorQueue.length };
-    }
+    const you = {
+      locals: conn.locals.map((entry, localIdx) => {
+        if (!entry) return null;
+        if (entry.role === "player") {
+          const s = slots[entry.slotIndex];
+          return { local: localIdx, role: "player", slot: entry.slotIndex, ack: s ? s.lastAck : 0 };
+        }
+        const queuePos = spectatorQueue.findIndex(e => e.connId === connId && e.local === localIdx) + 1;
+        return { local: localIdx, role: "spectator", queuePos, queueLen: spectatorQueue.length };
+      })
+    };
     sendTo(conn.ws, { ...state, you });
   }
 }
@@ -473,8 +549,14 @@ wss.on("connection", ws => {
     try { msg = JSON.parse(raw); } catch { return; }
     const conn = connections.get(connId);
     if (!conn) return;
-    if (msg.type === "dir" && conn.role === "player") {
-      const slot = slots[conn.slotIndex];
+    if (msg.type === "dir") {
+      // local selects which of this connection's local seats the turn
+      // applies to (0 = p1, 1 = p2, ...). Defaults to 0 so a solo
+      // connection that never sends the field still works unchanged.
+      const localIdx = Number.isInteger(msg.local) ? msg.local : 0;
+      const entry = conn.locals[localIdx];
+      if (!entry || entry.role !== "player") return;
+      const slot = slots[entry.slotIndex];
       if (!slot || !slot.alive) return;
       const dirMap = { up: { x: 0, y: -1 }, down: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 } };
       const nd = dirMap[msg.dir];
@@ -493,21 +575,28 @@ wss.on("connection", ws => {
       }
       slot.inputQueue.push({ x: nd.x, y: nd.y, seq: cseq });
     }
-    if (msg.type === "acceptJoin" && conn.role === "spectator") {
-      acceptJoin(connId);
+    if (msg.type === "acceptJoin") {
+      const localIdx = Number.isInteger(msg.local) ? msg.local : 0;
+      acceptJoin(connId, localIdx);
       broadcastState();
+    }
+    if (msg.type === "joinLocal") {
+      const reason = addLocalPlayer(connId);
+      if (reason) sendTo(conn.ws, { type: "joinLocalDenied", reason });
+      else broadcastState();
     }
     if (msg.type === "initials") {
       const initials = String(msg.value || "").toUpperCase().slice(0, 3).padEnd(3, "A");
       const targets = qualifies(msg.score || 0);
       recordScore(msg.targets || targets, initials, msg.score || 0);
-      if (conn.role === "player") {
-        const s = slots[conn.slotIndex];
+      const localIdx = Number.isInteger(msg.local) ? msg.local : 0;
+      const entry = conn.locals[localIdx];
+      if (entry && entry.role === "player" && entry.slotIndex != null) {
+        const s = slots[entry.slotIndex];
         if (s) {
           s.awaitInitials = false;
           s.initialsDeadline = null;
-          if (spectatorQueue.length > 0) movePlayerToSpectator(conn.slotIndex);
-          else spawnSnake(conn.slotIndex);
+          respawnOrSpectate(entry.slotIndex);
         }
       }
       broadcastState();

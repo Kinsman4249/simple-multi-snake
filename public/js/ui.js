@@ -3,7 +3,7 @@
 // prompt with countdown, spectator overlay, explicit JOIN offer button,
 // and a DEBUG button/panel (recording enabled only while open).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-12.8";
+(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-12.10";
 const UI = (() => {
   const statusEl = document.getElementById("status");
   let captchaId = null;
@@ -37,14 +37,18 @@ const UI = (() => {
   function setConnectionStatus(text) { statusEl.textContent = text; }
 
   function updateStatus(curr) {
-    if (curr.you.role === "player") {
-      const me = curr.players[curr.you.slot];
-      statusEl.textContent = "You: slot " + (curr.you.slot + 1) + " | score " +
-        (me ? me.score : 0) + (me && !me.alive ? " | waiting" : "");
-    } else {
-      statusEl.textContent = "Spectating. Queue position: " +
-        curr.you.queuePos + " of " + curr.you.queueLen;
-    }
+    const locals = curr.you.locals || [];
+    const parts = locals.map(entry => {
+      if (!entry) return "";
+      const label = locals.length > 1 ? (entry.local === 0 ? "P1" : "P2") + ": " : "You: ";
+      if (entry.role === "player") {
+        const me = curr.players[entry.slot];
+        return label + "slot " + (entry.slot + 1) + " | score " +
+          (me ? me.score : 0) + (me && !me.alive ? " | waiting" : "");
+      }
+      return label + "spectating (queue " + entry.queuePos + " of " + entry.queueLen + ")";
+    });
+    statusEl.textContent = parts.join("   ");
   }
   function updateLeaderboards(hs) {
     const fmt = list => list.map(e => "<li>" + e.initials + " - " + e.score + "</li>").join("");
@@ -61,57 +65,98 @@ const UI = (() => {
     return box;
   }
 
-  function askInitials(targets, score, deadlineMs) {
-    const box = overlayBox("initialsOverlay");
+  function askInitials(targets, score, deadlineMs, local, isCoOp) {
+    local = local || 0;
+    // Distinct id per local index: in couch co-op, p1 and p2 can die and
+    // qualify for initials independently, and overlayBox() would otherwise
+    // clobber the first prompt when the second one appears.
+    const boxId = "initialsOverlay" + local;
+    const box = overlayBox(boxId);
+    const inputId = "initialsInput" + local;
+    const submitId = "initialsSubmit" + local;
+    const countdownId = "initCountdown" + local;
+    const label = local === 0 ? "" : "P" + (local + 1) + " ";
+    if (isCoOp) {
+      // Non-blocking corner prompt: with round-robin seating either local
+      // seat can be the one asking while the OTHER seat on this connection
+      // is still actively playing, and a full block would wrongly cover
+      // its board.
+      box.style.cssText = "position:fixed;top:20px;" + (local === 0 ? "left:20px;" : "right:20px;") +
+        "background:transparent;z-index:9998;";
+    }
     const end = Date.now() + (deadlineMs || 20000);
     box.innerHTML =
-      "<div style=\"background:#1a1a1a;border:1px solid #444;padding:24px;text-align:center;font-family:monospace;color:#eee;\">" +
-      "<div>New high score: " + score + "</div>" +
-      "<div style=\"margin:8px 0;color:#fa6;\">Enter initials before <span id=\"initCountdown\">20</span>s or you become a spectator</div>" +
-      "<div><input id=\"initialsInput\" maxlength=\"3\" style=\"background:#000;color:#6f6;border:1px solid #666;font-family:monospace;font-size:20px;text-align:center;width:4ch;\"></div>" +
-      "<div><button id=\"initialsSubmit\" style=\"background:#333;color:#eee;border:1px solid #666;padding:6px 14px;margin-top:10px;cursor:pointer;font-family:monospace;\">Submit</button></div>" +
+      "<div style=\"background:#1a1a1a;border:1px solid #444;padding:" + (isCoOp ? "20px" : "24px") + ";text-align:center;font-family:monospace;color:#eee;\">" +
+      "<div>" + label + "New high score: " + score + "</div>" +
+      "<div style=\"margin:8px 0;color:#fa6;\">Enter initials before <span id=\"" + countdownId + "\">20</span>s or you become a spectator</div>" +
+      "<div><input id=\"" + inputId + "\" maxlength=\"3\" style=\"background:#000;color:#6f6;border:1px solid #666;font-family:monospace;font-size:20px;text-align:center;width:4ch;\"></div>" +
+      "<div><button id=\"" + submitId + "\" style=\"background:#333;color:#eee;border:1px solid #666;padding:6px 14px;margin-top:10px;cursor:pointer;font-family:monospace;\">Submit</button></div>" +
       "</div>";
     document.body.appendChild(box);
-    document.getElementById("initialsInput").focus();
+    document.getElementById(inputId).focus();
     let done = false;
     const submit = () => {
       if (done) return;
       done = true;
       clearInterval(t);
-      const value = (document.getElementById("initialsInput").value || "AAA").toUpperCase();
-      Net.send({ type: "initials", value, score, targets });
+      const value = (document.getElementById(inputId).value || "AAA").toUpperCase();
+      Net.send({ type: "initials", value, score, targets, local });
       box.remove();
     };
-    document.getElementById("initialsSubmit").onclick = submit;
+    document.getElementById(submitId).onclick = submit;
     const t = setInterval(() => {
       const left = Math.max(0, Math.ceil((end - Date.now()) / 1000));
-      const el = document.getElementById("initCountdown");
+      const el = document.getElementById(countdownId);
       if (el) el.textContent = String(left);
       if (left <= 0) submit();
     }, 250);
   }
 
-  function showSpectator(msg) {
-    const box = overlayBox("spectatorOverlay");
-    box.style.background = "rgba(0,0,0,0.6)";
+  function showSpectator(msg, isCoOp) {
+    const local = msg.local || 0;
+    const boxId = "spectatorOverlay" + local;
+    const box = overlayBox(boxId);
+    const label = local === 0 ? "" : "P" + (local + 1) + " ";
+    if (isCoOp) {
+      // Non-blocking corner notice: with couch co-op, one local seat can be
+      // queued as a spectator while the OTHER seat on the same connection
+      // is still actively playing, and a full-screen block would wrongly
+      // cover that seat's board too.
+      box.style.cssText = "position:fixed;bottom:20px;" + (local === 0 ? "left:20px;" : "right:20px;") +
+        "background:transparent;z-index:9998;";
+    } else {
+      box.style.background = "rgba(0,0,0,0.6)";
+    }
     box.innerHTML =
-      "<div style=\"background:#141414;border:1px solid #444;padding:20px;text-align:center;font-family:monospace;color:#ddd;\">" +
-      "<div style=\"font-size:18px;\">Spectating</div>" +
+      "<div style=\"background:#141414;border:1px solid #444;padding:" + (isCoOp ? "14px 18px" : "20px") + ";text-align:center;font-family:monospace;color:#ddd;\">" +
+      "<div style=\"font-size:" + (isCoOp ? "15px" : "18px") + ";\">" + label + "Spectating</div>" +
       "<div style=\"margin-top:8px;color:#9cf;\">Queue position: " + (msg.queuePos || "-") + " of " + (msg.queueLen || "-") + "</div>" +
       (msg.disconnectMs ? "<div style=\"margin-top:8px;color:#f88;\">Idle disconnect in " + Math.round(msg.disconnectMs / 1000) + "s</div>" : "") +
       "</div>";
     document.body.appendChild(box);
-    setTimeout(() => { const b = document.getElementById("spectatorOverlay"); if (b) b.remove(); }, 2500);
+    setTimeout(() => { const b = document.getElementById(boxId); if (b) b.remove(); }, 2500);
   }
 
-  function offerJoin(msg, onAccept) {
-    const box = overlayBox("joinOverlay");
+  function offerJoin(msg, onAccept, isCoOp) {
+    const local = msg.local || 0;
+    const boxId = "joinOverlay" + local;
+    const box = overlayBox(boxId);
+    const label = local === 0 ? "" : "P" + (local + 1) + " ";
+    if (isCoOp) {
+      // Non-blocking corner prompt, same reasoning as showSpectator: this
+      // offer is per local seat, and the OTHER seat on this connection may
+      // still be actively playing and must not have its board covered.
+      box.style.cssText = "position:fixed;bottom:20px;" + (local === 0 ? "left:20px;" : "right:20px;") +
+        "background:transparent;z-index:9998;";
+    }
     const end = Date.now() + (msg.acceptMs || 10000);
+    const countdownId = "joinCountdown" + local;
+    const btnId = "joinBtn" + local;
     box.innerHTML =
-      "<div style=\"background:#10240f;border:1px solid #3a3;padding:24px;text-align:center;font-family:monospace;color:#dfd;\">" +
-      "<div style=\"font-size:18px;\">A slot is open</div>" +
-      "<div style=\"margin:8px 0;\">Join in <span id=\"joinCountdown\">10</span>s</div>" +
-      "<div><button id=\"joinBtn\" style=\"background:#2a5;color:#031;border:1px solid #6f6;padding:8px 18px;font-size:16px;cursor:pointer;font-family:monospace;\">JOIN NOW</button></div>" +
+      "<div style=\"background:#10240f;border:1px solid #3a3;padding:" + (isCoOp ? "16px 20px" : "24px") + ";text-align:center;font-family:monospace;color:#dfd;\">" +
+      "<div style=\"font-size:" + (isCoOp ? "15px" : "18px") + ";\">" + label + "A slot is open</div>" +
+      "<div style=\"margin:" + (isCoOp ? "6px 0;font-size:12px;" : "8px 0;") + "\">Join in <span id=\"" + countdownId + "\">10</span>s</div>" +
+      "<div><button id=\"" + btnId + "\" style=\"background:#2a5;color:#031;border:1px solid #6f6;padding:" + (isCoOp ? "6px 14px;font-size:14px;" : "8px 18px;font-size:16px;") + "cursor:pointer;font-family:monospace;\">JOIN NOW</button></div>" +
       "</div>";
     document.body.appendChild(box);
     let done = false;
@@ -122,13 +167,43 @@ const UI = (() => {
       box.remove();
       if (accepted) onAccept();
     };
-    document.getElementById("joinBtn").onclick = () => finish(true);
+    document.getElementById(btnId).onclick = () => finish(true);
     const t = setInterval(() => {
       const left = Math.max(0, Math.ceil((end - Date.now()) / 1000));
-      const el = document.getElementById("joinCountdown");
+      const el = document.getElementById(countdownId);
       if (el) el.textContent = String(left);
       if (left <= 0) finish(false);
     }, 250);
+  }
+
+  // Phase 3: couch co-op. A small always-visible button that requests a
+  // second local player (WASD) on the same connection. Disabled once
+  // clicked; re-enabled if the server refuses (denial toast below).
+  function initCoOp(onRequest) {
+    if (document.getElementById("coopBtn")) return;
+    const btn = document.createElement("button");
+    btn.id = "coopBtn";
+    btn.textContent = "+ Add Player 2 (WASD)";
+    btn.style.cssText = "position:fixed;top:6px;right:6px;z-index:9999;background:#222;color:#6cf;border:1px solid #666;font-family:monospace;font-size:12px;padding:4px 8px;cursor:pointer;";
+    btn.onclick = () => {
+      btn.disabled = true;
+      btn.textContent = "Player 2 requested...";
+      onRequest();
+    };
+    document.body.appendChild(btn);
+  }
+  function coOpJoined() {
+    const btn = document.getElementById("coopBtn");
+    if (btn) { btn.disabled = true; btn.textContent = "Player 2 (WASD) active"; }
+  }
+  function notifyJoinLocalDenied(msg) {
+    const btn = document.getElementById("coopBtn");
+    if (btn) { btn.disabled = false; btn.textContent = "+ Add Player 2 (WASD)"; }
+    const box = document.createElement("div");
+    box.style.cssText = "position:fixed;top:34px;right:6px;z-index:9999;background:#3a1a1a;color:#f88;border:1px solid #844;font-family:monospace;font-size:12px;padding:6px 10px;max-width:220px;";
+    box.textContent = "Can't add Player 2: " + (msg.reason || "unavailable");
+    document.body.appendChild(box);
+    setTimeout(() => box.remove(), 3000);
   }
 
   let debugInfoFn = null;
@@ -179,23 +254,27 @@ const UI = (() => {
     lines.push("  build:  " + (info.serverBuild || "unknown"));
     lines.push("  seq:    " + (info.seq == null ? "-" : info.seq));
     lines.push("  tickMs: " + (info.tickMs == null ? "-" : info.tickMs));
-    lines.push("  role:   " + (info.role || "-") + "   slot: " + (info.slot == null ? "-" : info.slot));
-    lines.push("");
-    lines.push("== PENDING INPUTS ==");
-    const pend = info.pending || [];
-    if (pend.length === 0) lines.push("  none");
-    else pend.forEach(x => lines.push("  #" + x.seq + " " + x.dir + " retries=" + x.retries + (x.confirmed ? " CONFIRMED" : " pending")));
-    lines.push("");
-    lines.push("== SERVER CORRECTIONS (" + (info.correctionCount || 0) + " total) ==");
-    const c = info.corrections || [];
-    if (c.length === 0) lines.push("  none");
-    else c.slice().reverse().forEach(x => {
-      lines.push("  seq " + (x.seq == null ? "-" : x.seq) + " [" + x.type + "] pred(" +
-        x.predicted.x + "," + x.predicted.y + ") -> act(" + x.actual.x + "," + x.actual.y + ")");
+    lines.push("  role:   " + (info.role || "-"));
+    const locals = info.locals || [];
+    locals.forEach(loc => {
+      lines.push("");
+      lines.push("== " + loc.label.toUpperCase() + " (slot " + (loc.slot == null ? "-" : loc.slot) + ") ==");
+      lines.push("-- PENDING INPUTS --");
+      const pend = loc.pending || [];
+      if (pend.length === 0) lines.push("  none");
+      else pend.forEach(x => lines.push("  #" + x.seq + " " + x.dir + " retries=" + x.retries));
+      lines.push("-- SERVER CORRECTIONS (" + (loc.correctionCount || 0) + " total) --");
+      const c = loc.corrections || [];
+      if (c.length === 0) lines.push("  none");
+      else c.slice().reverse().forEach(x => {
+        lines.push("  seq " + (x.seq == null ? "-" : x.seq) + " [" + x.type + "] pred(" +
+          x.predicted.x + "," + x.predicted.y + ") -> act(" + x.actual.x + "," + x.actual.y + ")");
+      });
     });
     panel.textContent = lines.join("\n");
   }
 
   return { initCaptchaGate, setConnectionStatus, updateStatus, updateLeaderboards,
-           askInitials, showSpectator, offerJoin, initDebug };
+           askInitials, showSpectator, offerJoin, initDebug,
+           initCoOp, coOpJoined, notifyJoinLocalDenied };
 })();

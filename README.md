@@ -8,6 +8,8 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
 ## Features
 
 - One to four players on a shared board, no accounts.
+- Couch co-op: a second local player can join on the same connection (p1 on
+  arrow keys, p2 on WASD), taking a second slot on the same board.
 - Spectator queue past four players. A spectator takes over shortly after a
   player dies; if four or fewer are connected the dead player just respawns.
 - Killing another player (they run into your body) gives you a 10 point bonus
@@ -165,6 +167,12 @@ Keys:
 - move.rampIntervalSec / move.rampStepMs: how often and by how much the
   move interval shrinks over time. Set rampStepMs to 0 for a constant speed.
 - maxPlayers: number of active player slots before new joins go to spectate.
+- maxLocalPlayers: how many local players one browser tab (one WebSocket
+  connection) may control at once via couch co-op. Default 2 (p1 on arrow
+  keys, p2 on WASD). Every local seat is round-robin fair on its own: adding
+  one is only refused once this cap is reached, otherwise it either takes a
+  free slot immediately or joins the spectator queue fairly like anyone
+  else.
 - killBonusScore / killBonusGrowth: points and growth awarded for a kill.
 - spectatorPromoteDelayMs: delay before a non-qualifying dead player respawns
   or yields to the queue.
