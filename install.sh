@@ -464,6 +464,23 @@ else
   git clone --depth 1 --branch "${REPO_BRANCH}" "${REPO_URL}" "${SRC}"
 fi
 
+# Build the WASM renderer from the sources just obtained (tools/build-wasm.mjs
+# compiles wasm/renderer.ts with the pinned AssemblyScript compiler via npx
+# and emits public/js/render-wasm.js). The compiled artifact is deliberately
+# NOT committed to the repo: building it here means what this host serves is
+# verifiably compiled from the sources in this checkout. The public/ tree
+# walk below then deploys it like any other client file. Non-fatal on
+# failure: the client automatically falls back to the plain 2D renderer when
+# render-wasm.js is absent -- but note an update run that fails here also
+# removes a previously deployed render-wasm.js (the stale-file sweep), so
+# re-run the installer once the build issue is fixed.
+echo "[3/9] Building the WASM renderer from source..."
+if ( cd "${SRC}" && node tools/build-wasm.mjs ); then
+  echo "  Built public/js/render-wasm.js from wasm/renderer.ts."
+else
+  echo "  WARNING: WASM renderer build failed; the game will use the 2D fallback renderer." >&2
+fi
+
 # ---------------------------------------------------------------------------
 # 4. Lay the app down in APP_DIR, then patch the port into server.js and the
 #    chosen sim rate into config.json. An existing highscores.json is left in

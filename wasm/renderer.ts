@@ -29,7 +29,9 @@
 //        0 present i32, 4 alive i32, 8 colorHead u32 (ABGR byte order:
 //        r=low byte), 12 colorBody u32, 16 dirX i32, 20 dirY i32,
 //        24 moveMs f32, 28 boost i32, 32 sliding i32, 36 bodyLen i32,
-//        40 bodyOff i32 (segment index into body pool), 44 pad
+//        40 bodyOff i32 (segment index into body pool), 44 heldIdx i32
+//        (held-powerup type index for the glow, -1 = none; wormholeCharge
+//        maps to the wormhole index)
 //   +players: body pool, MAX_SEGS x {x:i16, y:i16}
 //   +pool: trails, MAX_TRAILS stride 8: {x:i16, y:i16, type:i16, pad}
 //   +trails: pickups, MAX_PICKUPS stride 16: {x:i32, y:i32, type:i32, id:i32}
@@ -49,7 +51,8 @@
 //   672 nLocals i32
 //   676 locals[MAX_LOCALS] stride 12: {slot i32, len i32, off i32 (into the
 //        local body pool)}
-//   724 pad, 728 local body pool, MAX_LOCAL_SEGS x {x:i16, y:i16}
+//   724 heldGlow i32 (clientFx.heldGlow toggle)
+//   728 local body pool, MAX_LOCAL_SEGS x {x:i16, y:i16}
 //
 // Instance buffer (output) stride 32:
 //   0 x f32, 4 y f32, 8 w f32, 12 h f32, 16 color u32 (ABGR: r low byte,
@@ -88,6 +91,7 @@ const FR_NEXPL: i32 = 412;
 const FR_EXPL: i32 = 416;
 const FR_NLOCALS: i32 = 672;
 const FR_LOCALS: i32 = 676;
+const FR_HELDGLOW: i32 = 724;
 const FR_LOCAL_BODY: i32 = 728;
 const FRAME_SIZE: i32 = FR_LOCAL_BODY + MAX_LOCAL_SEGS * 4;
 
@@ -172,7 +176,7 @@ function inst(x: f32, y: f32, w: f32, h: f32, color: u32, alphaMul: f32, kind: f
 }
 
 @inline
-function easeOutCubic(t: f32): f32 { const u = 1 - t; return 1 - u * u * u; }
+function easeOutCubic(t: f32): f32 { const u: f32 = <f32>1 - t; return <f32>1 - u * u * u; }
 @inline
 function lerpf(a: f32, b: f32, t: f32): f32 { return a + (b - a) * t; }
 
@@ -202,6 +206,7 @@ export function render(now: f64, which: i32): i32 {
   const boostTrail = load<i32>(frameIn + FR_FLAGS, 4) != 0;
   const slideDust = load<i32>(frameIn + FR_FLAGS, 8) != 0;
   const foodHidden = load<i32>(frameIn + FR_FLAGS, 12) != 0;
+  const heldGlow = load<i32>(frameIn + FR_HELDGLOW) != 0;
   const recvElapsed = load<f32>(frameIn + FR_RECV_ELAPSED);
   const tickMs = load<f32>(curr, 4);
 
@@ -306,6 +311,18 @@ export function render(now: f64, which: i32): i32 {
     const prevPool = prev + SNAP_BODY;
     const prevLen = smooth ? load<i32>(pPrev, 36) : 0;
     const prevOff = smooth ? load<i32>(pPrev, 40) : 0;
+    // Held-powerup glow: a pulsing halo in the powerup's color under every
+    // segment, visible to EVERYONE (the server broadcasts heldPowerup to all
+    // players precisely so opponents can plan counterplay).
+    const heldIdx = load<i32>(p, 44);
+    if (heldGlow && alive && heldIdx >= 0) {
+      const glowAlpha = <f32>(0.22 + 0.13 * Math.sin(now / 250.0 + <f64>i));
+      const grow = cs * <f32>0.35;
+      const glowColor = pickupColor(heldIdx);
+      for (let si = 0; si < bodyLen; si++) {
+        inst(<f32>segX(bodyPool, bodyOff + si) * cs - grow, <f32>segY(bodyPool, bodyOff + si) * cs - grow, cell + grow * 2, cell + grow * 2, glowColor, glowAlpha, KIND_ELLIPSE, 0, 0);
+      }
+    }
     let headPx = <f32>segX(bodyPool, bodyOff) * cs;
     let headPy = <f32>segY(bodyPool, bodyOff) * cs;
     if (glideAt != 0) {
@@ -364,7 +381,7 @@ export function render(now: f64, which: i32): i32 {
     for (let f = 0; f < nFlashes; f++) {
       const fo = frameIn + FR_FLASHES + <usize>(f << 4);
       if (load<i32>(fo) != i) continue;
-      const alpha = 1 - load<f32>(fo, 8) / load<f32>(fo, 12);
+      const alpha: f32 = <f32>1 - load<f32>(fo, 8) / load<f32>(fo, 12);
       if (alpha > 0) {
         const d = load<i32>(fo, 4);
         const vx = dirVX(d), vy = dirVY(d);

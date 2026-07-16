@@ -97,7 +97,7 @@ const MAX_LOCAL_PLAYERS = Number.isInteger(CFG.maxLocalPlayers) && CFG.maxLocalP
 // here for the operator. Defaults keep the feature on even if an older
 // config.json from before this key existed is still in place.
 const CLIENT_FX = Object.assign(
-  { inputFlash: true, inputFlashMs: 90, correctionGlide: true, correctionGlideMs: 90 },
+  { inputFlash: true, inputFlashMs: 90, correctionGlide: true, correctionGlideMs: 90, heldGlow: true },
   CFG.clientFx || {}
 );
 const WALL_GRACE_TICKS = Number.isInteger(CFG.wallGraceTicks) ? CFG.wallGraceTicks : 1;
@@ -120,7 +120,23 @@ const INPUT_BUFFER = Number.isInteger(CFG.inputBuffer) ? CFG.inputBuffer : 3;
 // (driftMs replaced the old slideDistance "turn is delayed N cells" model
 // in round fifteen; a leftover slideDistance key in an old config.json is
 // simply ignored.)
-const BOOST = Object.assign({ enabled: true, boostSpeed: 1.5, driftMs: 250 }, CFG.boost || {});
+// Boost model (Phase 7 redesign): holding boost no longer snaps straight to
+// boostSpeed. The hold must survive holdGraceMs before boost ENGAGES at all
+// (so a short tap neither speeds the snake up nor tags queued turns with
+// drift), then the speed multiplier RAMPS linearly from 1x to boostSpeed
+// over rampMs. Drift length scales with how far up the ramp the snake was
+// when the turn was pressed (driftMs * ramp), so a barely-boosting snake
+// barely skids. rampMs/holdGraceMs of 0 restore the old instant behavior.
+const BOOST = Object.assign({ enabled: true, boostSpeed: 1.5, driftMs: 250, rampMs: 400, holdGraceMs: 120 }, CFG.boost || {});
+// Ramp progress 0..1 for a snake's current boost hold. 0 = not engaged
+// (off, or still inside the hold grace); 1 = full boostSpeed.
+function boostRamp(s, now) {
+  if (!BOOST.enabled || !s.boost || !s.boostSince) return 0;
+  const held = now - s.boostSince - BOOST.holdGraceMs;
+  if (held <= 0) return 0;
+  if (!(BOOST.rampMs > 0)) return 1;
+  return Math.min(1, held / BOOST.rampMs);
+}
 // Global floor on snake length. Drives both the initial spawn length
 // (spawnSnake) and the poison-trail damage floor -- one source of truth so
 // the two can never drift out of sync.
@@ -195,7 +211,9 @@ if (PERF) {
   }, 5000);
   if (timer.unref) timer.unref();
 }
-const CLIENT_RENDER = Object.assign({ interpolate: true }, CFG.clientRender || {});
+// renderer: "auto" (wasm with automatic 2D fallback) | "wasm" | "2d" -- the
+// operator kill-switch for the Phase 7 wasm renderer, no redeploy needed.
+const CLIENT_RENDER = Object.assign({ interpolate: true, renderer: "auto" }, CFG.clientRender || {});
 
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 function loadHighScores() {
@@ -307,6 +325,7 @@ function spawnSnake(slotIndex) {
   s.score = 0;
   s.lastAck = 0;
   s.boost = false;
+  s.boostSince = null;
   s.moveAccumMs = 0;
   // NOTE: lastInputAt is deliberately NOT reset here. spawnSnake also runs
   // on automatic respawns, and an AFK player who keeps dying and respawning
@@ -330,7 +349,7 @@ function newPlayerSlot(connId) {
   return {
     connId, color: null, body: [], dir: { x: 1, y: 0 }, inputQueue: [],
     alive: true, score: 0, wallStalls: 0, lastAck: 0,
-    boost: false, moveAccumMs: 0, lastInputAt: Date.now(),
+    boost: false, boostSince: null, moveAccumMs: 0, lastInputAt: Date.now(),
     heldPowerup: null, wormholeCharge: false, activePowerup: null,
     iceStacks: 0, iceExpiresAtTick: 0, teleportedThisTick: false,
     driftDir: null, driftUntilMs: 0
@@ -638,7 +657,7 @@ function simLoop() {
       if (!s || !s.alive) continue;
       if (guard === 0) {
         let mult = 1;
-        if (BOOST.enabled && s.boost) mult *= BOOST.boostSpeed;
+        mult *= 1 + (BOOST.boostSpeed - 1) * boostRamp(s, now);
         mult *= POWERUP_MODULES.speedBoost.speedMultiplier(s, POWERUPS);
         mult *= POWERUP_MODULES.iceTrail.speedMultiplier(s, POWERUPS);
         s.moveAccumMs += dt * mult;
@@ -760,9 +779,12 @@ function computeNewHeads(active) {
       // the snake WAS traveling. The drift begins translating on the NEXT
       // step (applyDriftSlides runs before this), which keeps the first
       // post-turn step fully connected.
+      // inp.drift is the boost RAMP PROGRESS (0..1) at keypress time: the
+      // skid window scales with how close to top speed the snake actually
+      // was when the player turned. 0 (not engaged) starts no drift.
       if (inp.drift) {
         s.driftDir = prevDir;
-        s.driftUntilMs = Date.now() + BOOST.driftMs;
+        s.driftUntilMs = Date.now() + BOOST.driftMs * inp.drift;
       }
     }
     const head = s.body[0];
@@ -821,7 +843,7 @@ function resolveWallCollisions(active, newHeads, died, stalled) {
     // No wall grace while boosting (maintainer-specced with the drift
     // redesign): boost is a risk -- a boosted head aimed at a wall with no
     // saving turn queued dies without the stall tick.
-    if (s.wallStalls < WALL_GRACE_TICKS && !(BOOST.enabled && s.boost)) { s.wallStalls++; stalled.add(i); newHeads.set(i, { x: s.body[0].x, y: s.body[0].y }); continue; }
+    if (s.wallStalls < WALL_GRACE_TICKS && boostRamp(s, Date.now()) === 0) { s.wallStalls++; stalled.add(i); newHeads.set(i, { x: s.body[0].x, y: s.body[0].y }); continue; }
     tryWormholeOrDie(i, null, died, stalled, newHeads);
     s.wallStalls = 0;
   }
@@ -947,7 +969,15 @@ function applyKillBonuses(died) {
 // tiles, each player's currently-active timed powerup effect, and the
 // victim-side ice-slow status. Called once per movement step.
 function expirePowerupsAndTrails() {
-  trails = trails.filter(t => moveSeq < t.expiresAtTick);
+  // Reallocate the trails array only when something actually expired: this
+  // runs EVERY movement step, and the common case (no trails, or none due)
+  // shouldn't produce per-step garbage (Phase 7 profile-pass cleanup).
+  for (let i = 0; i < trails.length; i++) {
+    if (moveSeq >= trails[i].expiresAtTick) {
+      trails = trails.filter(t => moveSeq < t.expiresAtTick);
+      break;
+    }
+  }
   for (const s of slots) {
     if (!s) continue;
     if (s.activePowerup && moveSeq >= s.activePowerup.expiresAtTick) {
@@ -1062,6 +1092,7 @@ function handleDeath(slotIndex) {
   if (!s) return;
   s.alive = false;
   s.boost = false;
+  s.boostSince = null;
   s.driftDir = null;
   const conn = connections.get(s.connId);
   const localIdx = conn ? conn.locals.findIndex(l => l && l.role === "player" && l.slotIndex === slotIndex) : -1;
@@ -1091,6 +1122,7 @@ function handleDeath(slotIndex) {
 function sendTo(ws, msg) { if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg)); }
 function broadcastState() {
   const interval = currentMoveIntervalMs();
+  const bNow = Date.now();
   const state = {
     type: "state", build: BUILD, seq: moveSeq, serverTime: Date.now(),
     tickMs: interval, simHz: SIM_HZ, grid: CFG.grid, food,
@@ -1104,13 +1136,15 @@ function broadcastState() {
       // collision/authority are untouched.
       moveMs: Math.round(
         interval /
-        ((BOOST.enabled && s.boost ? BOOST.boostSpeed : 1) *
+        ((1 + (BOOST.boostSpeed - 1) * boostRamp(s, bNow)) *
           POWERUP_MODULES.speedBoost.speedMultiplier(s, POWERUPS) *
           POWERUP_MODULES.iceTrail.speedMultiplier(s, POWERUPS))
       ),
       // Visual-only flags for the client's boost jetstream / slide dust
       // effects (no gameplay meaning beyond what moveMs already carries).
-      boost: !!s.boost,
+      // boost is true once the hold has ENGAGED (past holdGraceMs), not on
+      // the raw key state -- the jetstream shouldn't show for a dead tap.
+      boost: boostRamp(s, bNow) > 0,
       sliding: !!(s.driftDir && Date.now() < s.driftUntilMs),
       heldPowerup: s.heldPowerup,
       wormholeCharge: s.wormholeCharge,
@@ -1270,7 +1304,7 @@ wss.on("connection", ws => {
       // computeNewHeads/applyDriftSlides). Tagged at enqueue time so
       // releasing boost right after the keypress doesn't cancel momentum
       // already committed.
-      const drift = BOOST.enabled && slot.boost;
+      const drift = boostRamp(slot, Date.now());
       slot.inputQueue.push({ x: nd.x, y: nd.y, seq: cseq, drift });
     }
     if (msg.type === "boost") {
@@ -1283,7 +1317,13 @@ wss.on("connection", ws => {
       const slot = slots[entry.slotIndex];
       if (!slot || !slot.alive) return;
       slot.lastInputAt = Date.now();
-      slot.boost = msg.on === true;
+      const on = msg.on === true;
+      // boostSince anchors the hold-grace + ramp clock; only a genuine
+      // off->on transition restarts it (repeated on:true messages must not
+      // reset a ramp already in progress).
+      if (on && !slot.boost) slot.boostSince = Date.now();
+      if (!on) slot.boostSince = null;
+      slot.boost = on;
     }
     if (msg.type === "activatePowerup") {
       // Fires the seat's held (non-wormhole) powerup. Wormhole never

@@ -50,10 +50,20 @@
   for (const sc of SCENARIOS) {
     const scene = BenchScene.makeScene(sc);
     const entry = { name: sc.name, instances: null };
-    // 2D path: the real, shipped renderer.
+    // 2D fallback path (the pre-Phase-7 renderer).
     entry.canvas2d = await measure(now => {
       scene.tick(now);
-      Render.draw(scene.prev, scene.curr, scene.localBodies, scene.eatenKeys, scene.fx, scene.opts);
+      Render2D.draw(scene.prev, scene.curr, scene.localBodies, scene.eatenKeys, scene.fx, scene.opts);
+    });
+    // Shipped wasm path (facade -> wasm core -> 2D executor). A new snapshot
+    // identity every 6th frame forces the snapshot re-encode at roughly the
+    // broadcast cadence, so the encode cost is included realistically.
+    let frameN = 0;
+    entry.wasm = await measure(now => {
+      scene.tick(now);
+      if (++frameN % 6 === 0) scene.curr = Object.assign({}, scene.curr);
+      Render.draw(scene.prev, scene.curr, scene.localBodies, scene.eatenKeys, scene.fx,
+        Object.assign({ renderer: "wasm" }, scene.opts));
     });
     // WebGL2 prototype on the same scene.
     if (glState) {

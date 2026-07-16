@@ -40,7 +40,9 @@
         slot: s, alive: s !== 3, score: 10 * s,
         color: PLAYER_COLORS[s], dir: { x: 1, y: 0 }, body,
         moveMs: 100, boost: true, sliding: s === 1,
-        heldPowerup: null, wormholeCharge: 0, activePowerup: null, iceStacks: 0
+        // exercise the held-powerup glow: one held type, one wormhole charge
+        heldPowerup: s === 1 ? "speedBoost" : null,
+        wormholeCharge: s === 2, activePowerup: null, iceStacks: 0
       });
     }
     // Previous snapshot: every segment one step behind along its own path

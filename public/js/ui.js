@@ -449,6 +449,8 @@ const UI = (() => {
     lines.push("  role:   " + (info.role || "-"));
     lines.push("  boostSpeed: " + (info.boostSpeed == null ? "-" : info.boostSpeed));
     lines.push("  driftMs:    " + (info.driftMs == null ? "-" : info.driftMs));
+    lines.push("  rampMs:     " + (info.rampMs == null ? "-" : info.rampMs));
+    lines.push("  holdGraceMs:" + (info.holdGraceMs == null ? "-" : info.holdGraceMs));
     const locals = info.locals || [];
     locals.forEach(loc => {
       lines.push("");

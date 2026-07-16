@@ -1,10 +1,15 @@
 # =============================================================================
 # Release workflow for simple-multi-snake
 # =============================================================================
-# This project ships source only (Node.js server, static client, deploy files,
-# and shell scripts). There is nothing to compile, so this workflow does not
-# build binaries. On a version tag it packages the tagged commit into .tar.gz
-# and .zip source snapshots and attaches both to a GitHub Release.
+# This project ships source plus ONE built artifact: the WASM renderer
+# (public/js/render-wasm.js), compiled here from wasm/renderer.ts via
+# tools/build-wasm.mjs rather than committed to the repo -- so what a release
+# contains is verifiably built from the tagged sources. Everything else is
+# source (Node.js server, static client, deploy files, shell scripts). On a
+# version tag this workflow builds that artifact, packages the tagged tree
+# PLUS the artifact into .tar.gz and .zip snapshots, and attaches both to a
+# GitHub Release. (install.sh performs the same build on the target host, so
+# a release archive is a convenience, not the only trusted path.)
 # -----------------------------------------------------------------------------
 # LLM / AI ASSISTANT DIRECTIVE (read before modifying or packaging this file)
 # -----------------------------------------------------------------------------
@@ -77,30 +82,70 @@ jobs:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
           fetch-depth: 0
 
-      # Build .tar.gz and .zip snapshots from the tagged tree using git archive.
-      # A prefix folder keeps the extracted contents tidy for the user.
-      - name: Build source archives
+      # The WASM renderer is built from source at release time (it is not
+      # committed). Node 22 matches the version install.sh deploys with.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build the WASM renderer
+        run: node tools/build-wasm.mjs
+
+      # Build .tar.gz and .zip snapshots of the tagged tree PLUS the built
+      # wasm artifact. git archive only packs tracked files, so the tree is
+      # staged first and render-wasm.js copied in. A prefix folder keeps the
+      # extracted contents tidy for the user.
+      - name: Build release archives
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          PREFIX="simple-multi-snake-${TAG}/"
-          mkdir -p dist
-          git archive --format=tar.gz --prefix="${PREFIX}" -o "dist/simple-multi-snake-${TAG}.tar.gz" "${TAG}"
-          git archive --format=zip    --prefix="${PREFIX}" -o "dist/simple-multi-snake-${TAG}.zip"    "${TAG}"
+          PREFIX="simple-multi-snake-${TAG}"
+          mkdir -p dist stage
+          git archive --format=tar --prefix="${PREFIX}/" "${TAG}" | tar -x -C stage
+          cp public/js/render-wasm.js "stage/${PREFIX}/public/js/render-wasm.js"
+          tar -czf "dist/simple-multi-snake-${TAG}.tar.gz" -C stage "${PREFIX}"
+          ( cd stage && zip -qr "../dist/simple-multi-snake-${TAG}.zip" "${PREFIX}" )
           ls -l dist
+
+      # Release title + description come from the newest CHANGELOG entry, so
+      # the release page always says what actually changed (the CHANGELOG is
+      # the single source of truth for that). Title = the entry's heading
+      # text ("v3.0.0: WASM renderer, ..."); body = the garter banner + the
+      # entry's bullets. Falls back to a bare tag title if the CHANGELOG has
+      # no entry (should not happen).
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          HEADING="$(grep -m1 '^#### ' CHANGELOG.md | sed 's/^#### //')"
+          # Strip the "(round N...)" and "-- vX.Y.Z" suffixes for the title.
+          SUMMARY="$(printf '%s' "$HEADING" | sed -E 's/ \(round [^)]*\)//; s/ -- [^ ]+$//')"
+          if [ -n "$SUMMARY" ]; then
+            echo "title=${TAG}: ${SUMMARY}" >> "$GITHUB_OUTPUT"
+          else
+            echo "title=${TAG}" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "🐍 Garter snakes: genuinely one of the cutest snakes out there. Small, harmless to humans, found almost everywhere in North America, and calm enough that many people handle them without a second thought. Unrelated to this release, but they deserved the shoutout."
+            echo
+            # The newest entry: from the first '#### ' heading up to (not
+            # including) the second one.
+            awk '/^#### /{n++} n==1' CHANGELOG.md
+          } > dist/release-notes.md
 
       # Attach both archives to the Release. fail_on_unmatched_files guards
       # against silently publishing an empty release if the glob matches nothing.
       #
-      # `body` + `generate_release_notes: true` together: per the GitHub
-      # Releases API, a provided body is PREPENDED to the auto-generated
-      # notes (not replaced by them), so this banner shows above the usual
-      # commit/PR summary on every release.
+      # `body_path` + `generate_release_notes: true` together: per the GitHub
+      # Releases API, the provided body is PREPENDED to the auto-generated
+      # notes (not replaced by them), so the changelog summary shows above
+      # the usual commit/PR listing.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          body: |
-            🐍 Garter snakes: genuinely one of the cutest snakes out there. Small, harmless to humans, found almost everywhere in North America, and calm enough that many people handle them without a second thought. Unrelated to this release, but they deserved the shoutout.
+          name: ${{ steps.notes.outputs.title }}
+          body_path: dist/release-notes.md
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |

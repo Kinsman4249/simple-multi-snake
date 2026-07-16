@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<!-- Phase 7 renderer parity check: renders identical synthetic scenes
+     (scene.js, frozen clock) through the wasm path and the 2D fallback on
+     the SAME canvas, and pixel-diffs the two. Driven headless by
+     run-bench.js:
+       deno run --allow-net --allow-read --allow-run --allow-write --allow-env \
+         tools/bench/run-bench.js /tools/bench/parity.html window.__PARITY__
+     Results land in window.__PARITY__ and the <pre>. -->
+<html>
+<head><meta charset="utf-8"><title>renderer parity</title>
+<style>
+  body { background: #222; color: #ddd; font-family: monospace; }
+  canvas { border: 1px solid #555; width: 480px; height: 270px; }
+</style>
+</head>
+<body>
+<div id="boardWrap"><canvas id="game" width="1920" height="1080"></canvas></div>
+<pre id="out">running...</pre>
+<script src="scene.js"></script>
+<script src="../../public/js/render-wasm.js"></script>
+<script src="../../public/js/render2d.js"></script>
+<script src="../../public/js/render.js"></script>
+<script src="parity.js"></script>
+</body>
+</html>

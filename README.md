@@ -15,12 +15,20 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
   the Play/Add button. Leaving your last seat closes the connection and shows
   a rejoin screen instead of leaving a dead board on screen.
 - Boost & drift: hold the key of the direction you're already moving to speed
-  up; turning while boosting turns your head immediately, but your body keeps
-  skidding sideways in the old direction for a moment (it clamps against
-  walls and other snakes rather than dying) -- and there is no wall-grace
-  tick while boosting. A brief tip explaining this is shown on the join
-  screen while the captcha is being solved. Configurable, and can be turned
-  off entirely.
+  up. Boost doesn't kick in instantly: a short tap does nothing at all (a
+  hold-grace, so taps can't accidentally tag a queued turn with a drift), and
+  once engaged the speed RAMPS up to full over a moment rather than snapping.
+  Turning while boosting turns your head immediately, but your body keeps
+  skidding sideways in the old direction -- and the skid length scales with
+  how close to top speed you actually were when you turned (a barely-boosting
+  snake barely drifts). The skidding body clamps against walls and other
+  snakes rather than dying, and there is no wall-grace tick while boost is
+  engaged. A brief tip explaining this is shown on the join screen while the
+  captcha is being solved. Configurable, and can be turned off entirely.
+- Held-powerup glow: a snake carrying a powerup (or an armed wormhole charge)
+  glows in that powerup's color -- visible to EVERYONE, not just the holder,
+  so opponents can see what's coming and play around it. Cosmetic-only flag
+  clientFx.heldGlow (default true).
 - Powerups: pickups spawn on the board and are held until you press your seat's
   activation key (default Space for the arrows seat, Right Shift for the WASD
   seat). Wormhole is the exception -- it holds as an independent charge and
@@ -230,11 +238,20 @@ Keys:
 - inputBuffer: maximum queued turns per snake.
 - boost.enabled: turns the boost/drift mechanic on or off (default true).
 - boost.boostSpeed: multiplier on movement rate while boosting (default 2.0).
-- boost.driftMs: how long the body keeps skidding in the old direction after
-  a boosted turn (default 250). Replaces the old slideDistance ("turn is
+- boost.driftMs: the body's maximum skid time after a boosted turn (default
+  250). The actual skid is driftMs scaled by the boost ramp progress at the
+  moment the turn was pressed. Replaces the old slideDistance ("turn is
   delayed N cells") knob, which is now ignored if present.
+- boost.holdGraceMs: how long the boost key must be HELD before boost engages
+  at all (default 120). Below this, a tap neither speeds the snake up nor
+  makes a queued turn drift. 0 restores instant engagement.
+- boost.rampMs: once engaged, how long the speed multiplier takes to climb
+  from 1x to boostSpeed (default 400). 0 restores an instant jump to full.
 - clientFx.boostTrail / clientFx.slideDust: purely-cosmetic client visuals for
   a boosting head and a sliding drift (both default true). No gameplay effect.
+- clientFx.heldGlow: the everyone-can-see-it glow around a snake holding a
+  powerup or wormhole charge (default true). Cosmetic only -- the underlying
+  heldPowerup/wormholeCharge fields were always in the shared broadcast.
 - powerups.spawnIntervalMs: how often a pickup spawn is attempted (default 8000).
 - powerups.maxConcurrentPickups: most pickups on the board at once (default 1).
 - powerups.<type>.enabled: on/off per powerup type. Types: wormhole,
@@ -254,9 +271,51 @@ Keys:
   server updates at the server's own known movement rate (default true).
   Purely cosmetic; server-side collision and authority are unaffected. Set to
   false for the old grid-snapped, no-interpolation look.
+- clientRender.renderer: which client draw path to use -- "auto" (default:
+  the WebAssembly renderer, falling back to the plain 2D renderer if the
+  wasm artifact is missing or fails to load), "wasm" (same as auto today),
+  or "2d" (force the fallback; the operator kill-switch, no redeploy
+  needed). A player can also override per-session with ?renderer=2d in the
+  URL. See "The WASM renderer" below.
 
 The listening port is not in config.json; it is chosen at install time and
 written into server.js. To change it, re-run the installer with PORT set.
+
+## The WASM renderer
+
+The per-frame draw logic lives in a WebAssembly module written in
+AssemblyScript (`wasm/renderer.ts`): JS encodes each server snapshot into the
+module's linear memory once per broadcast, writes a small per-frame effects
+block, and the module emits an ordered instance buffer of colored shapes that
+a thin executor plays onto the canvas's 2D context. Rendering stays
+requestAnimationFrame-driven, i.e. vsync-paced -- the wasm work happens
+inside the same frame callback.
+
+Why the executor is the 2D canvas context and not WebGL: both were
+benchmarked on real hardware (`tools/bench/`), and GPU-accelerated canvas 2D
+beat a WebGL2 instanced-quad pipeline on this flat-tile workload at every
+board size -- decisively at the 4k preset. The instance-buffer architecture
+is executor-agnostic, so a WebGL executor could be swapped in later without
+touching the wasm module.
+
+The compiled artifact (`public/js/render-wasm.js`, the wasm embedded as
+base64 inside a plain JS file) is deliberately NOT committed to the repo:
+`install.sh` and the release workflow build it from source, so what a host
+serves is verifiably compiled from the sources in the tree. Rebuild it any
+time with either runtime:
+
+    node tools/build-wasm.mjs
+    # or
+    deno run -A tools/build-wasm.mjs
+
+(The pinned AssemblyScript compiler is fetched through npx / deno's npm
+support on first run.) A checkout WITHOUT the artifact still works: the
+render facade (`public/js/render.js`) detects the missing file and falls
+back to the complete pre-wasm 2D renderer (`public/js/render2d.js`).
+Verification lives in `tools/bench/`: `run-bench.js` (frame-time benchmark),
+`run-parity.js` via `parity.html` (pixel-diffs the wasm path against the 2D
+fallback on frozen-clock scenes), and `run-smoke.js` (joins the live game
+headless and asserts each renderer actually draws).
 
 ## Netcode and debugging
 
@@ -301,12 +360,19 @@ node --version
 
 ### 2. Deploy the app
 
+node tools/build-wasm.mjs
 sudo mkdir -p /opt/multisnake/public
 sudo cp server.js config.json package.json /opt/multisnake/
 sudo cp -r public/. /opt/multisnake/public/
 sudo cp -r powerups/. /opt/multisnake/powerups/
 cd /opt/multisnake
 sudo npm install --omit=dev
+
+The first line compiles the WASM renderer from source into
+`public/js/render-wasm.js` (see "The WASM renderer") BEFORE the `public/`
+copy, so the artifact deploys with the rest of the client. Skipping it is
+not fatal -- the client falls back to the plain 2D renderer -- but it is the
+intended, faster draw path.
 
 Use `cp -r public/.` (everything under `public/`), not `cp public/index.html`
 alone. The client is split across `public/index.html` and `public/js/*.js`

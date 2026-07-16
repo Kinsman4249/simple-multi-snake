@@ -43,7 +43,10 @@ async function main() {
   const server = await startServer({
     grid: { cols: COLS, rows: ROWS, cellSize: 20 },
     move: { startIntervalMs: 120, minIntervalMs: 120, rampIntervalSec: 3600, rampStepMs: 0 },
-    boost: { enabled: true, boostSpeed: 2, driftMs: 360 },
+    // rampMs/holdGraceMs 0 pin the pre-ramp instant-boost behavior this
+    // test's drift-length assertions were written against; the ramp/grace
+    // mechanics have their own test (pw_boostramp.js).
+    boost: { enabled: true, boostSpeed: 2, driftMs: 360, rampMs: 0, holdGraceMs: 0 },
     wallGraceTicks: 1,
     spectatorPromoteDelayMs: 200,
     powerups: { spawnIntervalMs: 600000 } // no pickups wandering into the staging

@@ -127,10 +127,12 @@
          it just confirms the player noticed the mechanic. -->
     <div id="boostTip">
       <h4>Boost &amp; Slide</h4>
-      Hold the key you're already moving in to speed up.<br>
+      Hold the key you're already moving in to speed up &mdash; it ramps up,
+      so keep it held (a quick tap does nothing).<br>
       Turning while boosting turns your head instantly, but your body keeps
-      skidding sideways for a moment &mdash; and there's no mercy at walls
-      while boosting. Let off boost first for a clean corner.
+      skidding sideways &mdash; the faster you were going, the longer the
+      skid &mdash; and there's no mercy at walls while boosting. Let off
+      boost first for a clean corner.
       <div><button id="boostTipAck">Got it</button></div>
     </div>
     <!-- Powerup explainer: a plain toggle button + popup (see ui.js
@@ -156,6 +158,10 @@
 <!-- Load order matters: main.js references everything before it. -->
 <script src="js/net.js"></script>
 <script src="js/predict.js"></script>
+<!-- render-wasm.js is a BUILT artifact (tools/build-wasm.mjs), not committed;
+     if it is absent the facade in render.js silently uses the 2D fallback. -->
+<script src="js/render-wasm.js"></script>
+<script src="js/render2d.js"></script>
 <script src="js/render.js"></script>
 <script src="js/ui.js"></script>
 <script src="js/main.js"></script>

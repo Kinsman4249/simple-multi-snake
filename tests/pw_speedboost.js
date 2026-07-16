@@ -8,7 +8,11 @@ async function main() {
   const server = await startServer({
     grid: { cols: 20, rows: 20, cellSize: 20 },
     move: { startIntervalMs: 200, minIntervalMs: 200, rampIntervalSec: 3600, rampStepMs: 0 },
-    boost: { enabled: true, boostSpeed: 2, slideDistance: 3 },
+    // rampMs/holdGraceMs 0: this test asserts the multiplicative STACKING of
+    // hold-boost x speedBoost, so it samples moveMs right after boost turns
+    // on -- pin instant engagement rather than waiting out the default ramp
+    // (the ramp itself is covered by pw_boostramp.js).
+    boost: { enabled: true, boostSpeed: 2, slideDistance: 3, rampMs: 0, holdGraceMs: 0 },
     powerups: {
       spawnIntervalMs: 300, maxConcurrentPickups: 3,
       wormhole: { enabled: false }, growthSpurt: { enabled: false },

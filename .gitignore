@@ -3,3 +3,5 @@ deno.lock
 highscores.json
 .test-config-*.json
 handoff.md
+public/js/render-wasm.js
+tools/bench/out/
