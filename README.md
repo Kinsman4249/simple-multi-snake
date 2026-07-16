@@ -14,10 +14,13 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
   queued as a spectator); rejoin any time by pressing that seat's own keys or
   the Play/Add button. Leaving your last seat closes the connection and shows
   a rejoin screen instead of leaving a dead board on screen.
-- Boost & slide: hold the key of the direction you're already moving to speed
-  up; turning while boosting drifts a couple of squares before the turn takes
-  effect. A brief tip explaining this is shown on the join screen while the
-  captcha is being solved. Configurable, and can be turned off entirely.
+- Boost & drift: hold the key of the direction you're already moving to speed
+  up; turning while boosting turns your head immediately, but your body keeps
+  skidding sideways in the old direction for a moment (it clamps against
+  walls and other snakes rather than dying) -- and there is no wall-grace
+  tick while boosting. A brief tip explaining this is shown on the join
+  screen while the captcha is being solved. Configurable, and can be turned
+  off entirely.
 - Powerups: pickups spawn on the board and are held until you press your seat's
   activation key (default Space for the arrows seat, Right Shift for the WASD
   seat). Wormhole is the exception -- it holds as an independent charge and
@@ -225,10 +228,11 @@ Keys:
 - joinOfferMs: time a queued spectator has to accept an open slot before the
   offer passes to the next spectator.
 - inputBuffer: maximum queued turns per snake.
-- boost.enabled: turns the boost/slide mechanic on or off (default true).
+- boost.enabled: turns the boost/drift mechanic on or off (default true).
 - boost.boostSpeed: multiplier on movement rate while boosting (default 2.0).
-- boost.slideDistance: cells a boosted turn drifts straight before it takes
-  effect (default 3).
+- boost.driftMs: how long the body keeps skidding in the old direction after
+  a boosted turn (default 250). Replaces the old slideDistance ("turn is
+  delayed N cells") knob, which is now ignored if present.
 - clientFx.boostTrail / clientFx.slideDust: purely-cosmetic client visuals for
   a boosting head and a sliding drift (both default true). No gameplay effect.
 - powerups.spawnIntervalMs: how often a pickup spawn is attempted (default 8000).

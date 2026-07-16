@@ -47,13 +47,15 @@
 //
 // Debug recording is DISABLED until the UI opens the panel (setDebug(true)).
 // ============================================================
-// Boost/slide (Phase 4): a turn typed while boosting is queued and sent
-// normally (so the ack/retry machinery is unchanged) but flagged `delayed`:
-// the server will drift straight for config.boost.slideDistance cells before
-// applying it, and the client cannot know the exact landing tick, so rebuild()
-// simply does not pre-play a delayed turn. The server's authoritative steps
-// (plus the correction glide, if enabled) show the drift-then-turn.
-(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-15.2";
+// Boost/drift: a turn typed while boosting is queued and sent normally (so
+// the ack/retry machinery is unchanged) but flagged `delayed`. The server
+// now applies the turn to the HEAD immediately, but it simultaneously
+// starts translating the whole body laterally for config.boost.driftMs (the
+// drift/skid) -- so the resulting body is still not a plain follow-the-
+// leader advance the one-cell predictor could reproduce. rebuild() therefore
+// still does not pre-play a boosted turn; the server's authoritative steps
+// (plus the correction glide, if enabled) show the skid.
+(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-16.1";
 const DIR_VECTORS = {
   up: { x: 0, y: -1 },
   down: { x: 0, y: 1 },
@@ -168,9 +170,11 @@ class LocalPlayerPredictor {
       this.predicted = false;
       return;
     }
-    // A delayed (boost-slide) turn's landing tick is server-side state the
-    // client does not track: render the authoritative body verbatim and let
-    // the server show the drift. Anything else would guarantee corrections.
+    // A boosted (drifting) turn moves the head AND translates the body in
+    // the same server step -- state this one-cell follow-the-leader
+    // predictor cannot reproduce: render the authoritative body verbatim
+    // and let the server show the skid. Anything else would guarantee
+    // corrections.
     if (this.inputBuffer[0].delayed) {
       this.simBody = body;
       this.predicted = false;

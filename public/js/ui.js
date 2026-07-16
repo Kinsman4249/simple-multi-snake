@@ -3,7 +3,7 @@
 // prompt with countdown, spectator overlay, explicit JOIN offer button,
 // and a DEBUG button/panel (recording enabled only while open).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-16.1";
+(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-16.2";
 const UI = (() => {
   const statusEl = document.getElementById("status");
   let captchaId = null;
@@ -138,12 +138,17 @@ const UI = (() => {
     topBarEl.style.opacity = on ? "1" : "0";
     topBarEl.style.pointerEvents = on ? "auto" : "none";
   }
+  // Hiding is TIME-BASED from the last activity that revealed the bar: every
+  // show (re)arms one idle timer, and the bar fades when it fires (unless a
+  // panel has it pinned). It never waits for a pointer move BELOW the reveal
+  // zone -- a pointer parked on the bar, or gone out the top of the window,
+  // previously produced no qualifying move and left the bar visible forever.
   function topBarShow() {
-    if (topBarHideTimer) { clearTimeout(topBarHideTimer); topBarHideTimer = null; }
     topBarSetVisible(true);
+    topBarScheduleHide();
   }
   function topBarScheduleHide() {
-    if (topBarPinned > 0 || topBarHideTimer) return;
+    if (topBarHideTimer) clearTimeout(topBarHideTimer);
     topBarHideTimer = setTimeout(() => {
       topBarHideTimer = null;
       if (topBarPinned === 0) topBarSetVisible(false);
@@ -153,8 +158,10 @@ const UI = (() => {
   // up while they're open (counted, since DEBUG and KEYS can both be open).
   function topBarPin(on) {
     topBarPinned = Math.max(0, topBarPinned + (on ? 1 : -1));
-    if (topBarPinned > 0) topBarShow();
-    else topBarScheduleHide();
+    if (topBarPinned > 0) {
+      if (topBarHideTimer) { clearTimeout(topBarHideTimer); topBarHideTimer = null; }
+      topBarSetVisible(true);
+    } else topBarScheduleHide();
   }
   function topBar() {
     if (topBarEl) return topBarEl;
@@ -166,13 +173,19 @@ const UI = (() => {
       "opacity:0;pointer-events:none;transition:opacity 0.25s;";
     document.body.appendChild(topBarEl);
     // pointermove covers mouse; pointerdown covers a tap near the top edge
-    // on touch (touch produces no hover-style moves worth trusting).
+    // on touch (touch produces no hover-style moves worth trusting). Each
+    // in-zone event re-shows AND re-arms the idle timer; moves below the
+    // zone need no handler at all, since hiding is time-based.
     document.addEventListener("pointermove", e => {
       if (e.clientY <= TOPBAR_REVEAL_PX) topBarShow();
-      else topBarScheduleHide();
     });
     document.addEventListener("pointerdown", e => {
-      if (e.clientY <= TOPBAR_REVEAL_PX) { topBarShow(); topBarScheduleHide(); }
+      if (e.clientY <= TOPBAR_REVEAL_PX) topBarShow();
+    });
+    // Pointer left the window entirely (e.g. out the top edge): no further
+    // pointer events will arrive, so make sure a hide is armed.
+    document.addEventListener("pointerleave", () => {
+      if (topBarPinned === 0) topBarScheduleHide();
     });
     return topBarEl;
   }
@@ -434,8 +447,8 @@ const UI = (() => {
     lines.push("  seq:    " + (info.seq == null ? "-" : info.seq));
     lines.push("  tickMs: " + (info.tickMs == null ? "-" : info.tickMs));
     lines.push("  role:   " + (info.role || "-"));
-    lines.push("  boostSpeed:    " + (info.boostSpeed == null ? "-" : info.boostSpeed));
-    lines.push("  slideDistance: " + (info.slideDistance == null ? "-" : info.slideDistance));
+    lines.push("  boostSpeed: " + (info.boostSpeed == null ? "-" : info.boostSpeed));
+    lines.push("  driftMs:    " + (info.driftMs == null ? "-" : info.driftMs));
     const locals = info.locals || [];
     locals.forEach(loc => {
       lines.push("");

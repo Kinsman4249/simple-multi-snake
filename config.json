@@ -15,7 +15,7 @@
   "boost": {
     "enabled": true,
     "boostSpeed": 2.0,
-    "slideDistance": 3
+    "driftMs": 250
   },
   "enableDebug": true,
   "killBonusScore": 5,

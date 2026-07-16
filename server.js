@@ -113,10 +113,14 @@ const JOIN_OFFER_MS = Number.isInteger(CFG.joinOfferMs) ? CFG.joinOfferMs : 1000
 const INPUT_BUFFER = Number.isInteger(CFG.inputBuffer) ? CFG.inputBuffer : 3;
 // Boost & inertia. Holding the key of the current travel direction boosts
 // the snake: its movement accumulator fills boostSpeed times faster. The
-// trade-off is the slide penalty: a turn queued WHILE boosting only takes
-// effect after slideDistance further cells of straight travel (the snake
-// "drifts" through the turn). Both knobs live in config.json.
-const BOOST = Object.assign({ enabled: true, boostSpeed: 1.5, slideDistance: 2 }, CFG.boost || {});
+// trade-off is the drift: a turn made WHILE boosting takes effect on the
+// head IMMEDIATELY, but the whole body keeps skidding sideways in the
+// previous travel direction for driftMs (a real drift, not a delayed
+// input -- see applyDriftSlides). Both knobs live in config.json.
+// (driftMs replaced the old slideDistance "turn is delayed N cells" model
+// in round fifteen; a leftover slideDistance key in an old config.json is
+// simply ignored.)
+const BOOST = Object.assign({ enabled: true, boostSpeed: 1.5, driftMs: 250 }, CFG.boost || {});
 // Global floor on snake length. Drives both the initial spawn length
 // (spawnSnake) and the poison-trail damage floor -- one source of truth so
 // the two can never drift out of sync.
@@ -285,6 +289,8 @@ function spawnSnake(slotIndex) {
   s.iceStacks = 0;
   s.iceExpiresAtTick = 0;
   s.teleportedThisTick = false;
+  s.driftDir = null;
+  s.driftUntilMs = 0;
 }
 function newPlayerSlot(connId) {
   return {
@@ -292,7 +298,8 @@ function newPlayerSlot(connId) {
     alive: true, score: 0, wallStalls: 0, lastAck: 0,
     boost: false, moveAccumMs: 0, lastInputAt: Date.now(),
     heldPowerup: null, wormholeCharge: false, activePowerup: null,
-    iceStacks: 0, iceExpiresAtTick: 0, teleportedThisTick: false
+    iceStacks: 0, iceExpiresAtTick: 0, teleportedThisTick: false,
+    driftDir: null, driftUntilMs: 0
   };
 }
 function growSegment(s) {
@@ -626,6 +633,7 @@ function movementStep(movers) {
   for (let i = 0; i < slots.length; i++) {
     if (slots[i] && slots[i].alive) allAlive.push({ s: slots[i], i });
   }
+  applyDriftSlides(movers);
   const newHeads = computeNewHeads(movers);
   const died = new Map();
   const stalled = new Set();
@@ -639,6 +647,9 @@ function movementStep(movers) {
   moveSeq++;
 }
 function inBounds(h) { return h.x >= 0 && h.x < CFG.grid.cols && h.y >= 0 && h.y < CFG.grid.rows; }
+// NOTE: a turn consumed early here to dodge a wall deliberately does NOT
+// start a drift even if it was made while boosting -- the head is jammed
+// against a wall, where a lateral body skid would clamp anyway.
 function consumeInboundsTurn(s) {
   const head = s.body[0];
   for (let k = 0; k < s.inputQueue.length; k++) {
@@ -652,22 +663,60 @@ function consumeInboundsTurn(s) {
   }
   return null;
 }
+// Boost drift (redesigned): a turn made while boosting is applied to the
+// HEAD immediately like any other turn -- but it also starts a drift: for
+// BOOST.driftMs the whole body keeps skidding one cell per movement step in
+// the previous travel direction (applyDriftSlides, run before the head
+// advances each step). The skid is a rigid translation of the entire body,
+// so the snake stays connected while it visibly slides out of the corner.
+//
+// Drift collision rules (maintainer-specced):
+//   - The skidding body CLAMPS at obstacles: if the translation would push
+//     any segment out of bounds or into another snake's body, the whole
+//     translation is skipped that step (the skid grinds to a halt; the
+//     drift window still runs out on its own clock). It never kills the
+//     drifting snake by itself.
+//   - The drifted body is fully solid to everyone else, automatically:
+//     collision scans always read live body positions.
+//   - The head is under normal rules throughout -- and boosting gets NO
+//     wall-grace stall (see resolveWallCollisions), so boosting into a wall
+//     without a saving turn queued is fatal.
+function applyDriftSlides(active) {
+  const now = Date.now();
+  for (const { s, i } of active) {
+    if (!s.driftDir) continue;
+    if (now >= s.driftUntilMs) { s.driftDir = null; continue; }
+    const d = s.driftDir;
+    let blocked = false;
+    for (const seg of s.body) {
+      const c = { x: seg.x + d.x, y: seg.y + d.y };
+      if (!inBounds(c)) { blocked = true; break; }
+      for (let j = 0; j < slots.length && !blocked; j++) {
+        const other = slots[j];
+        if (j === i || !other || !other.alive) continue;
+        if (hitsBody(other.body, c, false)) blocked = true;
+      }
+      if (blocked) break;
+    }
+    if (blocked) continue;
+    for (const seg of s.body) { seg.x += d.x; seg.y += d.y; }
+  }
+}
 function computeNewHeads(active) {
   const newHeads = new Map();
   for (const { s, i } of active) {
     if (s.inputQueue.length > 0) {
-      const inp = s.inputQueue[0];
-      if (inp.delay > 0) {
-        // Boost slide penalty: this turn was queued while boosting, so it
-        // carries momentum -- the snake drifts straight for `delay` more
-        // cells before the turn registers. The input is acked immediately
-        // (the client knows it landed); only its EFFECT is deferred.
-        inp.delay--;
-        if (inp.seq != null && inp.seq > s.lastAck) s.lastAck = inp.seq;
-      } else {
-        s.inputQueue.shift();
-        s.dir = { x: inp.x, y: inp.y };
-        if (inp.seq != null) s.lastAck = inp.seq;
+      const inp = s.inputQueue.shift();
+      const prevDir = s.dir;
+      s.dir = { x: inp.x, y: inp.y };
+      if (inp.seq != null) s.lastAck = inp.seq;
+      // A turn made while boosting starts the body drift in the direction
+      // the snake WAS traveling. The drift begins translating on the NEXT
+      // step (applyDriftSlides runs before this), which keeps the first
+      // post-turn step fully connected.
+      if (inp.drift) {
+        s.driftDir = prevDir;
+        s.driftUntilMs = Date.now() + BOOST.driftMs;
       }
     }
     const head = s.body[0];
@@ -723,7 +772,10 @@ function resolveWallCollisions(active, newHeads, died, stalled) {
     if (inBounds(h)) { s.wallStalls = 0; continue; }
     const saved = consumeInboundsTurn(s);
     if (saved) { s.dir = saved; h = { x: s.body[0].x + saved.x, y: s.body[0].y + saved.y }; newHeads.set(i, h); s.wallStalls = 0; continue; }
-    if (s.wallStalls < WALL_GRACE_TICKS) { s.wallStalls++; stalled.add(i); newHeads.set(i, { x: s.body[0].x, y: s.body[0].y }); continue; }
+    // No wall grace while boosting (maintainer-specced with the drift
+    // redesign): boost is a risk -- a boosted head aimed at a wall with no
+    // saving turn queued dies without the stall tick.
+    if (s.wallStalls < WALL_GRACE_TICKS && !(BOOST.enabled && s.boost)) { s.wallStalls++; stalled.add(i); newHeads.set(i, { x: s.body[0].x, y: s.body[0].y }); continue; }
     tryWormholeOrDie(i, null, died, stalled, newHeads);
     s.wallStalls = 0;
   }
@@ -964,6 +1016,7 @@ function handleDeath(slotIndex) {
   if (!s) return;
   s.alive = false;
   s.boost = false;
+  s.driftDir = null;
   const conn = connections.get(s.connId);
   const localIdx = conn ? conn.locals.findIndex(l => l && l.role === "player" && l.slotIndex === slotIndex) : -1;
   if (conn && localIdx !== -1) {
@@ -1012,7 +1065,7 @@ function broadcastState() {
       // Visual-only flags for the client's boost jetstream / slide dust
       // effects (no gameplay meaning beyond what moveMs already carries).
       boost: !!s.boost,
-      sliding: s.inputQueue.length > 0 && s.inputQueue[0].delay > 0,
+      sliding: !!(s.driftDir && Date.now() < s.driftUntilMs),
       heldPowerup: s.heldPowerup,
       wormholeCharge: s.wormholeCharge,
       activePowerup: s.activePowerup ? s.activePowerup.type : null,
@@ -1163,12 +1216,13 @@ wss.on("connection", ws => {
         if (cseq != null && cseq > slot.lastAck) slot.lastAck = cseq;
         return;
       }
-      // Slide penalty: a turn queued while boosting carries momentum and
-      // only registers after slideDistance further straight cells (see
-      // computeNewHeads). Tagged at enqueue time so releasing boost right
-      // after the keypress doesn't cancel momentum already committed.
-      const delay = (BOOST.enabled && slot.boost) ? BOOST.slideDistance : 0;
-      slot.inputQueue.push({ x: nd.x, y: nd.y, seq: cseq, delay });
+      // Drift: a turn made while boosting turns the head immediately but
+      // sets the body skidding in the old direction for BOOST.driftMs (see
+      // computeNewHeads/applyDriftSlides). Tagged at enqueue time so
+      // releasing boost right after the keypress doesn't cancel momentum
+      // already committed.
+      const drift = BOOST.enabled && slot.boost;
+      slot.inputQueue.push({ x: nd.x, y: nd.y, seq: cseq, drift });
     }
     if (msg.type === "boost") {
       // Client-detected hold of the current-direction key. The flag only

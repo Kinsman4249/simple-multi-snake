@@ -44,7 +44,7 @@
 // Segments that teleport (respawn, growth, first sight) snap instantly.
 // Purely cosmetic and entirely client-side: server collision, authority and
 // the wire format of inputs are untouched.
-(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-16.1";
+(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-16.3";
 const Render = (() => {
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");
@@ -60,9 +60,17 @@ const Render = (() => {
     speedBoost: "#f93",
     blueShell: "#39f"
   };
-  const TRAIL_STYLE = { iceTrail: "rgba(140,220,255,0.35)", poisonTrail: "rgba(70,160,50,0.4)" };
+  // Trail tints sit directly on the black background, so they need far more
+  // alpha than an overlay would: the old 0.35-0.4 read as near-black,
+  // especially after a fractional downscale.
+  const TRAIL_STYLE = { iceTrail: "rgba(150,225,255,0.65)", poisonTrail: "rgba(110,210,70,0.6)" };
+  // Gap between cells, in internal-resolution pixels. Scales with cell size
+  // so it survives fractional CSS downscales (a fixed 1px gap lands between
+  // destination pixels below scale 1 and vanishes).
+  let cellGap = 1;
   function resize(g) {
     grid = g;
+    cellGap = Math.max(1, Math.round(g.cellSize * 0.08));
     canvas.width = g.cols * g.cellSize;
     canvas.height = g.rows * g.cellSize;
     fitCanvas();
@@ -84,11 +92,15 @@ const Render = (() => {
     if (scale >= 1) scale = Math.floor(scale);
     canvas.style.width = Math.floor(canvas.width * scale) + "px";
     canvas.style.height = Math.floor(canvas.height * scale) + "px";
+    // Pixelated is only right for integer upscales; on a fractional
+    // downscale nearest-neighbor eats the inter-cell gaps, so let the
+    // browser's smooth filtering preserve them instead.
+    canvas.style.imageRendering = scale >= 1 ? "pixelated" : "auto";
   }
   window.addEventListener("resize", fitCanvas);
   function drawCell(seg, color) {
     ctx.fillStyle = color;
-    ctx.fillRect(seg.x * grid.cellSize, seg.y * grid.cellSize, grid.cellSize - 1, grid.cellSize - 1);
+    ctx.fillRect(seg.x * grid.cellSize, seg.y * grid.cellSize, grid.cellSize - cellGap, grid.cellSize - cellGap);
   }
   function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
   function lerp(a, b, t) { return a + (b - a) * t; }
@@ -112,7 +124,7 @@ const Render = (() => {
     const cs = grid.cellSize;
     for (const t of trailList) {
       ctx.fillStyle = TRAIL_STYLE[t.type] || "rgba(255,255,255,0.2)";
-      ctx.fillRect(t.x * cs, t.y * cs, cs - 1, cs - 1);
+      ctx.fillRect(t.x * cs, t.y * cs, cs - cellGap, cs - cellGap);
     }
   }
   // Boost jetstream: a few semi-transparent squares trailing behind the head
@@ -198,10 +210,10 @@ const Render = (() => {
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.fillStyle = "#fff";
-    if (v.x === 1) ctx.fillRect(px + cs - stripW, py, stripW, cs - 1);
-    else if (v.x === -1) ctx.fillRect(px, py, stripW, cs - 1);
-    else if (v.y === 1) ctx.fillRect(px, py + cs - stripW, cs - 1, stripW);
-    else if (v.y === -1) ctx.fillRect(px, py, cs - 1, stripW);
+    if (v.x === 1) ctx.fillRect(px + cs - stripW, py, stripW, cs - cellGap);
+    else if (v.x === -1) ctx.fillRect(px, py, stripW, cs - cellGap);
+    else if (v.y === 1) ctx.fillRect(px, py + cs - stripW, cs - cellGap, stripW);
+    else if (v.y === -1) ctx.fillRect(px, py, cs - cellGap, stripW);
     ctx.restore();
   }
   // Per-segment interpolation factor between the previous and current
@@ -213,13 +225,18 @@ const Render = (() => {
     return Math.min(1, Math.max(0, (now - currSnap.recvTime) / span));
   }
   // Pixel position for segment si, eased from the matching segment of the
-  // previous snapshot when it is a plausible one-cell move; snapped otherwise
-  // (growth, respawn, first sight, or any teleport-sized jump).
+  // previous snapshot when it is a plausible one-step move; snapped otherwise
+  // (respawn, first sight, or any teleport-sized jump). "Plausible" allows a
+  // Manhattan distance up to 2, not just 1: during a boost drift the server
+  // translates the whole body laterally in the SAME step the head advances,
+  // so a drifting snake's segments legitimately step diagonally (or two
+  // cells along the skid near the tail) and must still read as a glide.
   function segPixel(seg, prevBody, si, t) {
     const cs = grid.cellSize;
     if (t < 1 && prevBody && prevBody[si]) {
       const ps = prevBody[si];
-      if (Math.abs(ps.x - seg.x) + Math.abs(ps.y - seg.y) === 1) {
+      const dist = Math.abs(ps.x - seg.x) + Math.abs(ps.y - seg.y);
+      if (dist >= 1 && dist <= 2) {
         return { x: lerp(ps.x, seg.x, t) * cs, y: lerp(ps.y, seg.y, t) * cs };
       }
     }
@@ -267,21 +284,21 @@ const Render = (() => {
         headPx = lerp(glide.from.x * cs, glide.to.x * cs, et);
         headPy = lerp(glide.from.y * cs, glide.to.y * cs, et);
         ctx.fillStyle = p.color.head;
-        ctx.fillRect(headPx, headPy, cs - 1, cs - 1);
+        ctx.fillRect(headPx, headPy, cs - cellGap, cs - cellGap);
         for (let si = 1; si < body.length; si++) drawCell(body[si], p.color.body);
       } else if (smooth) {
         for (let si = 0; si < body.length; si++) {
           const pos = segPixel(body[si], prevBody, si, t);
           if (si === 0) { headPx = pos.x; headPy = pos.y; }
           ctx.fillStyle = si === 0 ? p.color.head : p.color.body;
-          ctx.fillRect(pos.x, pos.y, cs - 1, cs - 1);
+          ctx.fillRect(pos.x, pos.y, cs - cellGap, cs - cellGap);
         }
       } else {
         body.forEach((seg, si) => drawCell(seg, si === 0 ? p.color.head : p.color.body));
       }
       if (!p.alive) {
         ctx.fillStyle = "rgba(0,0,0,0.5)";
-        body.forEach(seg => ctx.fillRect(seg.x * cs, seg.y * cs, cs - 1, cs - 1));
+        body.forEach(seg => ctx.fillRect(seg.x * cs, seg.y * cs, cs - cellGap, cs - cellGap));
       }
       if (p.alive && p.boost && opts && opts.boostTrail && p.dir) drawBoostTrail(headPx, headPy, p.dir, now);
       if (p.alive && p.sliding && opts && opts.slideDust) drawSlideDust(headPx, headPy, now);

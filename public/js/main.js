@@ -23,10 +23,10 @@
 //     debug button/panel/recording are never created at all -- the only
 //     residue is one boolean test at startup.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-16.1";
+(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-16.2";
 let CLIENT_FX = { inputFlash: true, inputFlashMs: 90, correctionGlide: true, correctionGlideMs: 90, boostTrail: true, slideDust: true };
 let CLIENT_RENDER = { interpolate: true };
-let BOOST_CFG = { enabled: true, boostSpeed: 2.0, slideDistance: 3 };
+let BOOST_CFG = { enabled: true, boostSpeed: 2.0, driftMs: 250 };
 let POWERUPS_CFG = {};
 fetch("/api/config").then(r => r.json()).then(cfg => {
   if (cfg && cfg.clientFx) CLIENT_FX = Object.assign({}, CLIENT_FX, cfg.clientFx);
@@ -390,8 +390,8 @@ document.addEventListener("keydown", e => {
     const entry = myLocals[localIdx];
     if (!myPlayers.has(localIdx) || !entry || entry.role !== "player") break;
     if (!wasHeld) {
-      // A turn typed while boosting is delayed server-side by the slide
-      // penalty; tell the predictor not to pre-play it.
+      // A turn typed while boosting drifts the body server-side; tell the
+      // predictor not to pre-play it (see predict.js).
       const accepted = myPlayers.get(localIdx).queueInput(dir, boostOn[localIdx]);
       if (accepted && CLIENT_FX.inputFlash) lastInputFlash[localIdx] = { dir, t: performance.now() };
     }
@@ -428,7 +428,7 @@ window.__DEBUG_SOURCE__ = function () {
     seq: curr ? curr.seq : null,
     tickMs: curr ? curr.tickMs : null,
     boostSpeed: BOOST_CFG.boostSpeed,
-    slideDistance: BOOST_CFG.slideDistance,
+    driftMs: BOOST_CFG.driftMs,
     locals
   };
 };

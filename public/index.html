@@ -32,7 +32,9 @@
   /* The canvas's INTERNAL resolution stays cols*cellSize x rows*cellSize
      (render.js resize()); its CSS size is set by render.js fitCanvas() to
      the largest 16:9 fit in #boardWrap, preferring integer scales.
-     Pixelated keeps upscaled cells crisp instead of blurry. */
+     Pixelated keeps upscaled cells crisp instead of blurry; fitCanvas()
+     overrides it to "auto" (inline style) on fractional DOWNscales, where
+     nearest-neighbor would eat the 1-cell gaps between segments. */
   canvas { background: #000; border: 2px solid #555; image-rendering: pixelated; touch-action: none; }
   /* Leaderboard overlay: barely-there during play, solid on hover/tap. */
   .panel {
@@ -126,8 +128,9 @@
     <div id="boostTip">
       <h4>Boost &amp; Slide</h4>
       Hold the key you're already moving in to speed up.<br>
-      Turning while boosting drifts a couple squares before it takes effect
-      &mdash; let off boost first for a sharp turn.
+      Turning while boosting turns your head instantly, but your body keeps
+      skidding sideways for a moment &mdash; and there's no mercy at walls
+      while boosting. Let off boost first for a clean corner.
       <div><button id="boostTipAck">Got it</button></div>
     </div>
     <!-- Powerup explainer: a plain toggle button + popup (see ui.js
