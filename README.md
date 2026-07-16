@@ -10,18 +10,36 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
 - One to four players on a shared board, no accounts.
 - Couch co-op: a second local player can join on the same connection (p1 on
   arrow keys, p2 on WASD), taking a second slot on the same board.
+- Leave button per local seat. Leaving exits that seat completely (it is not
+  queued as a spectator); rejoin any time by pressing that seat's own keys or
+  the Play/Add button. Leaving your last seat closes the connection and shows
+  a rejoin screen instead of leaving a dead board on screen.
+- Boost & slide: hold the key of the direction you're already moving to speed
+  up; turning while boosting drifts a couple of squares before the turn takes
+  effect. A brief tip explaining this is shown on the join screen while the
+  captcha is being solved. Configurable, and can be turned off entirely.
 - Spectator queue past four players. A spectator takes over shortly after a
   player dies; if four or fewer are connected the dead player just respawns.
 - Killing another player (they run into your body) gives you a 10 point bonus
   and grows your snake by 3 segments. Head-on collisions kill both, no bonus.
 - Speed starts slow and ramps up over time to a configurable floor.
 - Daily and all-time top 5 high scores with arcade-style 3 letter initials.
+  On a shared keyboard, the initials prompt never interrupts a snake that is
+  still alive: a qualifying score is held until every local seat on that
+  keyboard is dead, then prompts are shown one at a time.
 - Simple math captcha on join, intended to sit behind a Cloudflare filter.
 - Client-side prediction with server reconciliation: local movement is
   responsive while the server stays authoritative for collisions, food, and
-  score.
-- An on-page DEBUG button shows per-module build stamps and recent server
-  corrections, so a stale or partial deploy is obvious.
+  score. Other players' snakes are smoothed between server updates in lock
+  step with the server's own movement rate (cosmetic only; this does not
+  change server-side collision or authority).
+- Idle cleanup applies to active play too: if every living snake on the board
+  goes quiet at once, the whole lobby is disconnected; one attentive player
+  keeps the session alive for everyone else.
+- An on-page DEBUG button shows per-module build stamps, the live server
+  build (commit-derived, not hand-edited), and recent server corrections, so
+  a stale or partial deploy is obvious. The operator can disable the debug
+  system entirely (see enableDebug below) for zero added overhead.
 - All gameplay tuning lives in config.json next to the server.
 
 ## Requirements
@@ -183,9 +201,27 @@ Keys:
 - initialsTimeoutMs: time to enter initials on a qualifying death before the
   player becomes a spectator.
 - spectatorIdleMs: global spectator idle disconnect time.
+- playerIdleMs: inactivity timeout for ACTIVE play (default 120000). If every
+  currently-living snake on the board goes this long without any input, the
+  idle connections are disconnected, same as the spectator idle rule. Any one
+  player pressing a key resets the clock for the whole board; dying and
+  auto-respawning does not reset it on its own, so an AFK player who keeps
+  dying cannot dodge the timeout.
 - joinOfferMs: time a queued spectator has to accept an open slot before the
   offer passes to the next spectator.
 - inputBuffer: maximum queued turns per snake.
+- boost.enabled: turns the boost/slide mechanic on or off (default true).
+- boost.boostSpeed: multiplier on movement rate while boosting (default 1.5).
+- boost.slideDistance: cells a boosted turn drifts straight before it takes
+  effect (default 2).
+- enableDebug: master switch for the debug system (default true). When set
+  to false, the server never builds or logs a debug line (a single null
+  check at every call site) and the client never constructs the DEBUG
+  button, panel, or correction-recording hooks at all.
+- clientRender.interpolate: smooths other players' on-screen movement between
+  server updates at the server's own known movement rate (default true).
+  Purely cosmetic; server-side collision and authority are unaffected. Set to
+  false for the old grid-snapped, no-interpolation look.
 
 The listening port is not in config.json; it is chosen at install time and
 written into server.js. To change it, re-run the installer with PORT set.
@@ -202,11 +238,19 @@ position on a real conflict such as a death or a respawn.
 
 A DEBUG button on the page toggles a panel that shows each client module build
 stamp, the server build, the current sequence and tick, the pending input
-buffer, and the most recent server corrections. Recording is off until the
-panel is opened so there is no cost during normal play. After any deploy, open
-the panel and confirm every build stamp matches the version you deployed before
-judging behavior; a stale Cloudflare edge cache serving old JS is the most
-common cause of "it did not change."
+buffer, whether each local seat is currently boosting, and the most recent
+server corrections. Recording is off until the panel is opened so there is no
+cost during normal play. After any deploy, open the panel and confirm every
+build stamp matches the version you deployed before judging behavior; a stale
+Cloudflare edge cache serving old JS is the most common cause of "it did not
+change." Set enableDebug to false in config.json to remove the debug system
+entirely, client and server, if you don't want it available at all.
+
+The server build shown is resolved automatically, not hand-edited: a live git
+checkout reports its commit count and short hash (so it changes every commit),
+a release archive built by `git archive` (see the Release workflow) carries a
+build-info.json stamped with the tag and commit at packaging time, and a bare
+copy with neither falls back to the package.json version marked "dev".
 
 ## Manual install
 

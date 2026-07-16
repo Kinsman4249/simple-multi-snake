@@ -34,6 +34,17 @@
   }
   #status { font-size: 13px; margin-bottom: 8px; min-height: 18px; }
   .err { color: #f66; }
+  #boostTip {
+    background: #14201a; border: 1px solid #3a5; padding: 14px 18px; margin-bottom: 14px;
+    text-align: left; max-width: 320px; font-size: 12px; line-height: 1.5; color: #cfc;
+  }
+  #boostTip h4 { margin: 0 0 6px 0; font-size: 13px; color: #9f9; }
+  #boostTip button {
+    margin-top: 10px; background: #234; color: #bdf; border: 1px solid #57a;
+    padding: 4px 12px; font-size: 12px; cursor: pointer; font-family: monospace;
+  }
+  #boostTip.acked { opacity: 0.45; }
+  #boostTip.acked button { display: none; }
 </style>
 </head>
 <body>
@@ -54,6 +65,17 @@
 <!-- Captcha / gate overlay, shown before a WebSocket connection is attempted -->
 <div id="overlay">
   <div class="box">
+    <!-- Shown while the captcha is being solved, so a new player reads it
+         before their snake ever moves. "Got it" is a one-tap, non-blocking
+         acknowledgement (see ui.js initCaptchaGate) -- it does not gate Join,
+         it just confirms the player noticed the mechanic. -->
+    <div id="boostTip">
+      <h4>Boost &amp; Slide</h4>
+      Hold the key you're already moving in to speed up.<br>
+      Turning while boosting drifts a couple squares before it takes effect
+      &mdash; let off boost first for a sharp turn.
+      <div><button id="boostTipAck">Got it</button></div>
+    </div>
     <div id="captchaQuestion">Loading...</div>
     <div><input id="captchaAnswer" maxlength="2" autofocus></div>
     <button id="captchaSubmit">Join</button>

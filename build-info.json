@@ -1,0 +1,6 @@
+{
+  "comment": "Placeholders below are substituted by `git archive` (see .gitattributes export-subst). In a live git checkout they stay literal and server.js falls back to asking git directly.",
+  "describe": "$Format:%(describe:tags)$",
+  "commit": "$Format:%h$",
+  "commitCount": ""
+}

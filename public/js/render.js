@@ -33,7 +33,18 @@
 // immediately so predicted eats look consistent. If the server later
 // rejects an eat, predict.js rolls it back and the food reappears.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-12.15";
+// Phase 4 -- lock-step interpolation (opts.interpolate, operator-configured
+// via config.json clientRender, served through /api/config): the server
+// broadcasts on a FIXED, known movement cadence and now includes each
+// player's effective ms-per-cell (players[i].moveMs, boost included). For
+// snakes rendered from server state (i.e. NOT the local predicted bodies),
+// each segment is eased from its previous-snapshot cell to its current cell
+// over exactly that interval, so travel on screen is smooth and in lock
+// step with the server tick instead of jumping a whole cell per broadcast.
+// Segments that teleport (respawn, growth, first sight) snap instantly.
+// Purely cosmetic and entirely client-side: server collision, authority and
+// the wire format of inputs are untouched.
+(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-15.1";
 const Render = (() => {
   const canvas = document.getElementById("game");
   const ctx = canvas.getContext("2d");
@@ -66,14 +77,37 @@ const Render = (() => {
     else if (v.y === -1) ctx.fillRect(px, py, cs - 1, stripW);
     ctx.restore();
   }
-  function draw(prevSnap, currSnap, localBodies, eatenKeys, fx) {
+  // Per-segment interpolation factor between the previous and current
+  // snapshot, clamped to [0,1]. t is time elapsed since the current snapshot
+  // arrived, over this player's own ms-per-cell -- so a boosting snake's
+  // on-screen glide is exactly as fast as its server cadence.
+  function interpT(now, currSnap, moveMs) {
+    const span = moveMs || currSnap.tickMs || 100;
+    return Math.min(1, Math.max(0, (now - currSnap.recvTime) / span));
+  }
+  // Pixel position for segment si, eased from the matching segment of the
+  // previous snapshot when it is a plausible one-cell move; snapped otherwise
+  // (growth, respawn, first sight, or any teleport-sized jump).
+  function segPixel(seg, prevBody, si, t) {
+    const cs = grid.cellSize;
+    if (t < 1 && prevBody && prevBody[si]) {
+      const ps = prevBody[si];
+      if (Math.abs(ps.x - seg.x) + Math.abs(ps.y - seg.y) === 1) {
+        return { x: lerp(ps.x, seg.x, t) * cs, y: lerp(ps.y, seg.y, t) * cs };
+      }
+    }
+    return { x: seg.x * cs, y: seg.y * cs };
+  }
+  function draw(prevSnap, currSnap, localBodies, eatenKeys, fx, opts) {
     if (!currSnap) return;
     if (!grid || grid.cols !== currSnap.grid.cols || grid.cellSize !== currSnap.grid.cellSize) {
       resize(currSnap.grid);
     }
     const flashes = (fx && fx.flashes) || [];
     const glides = (fx && fx.glides) || [];
+    const interpolate = !!(opts && opts.interpolate);
     const now = performance.now();
+    const cs = grid.cellSize;
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     if (currSnap.food) {
@@ -82,25 +116,40 @@ const Render = (() => {
     }
     currSnap.players.forEach((p, i) => {
       if (!p) return;
-      const body = (localBodies && localBodies.has(i)) ? localBodies.get(i) : p.body;
+      const isLocal = localBodies && localBodies.has(i);
+      const body = isLocal ? localBodies.get(i) : p.body;
       if (!body || !body.length) return;
       const glide = glides.find(g => g.slot === i);
-      let headPx = body[0].x * grid.cellSize;
-      let headPy = body[0].y * grid.cellSize;
+      // Lock-step smoothing applies to server-rendered snakes only: the
+      // local predicted body is already ahead of the wire by design, and
+      // its corrections have their own glide effect below.
+      const smooth = interpolate && !isLocal && p.alive &&
+        prevSnap && prevSnap.players && prevSnap.players[i] && prevSnap.players[i].body;
+      const t = smooth ? interpT(now, currSnap, p.moveMs) : 1;
+      const prevBody = smooth ? prevSnap.players[i].body : null;
+      let headPx = body[0].x * cs;
+      let headPy = body[0].y * cs;
       if (glide) {
-        const t = Math.min(1, (now - glide.startTime) / glide.durationMs);
-        const et = easeOutCubic(t);
-        headPx = lerp(glide.from.x * grid.cellSize, glide.to.x * grid.cellSize, et);
-        headPy = lerp(glide.from.y * grid.cellSize, glide.to.y * grid.cellSize, et);
+        const gt = Math.min(1, (now - glide.startTime) / glide.durationMs);
+        const et = easeOutCubic(gt);
+        headPx = lerp(glide.from.x * cs, glide.to.x * cs, et);
+        headPy = lerp(glide.from.y * cs, glide.to.y * cs, et);
         ctx.fillStyle = p.color.head;
-        ctx.fillRect(headPx, headPy, grid.cellSize - 1, grid.cellSize - 1);
+        ctx.fillRect(headPx, headPy, cs - 1, cs - 1);
         for (let si = 1; si < body.length; si++) drawCell(body[si], p.color.body);
+      } else if (smooth) {
+        for (let si = 0; si < body.length; si++) {
+          const pos = segPixel(body[si], prevBody, si, t);
+          if (si === 0) { headPx = pos.x; headPy = pos.y; }
+          ctx.fillStyle = si === 0 ? p.color.head : p.color.body;
+          ctx.fillRect(pos.x, pos.y, cs - 1, cs - 1);
+        }
       } else {
         body.forEach((seg, si) => drawCell(seg, si === 0 ? p.color.head : p.color.body));
       }
       if (!p.alive) {
         ctx.fillStyle = "rgba(0,0,0,0.5)";
-        body.forEach(seg => ctx.fillRect(seg.x * grid.cellSize, seg.y * grid.cellSize, grid.cellSize - 1, grid.cellSize - 1));
+        body.forEach(seg => ctx.fillRect(seg.x * cs, seg.y * cs, cs - 1, cs - 1));
       }
       const flash = flashes.find(f => f.slot === i);
       if (flash) {

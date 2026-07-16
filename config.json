@@ -13,6 +13,12 @@
     "rampIntervalSec": 30,
     "rampStepMs": 10
   },
+  "boost": {
+    "enabled": true,
+    "boostSpeed": 1.5,
+    "slideDistance": 2
+  },
+  "enableDebug": true,
   "killBonusScore": 5,
   "killBonusGrowth": 3,
   "spectatorPromoteDelayMs": 1500,
@@ -20,6 +26,7 @@
   "wallGraceTicks": 1,
   "initialsTimeoutMs": 20000,
   "spectatorIdleMs": 300000,
+  "playerIdleMs": 120000,
   "joinOfferMs": 10000,
   "inputBuffer": 3,
   "clientFx": {
@@ -27,5 +34,8 @@
     "inputFlashMs": 90,
     "correctionGlide": true,
     "correctionGlideMs": 90
+  },
+  "clientRender": {
+    "interpolate": true
   }
 }

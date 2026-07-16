@@ -3,7 +3,7 @@
 // prompt with countdown, spectator overlay, explicit JOIN offer button,
 // and a DEBUG button/panel (recording enabled only while open).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-12.11";
+(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-15.1";
 const UI = (() => {
   const statusEl = document.getElementById("status");
   let captchaId = null;
@@ -14,8 +14,19 @@ const UI = (() => {
     captchaId = data.id;
     document.getElementById("captchaQuestion").textContent = data.a + " + " + data.b + " = ?";
   }
+  // One-tap, non-blocking acknowledgement of the boost/slide tip (see
+  // index.html #boostTip): dims the box and hides the button. Does not gate
+  // Join -- if boost is disabled server-side the tip is simply irrelevant
+  // and skipping it costs nothing.
+  function initBoostTip() {
+    const tip = document.getElementById("boostTip");
+    const btn = document.getElementById("boostTipAck");
+    if (!tip || !btn) return;
+    btn.onclick = () => tip.classList.add("acked");
+  }
   function initCaptchaGate(onSuccess) {
     loadCaptcha();
+    initBoostTip();
     document.getElementById("captchaSubmit").onclick = async () => {
       const answer = document.getElementById("captchaAnswer").value;
       const res = await fetch("/api/verify", {
@@ -38,16 +49,18 @@ const UI = (() => {
 
   function updateStatus(curr) {
     const locals = curr.you.locals || [];
+    const present = locals.filter(e => e);
     const parts = locals.map(entry => {
-      if (!entry) return "";
-      const label = locals.length > 1 ? (entry.local === 0 ? "P1" : "P2") + ": " : "You: ";
+      if (!entry) return ""; // seat left (null hole): nothing to report
+      const label = present.length > 1 ? (entry.local === 0 ? "P1" : "P2") + ": " : "You: ";
       if (entry.role === "player") {
         const me = curr.players[entry.slot];
         return label + "slot " + (entry.slot + 1) + " | score " +
           (me ? me.score : 0) + (me && !me.alive ? " | waiting" : "");
       }
+      if (entry.role === "held") return label + "high score entry pending...";
       return label + "spectating (queue " + entry.queuePos + " of " + entry.queueLen + ")";
-    });
+    }).filter(s => s);
     statusEl.textContent = parts.join("   ");
   }
   function updateLeaderboards(hs) {
@@ -196,6 +209,61 @@ const UI = (() => {
     const btn = document.getElementById("coopBtn");
     if (btn) { btn.disabled = true; btn.textContent = "Player 2 (WASD) active"; }
   }
+  // P2's seat is gone (left via the Leave button): restore the add/play
+  // button so clicking it -- or just pressing WASD -- can re-request a seat.
+  // Idempotent; called on every state where seat 1 is a null hole.
+  function coOpLeft() {
+    const btn = document.getElementById("coopBtn");
+    if (btn && btn.disabled) { btn.disabled = false; btn.textContent = "+ Add Player 2 (or just press WASD)"; }
+  }
+
+  // ---- Leave buttons + rejoin menu -----------------------------------
+  // One "Leave" button per existing local seat, kept in sync with the
+  // server's view of our seats on every state broadcast. Leaving is a full
+  // exit for that seat (no spectator queue); leaving the last seat closes
+  // the connection and showRejoin() takes over.
+  let leaveHandler = null;
+  function initLeaveButtons(onLeave) {
+    leaveHandler = onLeave;
+    if (document.getElementById("leaveBar")) return;
+    const bar = document.createElement("div");
+    bar.id = "leaveBar";
+    bar.style.cssText = "position:fixed;bottom:6px;right:6px;z-index:9999;display:flex;gap:6px;";
+    document.body.appendChild(bar);
+  }
+  function updateLeaveButtons(locals) {
+    const bar = document.getElementById("leaveBar");
+    if (!bar || !locals) return;
+    const present = locals.filter(e => e);
+    locals.forEach((entry, idx) => {
+      const id = "leaveBtn" + idx;
+      let btn = document.getElementById(id);
+      if (!entry) { if (btn) btn.remove(); return; }
+      if (!btn) {
+        btn = document.createElement("button");
+        btn.id = id;
+        btn.style.cssText = "background:#2a1616;color:#f88;border:1px solid #844;font-family:monospace;font-size:12px;padding:4px 10px;cursor:pointer;";
+        btn.onclick = () => { if (leaveHandler) leaveHandler(idx); };
+        bar.appendChild(btn);
+      }
+      btn.textContent = (present.length > 1 ? "Leave (P" + (idx + 1) + ")" : "Leave");
+    });
+  }
+  // Main menu / rejoin screen, shown whenever the connection ends (solo
+  // leave, idle kick, server restart). A full reload re-runs the captcha
+  // gate from a clean slate -- no idling on a dead board.
+  function showRejoin() {
+    if (document.getElementById("rejoinOverlay")) return;
+    const box = overlayBox("rejoinOverlay");
+    box.innerHTML =
+      "<div style=\"background:#1a1a1a;border:1px solid #444;padding:28px;text-align:center;font-family:monospace;color:#eee;\">" +
+      "<div style=\"font-size:18px;\">You left the game</div>" +
+      "<div style=\"margin:10px 0;color:#999;\">Thanks for playing.</div>" +
+      "<button id=\"rejoinBtn\" style=\"background:#2a5;color:#031;border:1px solid #6f6;padding:8px 18px;font-size:16px;cursor:pointer;font-family:monospace;\">Play</button>" +
+      "</div>";
+    document.body.appendChild(box);
+    document.getElementById("rejoinBtn").onclick = () => location.reload();
+  }
   function notifyJoinLocalDenied(msg) {
     const btn = document.getElementById("coopBtn");
     if (btn) { btn.disabled = false; btn.textContent = "+ Add Player 2 (WASD)"; }
@@ -258,7 +326,7 @@ const UI = (() => {
     const locals = info.locals || [];
     locals.forEach(loc => {
       lines.push("");
-      lines.push("== " + loc.label.toUpperCase() + " (slot " + (loc.slot == null ? "-" : loc.slot) + ") ==");
+      lines.push("== " + loc.label.toUpperCase() + " (slot " + (loc.slot == null ? "-" : loc.slot) + (loc.boost ? ", BOOST" : "") + ") ==");
       lines.push("-- PENDING INPUTS --");
       const pend = loc.pending || [];
       if (pend.length === 0) lines.push("  none");
@@ -276,5 +344,6 @@ const UI = (() => {
 
   return { initCaptchaGate, setConnectionStatus, updateStatus, updateLeaderboards,
            askInitials, showSpectator, offerJoin, initDebug,
-           initCoOp, coOpJoined, notifyJoinLocalDenied };
+           initCoOp, coOpJoined, coOpLeft, notifyJoinLocalDenied,
+           initLeaveButtons, updateLeaveButtons, showRejoin };
 })();

@@ -47,7 +47,13 @@
 //
 // Debug recording is DISABLED until the UI opens the panel (setDebug(true)).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-12.20";
+// Boost/slide (Phase 4): a turn typed while boosting is queued and sent
+// normally (so the ack/retry machinery is unchanged) but flagged `delayed`:
+// the server will drift straight for config.boost.slideDistance cells before
+// applying it, and the client cannot know the exact landing tick, so rebuild()
+// simply does not pre-play a delayed turn. The server's authoritative steps
+// (plus the correction glide, if enabled) show the drift-then-turn.
+(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-15.1";
 const DIR_VECTORS = {
   up: { x: 0, y: -1 },
   down: { x: 0, y: 1 },
@@ -89,7 +95,7 @@ class LocalPlayerPredictor {
   setDebug(on) { this.debug = !!on; if (!on) this.corrections.length = 0; }
   sameVec(a, b) { return a && b && a.x === b.x && a.y === b.y; }
 
-  queueInput(dirName) {
+  queueInput(dirName, delayed) {
     const vec = DIR_VECTORS[dirName];
     if (!vec) return null;
     if (this.inputBuffer.length >= 3) return null;
@@ -97,7 +103,7 @@ class LocalPlayerPredictor {
       ? this.inputBuffer[this.inputBuffer.length - 1].vec : this.dir;
     if (this.sameVec(vec, { x: -last.x, y: -last.y })) return null;
     if (this.sameVec(vec, last)) return null;
-    const item = { seq: ++this.clientSeq, dirName, vec, sentTick: this.lastServerSeq, retries: 0 };
+    const item = { seq: ++this.clientSeq, dirName, vec, sentTick: this.lastServerSeq, retries: 0, delayed: !!delayed };
     this.inputBuffer.push(item);
     if (this.sendFn) this.sendFn(dirName, item.seq);
     this.rebuild();
@@ -158,6 +164,14 @@ class LocalPlayerPredictor {
     // the fix for the .13 regression where a stale direction was replayed
     // even with an empty buffer, leaving the head a constant cell ahead.
     if (this.inputBuffer.length === 0) {
+      this.simBody = body;
+      this.predicted = false;
+      return;
+    }
+    // A delayed (boost-slide) turn's landing tick is server-side state the
+    // client does not track: render the authoritative body verbatim and let
+    // the server show the drift. Anything else would guarantee corrections.
+    if (this.inputBuffer[0].delayed) {
       this.simBody = body;
       this.predicted = false;
       return;
