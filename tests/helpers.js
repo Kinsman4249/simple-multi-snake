@@ -123,7 +123,7 @@ function assert(cond, msg) {
 // the real config.json or waiting out production timings. Tries `node`
 // first (the project's documented run command); falls back to the
 // deno-compatible invocation this repo's dev environment actually has.
-async function startServer(configOverrides) {
+async function startServer(configOverrides, extraEnv) {
   const repoRoot = new URL("..", import.meta.url).pathname;
   const base = JSON.parse(await Deno.readTextFile(repoRoot + "config.json"));
   const merged = Object.assign({}, base, configOverrides);
@@ -138,7 +138,7 @@ async function startServer(configOverrides) {
   const name = ".test-config-" + crypto.randomUUID().slice(0, 8) + ".json";
   const destPath = repoRoot + name;
   await Deno.writeTextFile(destPath, JSON.stringify(merged));
-  const env = Object.assign({}, Deno.env.toObject(), { SNAKE_CONFIG: name });
+  const env = Object.assign({}, Deno.env.toObject(), { SNAKE_CONFIG: name }, extraEnv || {});
 
   let child;
   try {

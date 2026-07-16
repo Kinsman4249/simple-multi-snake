@@ -161,6 +161,40 @@ for (const t of POWERUP_TYPES) {
 // /api/config and skips creating its debug button/panel/recording entirely.
 const ENABLE_DEBUG = CFG.enableDebug !== false;
 const dlog = ENABLE_DEBUG ? (...args) => console.log("[debug]", ...args) : null;
+// Zero-resource perf instrumentation, same philosophy as dlog: when the
+// SNAKE_PERF env var is unset, PERF is null and every site is one falsy
+// short-circuit. When set, the sim loop times movementStep/broadcastState
+// (at their CALL SITES, so the hot functions themselves stay untouched),
+// broadcastState counts serialized bytes, and one "[perf] {json}" summary
+// line is printed every 5s (consumed by tests/perf_baseline.js).
+const PERF = process.env.SNAKE_PERF ? {
+  mvNs: 0n, mvCalls: 0, mvMaxNs: 0n,
+  bcNs: 0n, bcCalls: 0, bcMaxNs: 0n,
+  bytesBase: 0, bytesTotal: 0, sends: 0
+} : null;
+if (PERF) {
+  const timer = setInterval(() => {
+    let totalSegs = 0, alive = 0;
+    for (const s of slots) if (s && s.alive) { alive++; totalSegs += s.body.length; }
+    console.log("[perf] " + JSON.stringify({
+      mvAvgUs: PERF.mvCalls ? Math.round(Number(PERF.mvNs / BigInt(PERF.mvCalls)) / 100) / 10 : 0,
+      mvMaxUs: Math.round(Number(PERF.mvMaxNs) / 100) / 10,
+      mvCalls: PERF.mvCalls,
+      bcAvgUs: PERF.bcCalls ? Math.round(Number(PERF.bcNs / BigInt(PERF.bcCalls)) / 100) / 10 : 0,
+      bcMaxUs: Math.round(Number(PERF.bcMaxNs) / 100) / 10,
+      bcCalls: PERF.bcCalls,
+      baseBytesAvg: PERF.bcCalls ? Math.round(PERF.bytesBase / PERF.bcCalls) : 0,
+      sendBytesAvg: PERF.sends ? Math.round(PERF.bytesTotal / PERF.sends) : 0,
+      sends: PERF.sends,
+      rssMb: Math.round(process.memoryUsage().rss / 1048576 * 10) / 10,
+      alive, totalSegs
+    }));
+    PERF.mvNs = 0n; PERF.mvCalls = 0; PERF.mvMaxNs = 0n;
+    PERF.bcNs = 0n; PERF.bcCalls = 0; PERF.bcMaxNs = 0n;
+    PERF.bytesBase = 0; PERF.bytesTotal = 0; PERF.sends = 0;
+  }, 5000);
+  if (timer.unref) timer.unref();
+}
 const CLIENT_RENDER = Object.assign({ interpolate: true }, CFG.clientRender || {});
 
 function todayStr() { return new Date().toISOString().slice(0, 10); }
@@ -612,7 +646,12 @@ function simLoop() {
       if (s.moveAccumMs >= interval) { s.moveAccumMs -= interval; movers.push({ s, i }); }
     }
     if (movers.length === 0) break;
-    movementStep(movers);
+    if (PERF) {
+      const t0 = process.hrtime.bigint();
+      movementStep(movers);
+      const d = process.hrtime.bigint() - t0;
+      PERF.mvNs += d; PERF.mvCalls++; if (d > PERF.mvMaxNs) PERF.mvMaxNs = d;
+    } else movementStep(movers);
     moved = true;
     guard++;
   } while (guard < 5); // guard: a huge dt (event-loop stall) can owe several steps
@@ -620,7 +659,14 @@ function simLoop() {
   // moveIntervalMs), independent of any snake's speed -- driven straight off
   // dt rather than the per-snake accumulator loop above.
   if (updateBlueShells(dt)) moved = true;
-  if (moved) broadcastState();
+  if (moved) {
+    if (PERF) {
+      const t0 = process.hrtime.bigint();
+      broadcastState();
+      const d = process.hrtime.bigint() - t0;
+      PERF.bcNs += d; PERF.bcCalls++; if (d > PERF.bcMaxNs) PERF.bcMaxNs = d;
+    } else broadcastState();
+  }
   nextSimAt = (nextSimAt == null ? now : nextSimAt) + SIM_MS;
   if (nextSimAt < now) nextSimAt = now + SIM_MS; // fell too far behind: re-anchor
   setTimeout(simLoop, Math.max(0, nextSimAt - Date.now()));
@@ -1085,6 +1131,7 @@ function broadcastState() {
   // full board (bodies included) N times. With N connections this turns an
   // O(N * board) serialization into O(board + N * you).
   const baseStr = JSON.stringify(state);
+  if (PERF) PERF.bytesBase += baseStr.length;
   const basePrefix = baseStr.slice(0, -1) + ',"you":';
   // Precompute spectator queue positions once per broadcast instead of a
   // findIndex scan per seat per connection.
@@ -1112,7 +1159,9 @@ function broadcastState() {
         };
       })
     };
-    conn.ws.send(basePrefix + JSON.stringify(you) + "}");
+    const payload = basePrefix + JSON.stringify(you) + "}";
+    if (PERF) { PERF.bytesTotal += payload.length; PERF.sends++; }
+    conn.ws.send(payload);
   }
 }
 const MIME = { ".html": "text/html", ".js": "application/javascript", ".json": "application/json", ".css": "text/css" };

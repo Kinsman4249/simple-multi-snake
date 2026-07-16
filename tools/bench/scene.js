@@ -1,0 +1,106 @@
+// Deterministic synthetic scene generator for the Phase 7 renderer benchmark
+// and parity tests (tools/bench/). Builds prev/curr snapshot objects in the
+// exact shape the live client feeds Render.draw (see main.js frame() and
+// server.js broadcastState), with every effect active: trails, food,
+// pulsing pickups, blue shells, explosion rings, interpolating bodies,
+// boost jetstream, slide dust, input flash, correction glide, dead overlay.
+// No randomness -- layouts are arithmetic so 2D and GL render the same scene.
+(function () {
+  const PLAYER_COLORS = [
+    { head: "#8f8", body: "#3c3" },
+    { head: "#f88", body: "#c33" },
+    { head: "#88f", body: "#33c" },
+    { head: "#ff8", body: "#cc3" }
+  ];
+  const PICKUP_TYPES = ["wormhole", "growthSpurt", "iceTrail", "poisonTrail", "speedBoost", "blueShell"];
+
+  // Serpentine body of `len` segments inside the quadrant box, head first.
+  function serpentine(x0, y0, w, h, len) {
+    const body = [];
+    let x = 0, y = 0;
+    for (let i = 0; i < len; i++) {
+      body.push({ x: x0 + x, y: y0 + y });
+      if (y % 2 === 0) { if (x + 1 < w) x++; else y++; }
+      else { if (x > 0) x--; else y++; }
+      if (y >= h) { y = 0; }
+    }
+    return body;
+  }
+
+  function makeScene(cfg) {
+    const { cols, rows, cellSize, segs, trailCount } = cfg;
+    const grid = { cols, rows, cellSize };
+    const qw = Math.floor(cols / 2) - 4, qh = Math.floor(rows / 2) - 4;
+    const players = [];
+    for (let s = 0; s < 4; s++) {
+      const x0 = 2 + (s % 2) * (Math.floor(cols / 2) + 2);
+      const y0 = 2 + Math.floor(s / 2) * (Math.floor(rows / 2) + 2);
+      const body = serpentine(x0, y0, qw, qh, segs);
+      players.push({
+        slot: s, alive: s !== 3, score: 10 * s,
+        color: PLAYER_COLORS[s], dir: { x: 1, y: 0 }, body,
+        moveMs: 100, boost: true, sliding: s === 1,
+        heldPowerup: null, wormholeCharge: 0, activePowerup: null, iceStacks: 0
+      });
+    }
+    // Previous snapshot: every segment one step behind along its own path
+    // (follow-the-leader), i.e. prevBody[si] = body[si+1] -- Manhattan
+    // distance 1 everywhere, so the smooth-interpolation branch runs for
+    // every non-local segment (the worst case).
+    const prevPlayers = players.map(p => Object.assign({}, p, {
+      body: p.body.map((seg, si) => p.body[Math.min(si + 1, p.body.length - 1)])
+    }));
+    const trails = [];
+    for (let i = 0; i < trailCount; i++) {
+      trails.push({
+        x: 1 + ((i * 7) % (cols - 2)),
+        y: 1 + ((i * 13) % (rows - 2)),
+        type: i % 2 ? "iceTrail" : "poisonTrail"
+      });
+    }
+    const powerupPickups = PICKUP_TYPES.map((type, i) => ({
+      id: i, type, x: 3 + i * 3, y: Math.floor(rows / 2)
+    }));
+    const blueShells = [
+      { x: Math.floor(cols / 3), y: Math.floor(rows / 3) },
+      { x: Math.floor(cols / 1.5), y: Math.floor(rows / 1.5) }
+    ];
+    const food = { x: Math.floor(cols / 2), y: Math.floor(rows / 2) };
+    const curr = {
+      seq: 1000, tickMs: 100, grid, food, powerupPickups, trails, blueShells,
+      players, recvTime: 0
+    };
+    const prev = Object.assign({}, curr, { seq: 999, players: prevPlayers });
+    // Slot 0 is the "local predicted" body (skips interpolation, like real
+    // local seats).
+    const localBodies = new Map([[0, players[0].body]]);
+    const scene = {
+      grid, prev, curr, localBodies, eatenKeys: [],
+      fx: { flashes: [], glides: [], explosions: [] },
+      opts: { interpolate: true, boostTrail: true, slideDust: true },
+      // Refresh time-anchored pieces each frame: keeps interpolation t~0.5,
+      // flash alpha ~0.5, glide mid-flight -- stable worst-case work. Pass a
+      // FROZEN `now` for parity screenshots.
+      tick(now) {
+        curr.recvTime = now - 50;
+        scene.fx.flashes = [
+          { slot: 0, dir: "down", t: now - 45, durationMs: 90 },
+          { slot: 2, dir: "right", t: now - 30, durationMs: 90 }
+        ];
+        scene.fx.glides = [{
+          slot: 0,
+          from: { x: players[0].body[0].x - 1, y: players[0].body[0].y },
+          to: { x: players[0].body[0].x, y: players[0].body[0].y },
+          startTime: now - 45, durationMs: 90
+        }];
+        scene.fx.explosions = [
+          { x: Math.floor(cols / 4), y: Math.floor(rows / 4), radius: 3, age: 0.5 },
+          { x: Math.floor(cols / 4) * 3, y: Math.floor(rows / 4), radius: 3, age: 0.25 }
+        ];
+      }
+    };
+    return scene;
+  }
+
+  window.BenchScene = { makeScene };
+})();
