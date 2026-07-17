@@ -51,7 +51,7 @@
 // to "2d". The 2D context is acquired lazily on the first draw (NOT at load
 // time): a canvas can only ever hold one context type, so grabbing "2d"
 // eagerly would poison the facade's wasm path before it could decide.
-(window.__BUILDS__ = window.__BUILDS__ || {}).render2d = "render2d 2026-07-16.4";
+(window.__BUILDS__ = window.__BUILDS__ || {}).render2d = "render2d 2026-07-16.5";
 const Render2D = (() => {
   const canvas = document.getElementById("game");
   let ctx = null;
@@ -135,20 +135,35 @@ const Render2D = (() => {
     }
   }
   // Boost jetstream: a few semi-transparent squares trailing behind the head
-  // opposite the direction of travel. Visual only -- no gameplay effect,
-  // gated by CLIENT_FX.boostTrail (opts.boostTrail).
-  function drawBoostTrail(headPx, headPy, dir, now) {
+  // opposite the direction of travel. Visual only -- no gameplay effect.
+  // Reused for the hold-boost cue (color "#9df", gated by opts.boostTrail) and
+  // the speedBoost-powerup ACTIVE cue (the powerup color, gated by
+  // opts.powerupFx) so "you are moving fast" reads the same way for both.
+  function drawBoostTrail(headPx, headPy, dir, now, color) {
     const cs = grid.cellSize;
     ctx.save();
     for (let n = 0; n < 3; n++) {
       const phase = (now / 90 + n * 0.33) % 1;
       const dist = phase * cs * 1.5;
       ctx.globalAlpha = 0.5 * (1 - phase);
-      ctx.fillStyle = "#9df";
+      ctx.fillStyle = color;
       const px = headPx + cs / 2 - dir.x * dist - cs * 0.15;
       const py = headPy + cs / 2 - dir.y * dist - cs * 0.15;
       ctx.fillRect(px, py, cs * 0.3, cs * 0.3);
     }
+    ctx.restore();
+  }
+  // Powerup activation flash: a brief bright pop of the powerup color over
+  // every body segment on the tick a powerup fires. Drawn at GRID positions
+  // (like heldGlow) so 2D/wasm parity is exact. `age` is 0..1 elapsed.
+  function drawPowerFlash(body, color, age) {
+    const alpha = Math.max(0, 1 - age) * 0.85;
+    if (alpha <= 0) return;
+    const cs = grid.cellSize, cell = cs - cellGap;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = color;
+    for (const seg of body) ctx.fillRect(seg.x * cs, seg.y * cs, cell, cell);
     ctx.restore();
   }
   // Slide dust: a light particle scatter at the head while a queued turn is
@@ -257,6 +272,7 @@ const Render2D = (() => {
     }
     const flashes = (fx && fx.flashes) || [];
     const glides = (fx && fx.glides) || [];
+    const powerFlashes = (fx && fx.powerFlashes) || [];
     const interpolate = !!(opts && opts.interpolate);
     const now = performance.now();
     const cs = grid.cellSize;
@@ -296,6 +312,14 @@ const Render2D = (() => {
         }
         ctx.restore();
       }
+      // Powerup timer tail-drain: while a timed powerup is active the head-side
+      // N = ceil(activePct * length) segments are tinted the powerup color, so
+      // at activation the whole snake is colored and the tint drains tail-first
+      // as time runs out -- a built-in countdown (and the activation "pop").
+      const powerFx = opts && opts.powerupFx;
+      const activeColor = (powerFx && p.alive && p.activePowerup) ? POWERUP_STYLE[p.activePowerup] : null;
+      const nActive = activeColor ? Math.ceil((p.activePct || 0) * body.length) : 0;
+      const segFill = si => (activeColor && si < nActive) ? activeColor : (si === 0 ? p.color.head : p.color.body);
       const glide = glides.find(g => g.slot === i);
       // Lock-step smoothing applies to server-rendered snakes only: the
       // local predicted body is already ahead of the wire by design, and
@@ -311,30 +335,35 @@ const Render2D = (() => {
         const et = easeOutCubic(gt);
         headPx = lerp(glide.from.x * cs, glide.to.x * cs, et);
         headPy = lerp(glide.from.y * cs, glide.to.y * cs, et);
-        ctx.fillStyle = p.color.head;
+        ctx.fillStyle = segFill(0);
         ctx.fillRect(headPx, headPy, cs - cellGap, cs - cellGap);
-        for (let si = 1; si < body.length; si++) drawCell(body[si], p.color.body);
+        for (let si = 1; si < body.length; si++) drawCell(body[si], segFill(si));
       } else if (smooth) {
         for (let si = 0; si < body.length; si++) {
           const pos = segPixel(body[si], prevBody, si, t);
           if (si === 0) { headPx = pos.x; headPy = pos.y; }
-          ctx.fillStyle = si === 0 ? p.color.head : p.color.body;
+          ctx.fillStyle = segFill(si);
           ctx.fillRect(pos.x, pos.y, cs - cellGap, cs - cellGap);
         }
       } else {
-        body.forEach((seg, si) => drawCell(seg, si === 0 ? p.color.head : p.color.body));
+        body.forEach((seg, si) => drawCell(seg, segFill(si)));
       }
       if (!p.alive) {
         ctx.fillStyle = "rgba(0,0,0,0.5)";
         body.forEach(seg => ctx.fillRect(seg.x * cs, seg.y * cs, cs - cellGap, cs - cellGap));
       }
-      if (p.alive && p.boost && opts && opts.boostTrail && p.dir) drawBoostTrail(headPx, headPy, p.dir, now);
+      if (p.alive && p.boost && opts && opts.boostTrail && p.dir) drawBoostTrail(headPx, headPy, p.dir, now, "#9df");
+      // Speed Boost ACTIVE: a persistent jetstream in the powerup color while
+      // the buff runs, distinct from (and stacking with) the hold-boost one.
+      if (p.alive && powerFx && p.activePowerup === "speedBoost" && p.dir) drawBoostTrail(headPx, headPy, p.dir, now, POWERUP_STYLE.speedBoost);
       if (p.alive && p.sliding && opts && opts.slideDust) drawSlideDust(headPx, headPy, now);
       const flash = flashes.find(f => f.slot === i);
       if (flash) {
         const alpha = Math.max(0, 1 - (now - flash.t) / flash.durationMs);
         drawInputFlash(headPx, headPy, flash.dir, alpha);
       }
+      const pflash = powerFlashes.find(f => f.slot === i);
+      if (pflash) drawPowerFlash(body, POWERUP_STYLE[pflash.type] || "#fff", pflash.age);
     });
   }
   // POWERUP_STYLE is exported (read-only by convention) so the facade

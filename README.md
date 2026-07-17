@@ -29,15 +29,21 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
   glows in that powerup's color -- visible to EVERYONE, not just the holder,
   so opponents can see what's coming and play around it. Cosmetic-only flag
   clientFx.heldGlow (default true).
-- Powerups: pickups spawn on the board and are held until you press your seat's
-  activation key (default Space for the arrows seat, Right Shift for the WASD
-  seat). Wormhole is the exception -- it holds as an independent charge and
-  auto-fires the instant a move would kill you, teleporting you somewhere safe.
-  The set: Wormhole, Growth Spurt, Speed Boost, Ice Trail, Poison Trail, and
-  Blue Shell (a projectile that hunts whoever is longest -- even the player who
-  fired it). Each type has its own config block and on/off switch. A "What do
-  the powerups do?" button on the join screen explains them, and every powerup
-  can be disabled. See Configuration.
+- Powerups: pickups spawn on the board and fire the instant you collect them --
+  the only exception is Speed Boost, which you hold and trigger with your seat's
+  activation key (default Right Shift for the arrows seat, Space for the WASD
+  seat). Wormhole is also held, as an independent charge, and auto-fires the
+  instant a move would otherwise kill you, teleporting you somewhere safe. The
+  set: Wormhole, Growth Spurt, Speed Boost, Ice Trail, Poison Trail, and Blue
+  Shell (a projectile that hunts whoever is longest -- even the player who fired
+  it). Each type has its own config block and on/off switch. A "What do the
+  powerups do?" button on the join screen explains them, and every powerup can
+  be disabled. See Configuration.
+- Powerup feedback on the snake itself (clientFx.powerupFx, default true): a
+  brief bright flash in the powerup's color when it fires, a jetstream while
+  Speed Boost is active, and a built-in timer -- an active powerup tints the
+  snake its color and that tint drains tail-first as the effect runs down, so
+  the amount of colored snake is the time you have left.
 - Rebindable activation keys and a WASD/Arrows swap, from a small panel in the
   bottom-left corner. Saved in the browser (localStorage); nothing is sent to
   the server but which seat activated.
@@ -252,6 +258,9 @@ Keys:
 - clientFx.heldGlow: the everyone-can-see-it glow around a snake holding a
   powerup or wormhole charge (default true). Cosmetic only -- the underlying
   heldPowerup/wormholeCharge fields were always in the shared broadcast.
+- clientFx.powerupFx: the on-snake powerup cues (default true) -- the activation
+  flash, the Speed Boost active jetstream, and the tail-drain duration timer.
+  Cosmetic only; the activePct / activated fields it reads are server-computed.
 - powerups.spawnIntervalMs: how often a pickup spawn is attempted (default 8000).
 - powerups.maxConcurrentPickups: most pickups on the board at once (default 1).
 - powerups.<type>.enabled: on/off per powerup type. Types: wormhole,

@@ -38,13 +38,12 @@ async function main() {
 
     console.log("Collecting iceTrail pickup...");
     await collectNextPickup(c1, 0, 20000);
-    let p = myPlayer(c1.state, 0);
-    assert(p.heldPowerup === "iceTrail", "pickup should occupy heldPowerup");
-    console.log("PASS: pickup occupies heldPowerup.");
-
-    c1.send({ type: "activatePowerup", local: 0 });
+    // iceTrail AUTO-activates on pickup (no button press) -- it should be
+    // active immediately, with the held slot left empty.
     await c1.waitFor(s => { const pp = myPlayer(s, 0); return pp && pp.activePowerup === "iceTrail"; }, 3000);
-    console.log("PASS: activation starts trail-laying.");
+    let p = myPlayer(c1.state, 0);
+    assert(p.heldPowerup == null, "auto-fire trail should NOT occupy the held slot");
+    console.log("PASS: pickup auto-activates trail-laying (no button press).");
 
     // Reposition toward dead-center for edge margin before the square loop,
     // retrying until comfortably clear of every wall (the loop below needs

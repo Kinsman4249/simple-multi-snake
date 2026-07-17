@@ -25,13 +25,15 @@
 //   20 nTrails    i32
 //   24 nPickups   i32
 //   28 nShells    i32
-//   32 players[MAX_PLAYERS] stride 48:
+//   32 players[MAX_PLAYERS] stride 56:
 //        0 present i32, 4 alive i32, 8 colorHead u32 (ABGR byte order:
 //        r=low byte), 12 colorBody u32, 16 dirX i32, 20 dirY i32,
 //        24 moveMs f32, 28 boost i32, 32 sliding i32, 36 bodyLen i32,
 //        40 bodyOff i32 (segment index into body pool), 44 heldIdx i32
 //        (held-powerup type index for the glow, -1 = none; wormholeCharge
-//        maps to the wormhole index)
+//        maps to the wormhole index), 48 activeIdx i32 (active-powerup type
+//        index for the tail-drain/speed jetstream, -1 = none), 52 activePct
+//        f32 (fraction of the active powerup remaining, 1..0)
 //   +players: body pool, MAX_SEGS x {x:i16, y:i16}
 //   +pool: trails, MAX_TRAILS stride 8: {x:i16, y:i16, type:i16, pad}
 //   +trails: pickups, MAX_PICKUPS stride 16: {x:i32, y:i32, type:i32, id:i32}
@@ -52,7 +54,10 @@
 //   676 locals[MAX_LOCALS] stride 12: {slot i32, len i32, off i32 (into the
 //        local body pool)}
 //   724 heldGlow i32 (clientFx.heldGlow toggle)
-//   728 local body pool, MAX_LOCAL_SEGS x {x:i16, y:i16}
+//   728 powerupFx i32 (clientFx.powerupFx toggle)
+//   732 nPflash i32
+//   736 pflashes[MAX_PFLASHES] stride 16: {slot i32, colorIdx i32, age f32, pad}
+//   864 local body pool, MAX_LOCAL_SEGS x {x:i16, y:i16}
 //
 // Instance buffer (output) stride 32:
 //   0 x f32, 4 y f32, 8 w f32, 12 h f32, 16 color u32 (ABGR: r low byte,
@@ -67,13 +72,15 @@ const MAX_SHELLS: i32 = 16;
 const MAX_FLASHES: i32 = 8;
 const MAX_GLIDES: i32 = 8;
 const MAX_EXPLOSIONS: i32 = 16;
+const MAX_PFLASHES: i32 = 8;
 const MAX_LOCALS: i32 = 4;
 const MAX_LOCAL_SEGS: i32 = 16384;
 const INSTANCE_CAP: i32 = 40960;
 
-// snapshot-internal offsets
+// snapshot-internal offsets. Player stride 56: fields 0..44 as before, plus
+// +48 activeIdx i32 (active-powerup type index, -1 none) and +52 activePct f32.
 const SNAP_PLAYERS: i32 = 32;
-const PLAYER_STRIDE: i32 = 48;
+const PLAYER_STRIDE: i32 = 56;
 const SNAP_BODY: i32 = SNAP_PLAYERS + MAX_PLAYERS * PLAYER_STRIDE;
 const SNAP_TRAILS: i32 = SNAP_BODY + MAX_SEGS * 4;
 const SNAP_PICKUPS: i32 = SNAP_TRAILS + MAX_TRAILS * 8;
@@ -92,7 +99,10 @@ const FR_EXPL: i32 = 416;
 const FR_NLOCALS: i32 = 672;
 const FR_LOCALS: i32 = 676;
 const FR_HELDGLOW: i32 = 724;
-const FR_LOCAL_BODY: i32 = 728;
+const FR_POWERFX: i32 = 728;   // clientFx.powerupFx toggle
+const FR_NPFLASH: i32 = 732;   // powerup activation flashes
+const FR_PFLASH: i32 = 736;    // stride 16: {slot i32, colorIdx i32, age f32, pad}
+const FR_LOCAL_BODY: i32 = 864; // 736 + MAX_PFLASHES(8) * 16
 const FRAME_SIZE: i32 = FR_LOCAL_BODY + MAX_LOCAL_SEGS * 4;
 
 const KIND_RECT: f32 = 0;
@@ -207,6 +217,7 @@ export function render(now: f64, which: i32): i32 {
   const slideDust = load<i32>(frameIn + FR_FLAGS, 8) != 0;
   const foodHidden = load<i32>(frameIn + FR_FLAGS, 12) != 0;
   const heldGlow = load<i32>(frameIn + FR_HELDGLOW) != 0;
+  const powerFx = load<i32>(frameIn + FR_POWERFX) != 0;
   const recvElapsed = load<f32>(frameIn + FR_RECV_ELAPSED);
   const tickMs = load<f32>(curr, 4);
 
@@ -269,12 +280,19 @@ export function render(now: f64, which: i32): i32 {
   const nLocals = min(load<i32>(frameIn + FR_NLOCALS), MAX_LOCALS);
   const nFlashes = min(load<i32>(frameIn + FR_NFLASHES), MAX_FLASHES);
   const nGlides = min(load<i32>(frameIn + FR_NGLIDES), MAX_GLIDES);
+  const nPflash = min(load<i32>(frameIn + FR_NPFLASH), MAX_PFLASHES);
   for (let i = 0; i < nPlayers; i++) {
     const p = curr + SNAP_PLAYERS + <usize>(i * PLAYER_STRIDE);
     if (!load<i32>(p)) continue; // not present
     const alive = load<i32>(p, 4) != 0;
     const colorHead = load<u32>(p, 8);
     const colorBody = load<u32>(p, 12);
+    // Powerup timer tail-drain: head-side nActive segments tinted the powerup
+    // color (must match render2d.js segFill exactly for parity).
+    const activeIdx = load<i32>(p, 48);
+    const activePct = load<f32>(p, 52);
+    const powerActive = powerFx && alive && activeIdx >= 0;
+    const activeColor = powerActive ? pickupColor(activeIdx) : 0;
     // local predicted body override?
     let bodyPool = curr + SNAP_BODY;
     let bodyLen = load<i32>(p, 36);
@@ -323,6 +341,7 @@ export function render(now: f64, which: i32): i32 {
         inst(<f32>segX(bodyPool, bodyOff + si) * cs - grow, <f32>segY(bodyPool, bodyOff + si) * cs - grow, cell + grow * 2, cell + grow * 2, glowColor, glowAlpha, KIND_ELLIPSE, 0, 0);
       }
     }
+    const nActive = powerActive ? <i32>Math.ceil(<f64>activePct * <f64>bodyLen) : 0;
     let headPx = <f32>segX(bodyPool, bodyOff) * cs;
     let headPy = <f32>segY(bodyPool, bodyOff) * cs;
     if (glideAt != 0) {
@@ -330,9 +349,9 @@ export function render(now: f64, which: i32): i32 {
       const et = easeOutCubic(gt0 < 0 ? 0 : (gt0 > 1 ? 1 : gt0));
       headPx = lerpf(<f32>load<i32>(glideAt, 4) * cs, <f32>load<i32>(glideAt, 12) * cs, et);
       headPy = lerpf(<f32>load<i32>(glideAt, 8) * cs, <f32>load<i32>(glideAt, 16) * cs, et);
-      inst(headPx, headPy, cell, cell, colorHead, 1, KIND_RECT, 0, 0);
+      inst(headPx, headPy, cell, cell, nActive > 0 ? activeColor : colorHead, 1, KIND_RECT, 0, 0);
       for (let si = 1; si < bodyLen; si++) {
-        inst(<f32>segX(bodyPool, bodyOff + si) * cs, <f32>segY(bodyPool, bodyOff + si) * cs, cell, cell, colorBody, 1, KIND_RECT, 0, 0);
+        inst(<f32>segX(bodyPool, bodyOff + si) * cs, <f32>segY(bodyPool, bodyOff + si) * cs, cell, cell, si < nActive ? activeColor : colorBody, 1, KIND_RECT, 0, 0);
       }
     } else if (smooth) {
       for (let si = 0; si < bodyLen; si++) {
@@ -347,11 +366,11 @@ export function render(now: f64, which: i32): i32 {
           }
         }
         if (si == 0) { headPx = x; headPy = y; }
-        inst(x, y, cell, cell, si == 0 ? colorHead : colorBody, 1, KIND_RECT, 0, 0);
+        inst(x, y, cell, cell, si < nActive ? activeColor : (si == 0 ? colorHead : colorBody), 1, KIND_RECT, 0, 0);
       }
     } else {
       for (let si = 0; si < bodyLen; si++) {
-        inst(<f32>segX(bodyPool, bodyOff + si) * cs, <f32>segY(bodyPool, bodyOff + si) * cs, cell, cell, si == 0 ? colorHead : colorBody, 1, KIND_RECT, 0, 0);
+        inst(<f32>segX(bodyPool, bodyOff + si) * cs, <f32>segY(bodyPool, bodyOff + si) * cs, cell, cell, si < nActive ? activeColor : (si == 0 ? colorHead : colorBody), 1, KIND_RECT, 0, 0);
       }
     }
     if (!alive) {
@@ -359,13 +378,22 @@ export function render(now: f64, which: i32): i32 {
         inst(<f32>segX(bodyPool, bodyOff + si) * cs, <f32>segY(bodyPool, bodyOff + si) * cs, cell, cell, COLOR_BLACK, <f32>0.5, KIND_RECT, 0, 0);
       }
     }
-    // boost jetstream
+    // boost jetstream (hold-boost)
     const dirX = load<i32>(p, 16), dirY = load<i32>(p, 20);
     if (alive && load<i32>(p, 28) != 0 && boostTrail && (dirX != 0 || dirY != 0)) {
       for (let n = 0; n < 3; n++) {
         const phase = <f32>(((now / 90.0) + <f64>n * 0.33) % 1.0);
         const dist = phase * cs * <f32>1.5;
         inst(headPx + cs / 2 - <f32>dirX * dist - cs * <f32>0.15, headPy + cs / 2 - <f32>dirY * dist - cs * <f32>0.15, cs * <f32>0.3, cs * <f32>0.3, COLOR_JETSTREAM, <f32>0.5 * (1 - phase), KIND_RECT, 0, 0);
+      }
+    }
+    // speedBoost-powerup ACTIVE jetstream (same shape, powerup color)
+    if (alive && powerFx && activeIdx == 4 && (dirX != 0 || dirY != 0)) {
+      const speedColor = pickupColor(4);
+      for (let n = 0; n < 3; n++) {
+        const phase = <f32>(((now / 90.0) + <f64>n * 0.33) % 1.0);
+        const dist = phase * cs * <f32>1.5;
+        inst(headPx + cs / 2 - <f32>dirX * dist - cs * <f32>0.15, headPy + cs / 2 - <f32>dirY * dist - cs * <f32>0.15, cs * <f32>0.3, cs * <f32>0.3, speedColor, <f32>0.5 * (1 - phase), KIND_RECT, 0, 0);
       }
     }
     // slide dust
@@ -390,6 +418,21 @@ export function render(now: f64, which: i32): i32 {
         else if (vx == -1) inst(headPx, headPy, stripW, cell, COLOR_WHITE, alpha, KIND_RECT, 0, 0);
         else if (vy == 1) inst(headPx, headPy + cs - stripW, cell, stripW, COLOR_WHITE, alpha, KIND_RECT, 0, 0);
         else if (vy == -1) inst(headPx, headPy, cell, stripW, COLOR_WHITE, alpha, KIND_RECT, 0, 0);
+      }
+      break;
+    }
+    // powerup activation flash: brief bright pop over every segment (grid
+    // positions, like heldGlow) -- matches render2d.js drawPowerFlash.
+    for (let f = 0; f < nPflash; f++) {
+      const fo = frameIn + FR_PFLASH + <usize>(f << 4);
+      if (load<i32>(fo) != i) continue;
+      const age = load<f32>(fo, 8);
+      const pfAlpha = (<f32>1 - age) * <f32>0.85;
+      if (pfAlpha > 0) {
+        const pfColor = pickupColor(load<i32>(fo, 4));
+        for (let si = 0; si < bodyLen; si++) {
+          inst(<f32>segX(bodyPool, bodyOff + si) * cs, <f32>segY(bodyPool, bodyOff + si) * cs, cell, cell, pfColor, pfAlpha, KIND_RECT, 0, 0);
+        }
       }
       break;
     }

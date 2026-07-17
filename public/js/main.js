@@ -23,8 +23,8 @@
 //     debug button/panel/recording are never created at all -- the only
 //     residue is one boolean test at startup.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-16.2";
-let CLIENT_FX = { inputFlash: true, inputFlashMs: 90, correctionGlide: true, correctionGlideMs: 90, boostTrail: true, slideDust: true, heldGlow: true };
+(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-16.3";
+let CLIENT_FX = { inputFlash: true, inputFlashMs: 90, correctionGlide: true, correctionGlideMs: 90, boostTrail: true, slideDust: true, heldGlow: true, powerupFx: true };
 let CLIENT_RENDER = { interpolate: true, renderer: "auto" };
 let BOOST_CFG = { enabled: true, boostSpeed: 2.0, driftMs: 250, rampMs: 400, holdGraceMs: 120 };
 let POWERUPS_CFG = {};
@@ -59,8 +59,13 @@ fetch("/api/config").then(r => r.json()).then(cfg => {
 // left/right Shift can be told apart, which e.key cannot do.
 const KEYMAP_STORAGE_PREFIX = "snake.keymap.local";
 const DEFAULT_KEY_MAPS = [
-  { arrowup: "up", arrowdown: "down", arrowleft: "left", arrowright: "right", activate: "Space" }, // local 0 (p1): arrows
-  { w: "up", s: "down", a: "left", d: "right", activate: "ShiftRight" }                             // local 1 (p2): WASD
+  // p1 plays with the arrow keys (right side of the keyboard), so its activate
+  // key is Right Shift (right there by the arrows). p2 plays WASD (left side)
+  // and activates with Space -- easy reach for the left hand. (Swapped
+  // 2026-07-16: the old p1=Space/p2=RightShift mapping was the source of the
+  // "speed boost won't activate" confusion.)
+  { arrowup: "up", arrowdown: "down", arrowleft: "left", arrowright: "right", activate: "ShiftRight" }, // local 0 (p1): arrows
+  { w: "up", s: "down", a: "left", d: "right", activate: "Space" }                                      // local 1 (p2): WASD
 ];
 function loadKeyMaps() {
   const maps = [];
@@ -120,6 +125,12 @@ function boostEngaged(localIdx) {
 // timing; render.js just draws whatever age it's given.
 const EXPLOSION_DURATION_MS = 500;
 let activeExplosions = [];
+// Powerup activation flash: state.players[i].activated is a one-shot type
+// (set for exactly the broadcast where a powerup fired, per server.js). Each
+// is stamped with a local start time and aged out over POWERUP_FLASH_MS -- a
+// brief bright pop in the powerup's color on that snake, visible to everyone.
+const POWERUP_FLASH_MS = 380;
+let activePowerFlashes = []; // [{ slot, type, startTime }]
 // Phase 6 -- mobile/touch (single seat only: seat 0). Coarse-pointer
 // detection gates ALL touch surfaces; desktop behavior is untouched. A
 // touchscreen laptop matches too and simply gets both input surfaces --
@@ -322,6 +333,14 @@ function handleState(curr) {
     const now = performance.now();
     curr.explosions.forEach(e => activeExplosions.push(Object.assign({ startTime: now }, e)));
   }
+  // Powerup activation flashes: one per player whose `activated` one-shot is
+  // set this broadcast (any seat, local or remote -- everyone sees the pop).
+  if (curr.players) {
+    const now = performance.now();
+    curr.players.forEach((p, slot) => {
+      if (p && p.activated) activePowerFlashes.push({ slot, type: p.activated, startTime: now });
+    });
+  }
   refreshBoost(); // direction may have changed under a held key
   UI.updateStatus(curr);
   UI.updateLeaveButtons(myLocals);
@@ -359,12 +378,17 @@ function frame() {
     const now2 = performance.now();
     activeExplosions = activeExplosions.filter(e => now2 - e.startTime < EXPLOSION_DURATION_MS);
     const explosions = activeExplosions.map(e => Object.assign({}, e, { age: (now2 - e.startTime) / EXPLOSION_DURATION_MS }));
-    Render.draw(prev, curr, localBodies, eatenKeys, { flashes, glides, explosions }, {
+    activePowerFlashes = activePowerFlashes.filter(f => now2 - f.startTime < POWERUP_FLASH_MS);
+    const powerFlashes = CLIENT_FX.powerupFx
+      ? activePowerFlashes.map(f => ({ slot: f.slot, type: f.type, age: (now2 - f.startTime) / POWERUP_FLASH_MS }))
+      : [];
+    Render.draw(prev, curr, localBodies, eatenKeys, { flashes, glides, explosions, powerFlashes }, {
       interpolate: CLIENT_RENDER.interpolate,
       renderer: CLIENT_RENDER.renderer,
       boostTrail: CLIENT_FX.boostTrail,
       slideDust: CLIENT_FX.slideDust,
-      heldGlow: CLIENT_FX.heldGlow
+      heldGlow: CLIENT_FX.heldGlow,
+      powerupFx: CLIENT_FX.powerupFx
     });
   }
   requestAnimationFrame(frame);

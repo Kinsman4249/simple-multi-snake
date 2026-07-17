@@ -45,7 +45,7 @@ async function main() {
     powerups: {
       spawnIntervalMs: 300, maxConcurrentPickups: 3,
       wormhole: { enabled: false }, growthSpurt: { enabled: false }, iceTrail: { enabled: false },
-      poisonTrail: { enabled: true, durationMs: 10000, tileDurationMs: 15000 },
+      poisonTrail: { enabled: true, durationMs: 60000, tileDurationMs: 60000 },
       speedBoost: { enabled: false }, blueShell: { enabled: false }
     }
   });
@@ -53,22 +53,20 @@ async function main() {
     const c1 = await connectClient();
     await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
 
-    console.log("Collecting poisonTrail pickup...");
-    await collectNextPickup(c1, 0, 20000);
-    let p = myPlayer(c1.state, 0);
-    assert(p.heldPowerup === "poisonTrail", "pickup should occupy heldPowerup");
-    console.log("PASS: pickup occupies heldPowerup.");
-
-    // Grow a buffer above the floor by eating food a few times, so we can
-    // observe several floor-respecting decrements before it stops.
+    // Grow a buffer above the floor FIRST, while no poison is active, so the
+    // growth is clean (poisonTrail auto-fires the instant it's collected, so
+    // we can't grow AFTER collecting without immediately draining).
     for (let i = 0; i < 6; i++) await eatOnce(c1, 0);
     const grownLen = myPlayer(c1.state, 0).body.length;
-    console.log("Grew to length", grownLen, "before activating poison.");
+    console.log("Grew to length", grownLen, "before collecting poison.");
     assert(grownLen > MIN_LEN + 3, "should have grown a comfortable buffer above the floor");
 
-    c1.send({ type: "activatePowerup", local: 0 });
+    console.log("Collecting poisonTrail pickup...");
+    await collectNextPickup(c1, 0, 20000);
+    // poisonTrail AUTO-activates on pickup (no button press).
     await c1.waitFor(s => { const pp = myPlayer(s, 0); return pp && pp.activePowerup === "poisonTrail"; }, 3000);
-    console.log("PASS: activation starts trail-laying.");
+    assert(myPlayer(c1.state, 0).heldPowerup == null, "auto-fire trail should NOT occupy the held slot");
+    console.log("PASS: pickup auto-activates trail-laying (no button press).");
 
     const grid = c1.state.grid;
     const cx = Math.floor(grid.cols / 2), cy = Math.floor(grid.rows / 2);

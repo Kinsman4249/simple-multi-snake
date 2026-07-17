@@ -38,7 +38,8 @@
     "correctionGlideMs": 90,
     "boostTrail": true,
     "slideDust": true,
-    "heldGlow": true
+    "heldGlow": true,
+    "powerupFx": true
   },
   "clientRender": {
     "interpolate": true,

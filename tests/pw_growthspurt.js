@@ -45,15 +45,11 @@ async function main() {
 
     console.log("Collecting growthSpurt pickup...");
     await collectNextPickup(c1, 0, 20000);
-    let p = myPlayer(c1.state, 0);
-    assert(p.heldPowerup === "growthSpurt", "pickup should occupy heldPowerup, not auto-activate");
-    console.log("PASS: pickup occupies heldPowerup.");
-
-    c1.send({ type: "activatePowerup", local: 0 });
+    // growthSpurt AUTO-activates on pickup (only speedBoost is button-fired).
     await c1.waitFor(s => { const pp = myPlayer(s, 0); return pp && pp.activePowerup === "growthSpurt"; }, 3000);
-    p = myPlayer(c1.state, 0);
-    assert(p.heldPowerup === null, "activation should clear heldPowerup");
-    console.log("PASS: activation starts the timed effect.");
+    let p = myPlayer(c1.state, 0);
+    assert(p.heldPowerup == null, "auto-fire powerup should NOT occupy the held slot");
+    console.log("PASS: pickup auto-activates the timed effect (no button press).");
 
     const delta1 = await eatOnceAndMeasureGrowth(c1, 0);
     assert(delta1 === 2, "food growth should be doubled while growthSpurt is active (got +" + delta1 + ")");

@@ -24,17 +24,18 @@
 //
 // Display scaling (fitCanvas) is CSS-only and identical for both paths.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-16.4 (wasm facade)";
+(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-16.5 (wasm facade)";
 const Render = (() => {
   const canvas = document.getElementById("game");
   const POWERUP_STYLE = Render2D.POWERUP_STYLE;
   // Must match wasm/renderer.ts pickupColor()/trailColor() index order.
   const POWERUP_TYPE_INDEX = { wormhole: 0, growthSpurt: 1, iceTrail: 2, poisonTrail: 3, speedBoost: 4, blueShell: 5 };
   const DIR_INDEX = { up: 0, down: 1, left: 2, right: 3 };
-  const PLAYER_STRIDE_I32 = 12;   // 48 bytes
+  const PLAYER_STRIDE_I32 = 14;   // 56 bytes (added activeIdx i32 + activePct f32)
+  const PLAYER_STRIDE_B = PLAYER_STRIDE_I32 * 4;
   const SNAP_PLAYERS_I32 = 8;     // header is 32 bytes
   const MAX_PLAYERS = 8, MAX_SEGS = 16384, MAX_TRAILS = 8192, MAX_PICKUPS = 32, MAX_SHELLS = 16;
-  const MAX_FLASHES = 8, MAX_GLIDES = 8, MAX_EXPLOSIONS = 16, MAX_LOCALS = 4, MAX_LOCAL_SEGS = 16384;
+  const MAX_FLASHES = 8, MAX_GLIDES = 8, MAX_EXPLOSIONS = 16, MAX_PFLASHES = 8, MAX_LOCALS = 4, MAX_LOCAL_SEGS = 16384;
 
   let wasm = null;          // instantiated exports, or null
   let wasmFailed = false;   // permanent this-session failure -> 2D
@@ -128,7 +129,7 @@ const Render = (() => {
     const players = snap.players || [];
     const nP = Math.min(players.length, MAX_PLAYERS);
     i32[base + 4] = nP;
-    const bodyBase16 = (wasm.snapPtr(w) + 32 + MAX_PLAYERS * 48) >>> 1; // i16 index
+    const bodyBase16 = (wasm.snapPtr(w) + 32 + MAX_PLAYERS * PLAYER_STRIDE_B) >>> 1; // i16 index
     let segOff = 0;
     for (let i = 0; i < nP; i++) {
       const p = players[i];
@@ -149,6 +150,10 @@ const Render = (() => {
       i32[po + 10] = segOff;
       const heldType = p.heldPowerup || (p.wormholeCharge ? "wormhole" : null);
       i32[po + 11] = heldType != null && heldType in POWERUP_TYPE_INDEX ? POWERUP_TYPE_INDEX[heldType] : -1;
+      // activeIdx (+12) and activePct (+13): the currently-active timed powerup
+      // for the tail-drain countdown / speed jetstream (see wasm player loop).
+      i32[po + 12] = p.activePowerup != null && p.activePowerup in POWERUP_TYPE_INDEX ? POWERUP_TYPE_INDEX[p.activePowerup] : -1;
+      f32[po + 13] = typeof p.activePct === "number" ? p.activePct : 0;
       for (let s = 0; s < len; s++) {
         i16[bodyBase16 + ((segOff + s) << 1)] = body[s].x;
         i16[bodyBase16 + ((segOff + s) << 1) + 1] = body[s].y;
@@ -158,7 +163,7 @@ const Render = (() => {
     const trails = snap.trails || [];
     const nT = Math.min(trails.length, MAX_TRAILS);
     i32[base + 5] = nT;
-    const trailBase16 = (wasm.snapPtr(w) + 32 + MAX_PLAYERS * 48 + MAX_SEGS * 4) >>> 1;
+    const trailBase16 = (wasm.snapPtr(w) + 32 + MAX_PLAYERS * PLAYER_STRIDE_B + MAX_SEGS * 4) >>> 1;
     for (let i = 0; i < nT; i++) {
       const t = trails[i];
       i16[trailBase16 + (i << 2)] = t.x;
@@ -168,7 +173,7 @@ const Render = (() => {
     const pickups = snap.powerupPickups || [];
     const nPk = Math.min(pickups.length, MAX_PICKUPS);
     i32[base + 6] = nPk;
-    const pkBase32 = (wasm.snapPtr(w) + 32 + MAX_PLAYERS * 48 + MAX_SEGS * 4 + MAX_TRAILS * 8) >>> 2;
+    const pkBase32 = (wasm.snapPtr(w) + 32 + MAX_PLAYERS * PLAYER_STRIDE_B + MAX_SEGS * 4 + MAX_TRAILS * 8) >>> 2;
     for (let i = 0; i < nPk; i++) {
       const p = pickups[i];
       i32[pkBase32 + (i << 2)] = p.x;
@@ -230,8 +235,20 @@ const Render = (() => {
       f32[o + 2] = expl[i].radius; f32[o + 3] = expl[i].age;
     }
     i32[base + 181] = opts && opts.heldGlow ? 1 : 0; // offset 724
+    i32[base + 182] = opts && opts.powerupFx ? 1 : 0; // offset 728
+    // Powerup activation flashes (offset 732 count, 736 entries stride 16:
+    // {slot i32, colorIdx i32, age f32, pad}).
+    const pflashes = (fx && fx.powerFlashes) || [];
+    const nPf = Math.min(pflashes.length, MAX_PFLASHES);
+    i32[base + 183] = nPf;
+    for (let i = 0; i < nPf; i++) {
+      const o = base + 184 + i * 4; // offset 736
+      i32[o] = pflashes[i].slot;
+      i32[o + 1] = pflashes[i].type in POWERUP_TYPE_INDEX ? POWERUP_TYPE_INDEX[pflashes[i].type] : -1;
+      f32[o + 2] = pflashes[i].age;
+    }
     let nL = 0, segOff = 0;
-    const localBase16 = (fp + 728) >>> 1;
+    const localBase16 = (fp + 864) >>> 1; // after the pflash array
     if (localBodies) {
       localBodies.forEach((body, slot) => {
         if (nL >= MAX_LOCALS || !body) return;

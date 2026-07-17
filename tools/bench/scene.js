@@ -42,7 +42,13 @@
         moveMs: 100, boost: true, sliding: s === 1,
         // exercise the held-powerup glow: one held type, one wormhole charge
         heldPowerup: s === 1 ? "speedBoost" : null,
-        wormholeCharge: s === 2, activePowerup: null, iceStacks: 0
+        wormholeCharge: s === 2,
+        // exercise the tail-drain countdown + speedBoost active jetstream:
+        // slot 0 (local, non-smooth branch) speedBoost, slot 2 (smooth branch)
+        // growthSpurt, at different remaining fractions.
+        activePowerup: s === 0 ? "speedBoost" : (s === 2 ? "growthSpurt" : null),
+        activePct: s === 0 ? 0.7 : (s === 2 ? 0.35 : 0),
+        iceStacks: 0
       });
     }
     // Previous snapshot: every segment one step behind along its own path
@@ -78,8 +84,8 @@
     const localBodies = new Map([[0, players[0].body]]);
     const scene = {
       grid, prev, curr, localBodies, eatenKeys: [],
-      fx: { flashes: [], glides: [], explosions: [] },
-      opts: { interpolate: true, boostTrail: true, slideDust: true },
+      fx: { flashes: [], glides: [], explosions: [], powerFlashes: [] },
+      opts: { interpolate: true, boostTrail: true, slideDust: true, powerupFx: true },
       // Refresh time-anchored pieces each frame: keeps interpolation t~0.5,
       // flash alpha ~0.5, glide mid-flight -- stable worst-case work. Pass a
       // FROZEN `now` for parity screenshots.
@@ -98,6 +104,12 @@
         scene.fx.explosions = [
           { x: Math.floor(cols / 4), y: Math.floor(rows / 4), radius: 3, age: 0.5 },
           { x: Math.floor(cols / 4) * 3, y: Math.floor(rows / 4), radius: 3, age: 0.25 }
+        ];
+        // Powerup activation flashes: mid-fade on two seats (one alive, one
+        // the dead slot 3) so the overlay is exercised in both states.
+        scene.fx.powerFlashes = [
+          { slot: 1, type: "speedBoost", age: 0.3 },
+          { slot: 3, type: "poisonTrail", age: 0.6 }
         ];
       }
     };

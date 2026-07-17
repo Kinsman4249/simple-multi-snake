@@ -10,6 +10,11 @@
 // is what makes leading risky and picking up every powerup NOT automatic.
 // See base.js for how this fits alongside the other five powerups.
 module.exports = {
+  // Button-fired for now (like speedBoost): auto-firing on pickup is deferred
+  // to Phase 9, which lands it together with the single-player guard -- until
+  // that guard exists, a lone player would auto-fire the shell at the longest
+  // snake (themselves) the instant they collected it. Disabled by default.
+  requiresActivation: true,
   segmentsLost(bodyLength, percent, floor) {
     return Math.max(0, Math.min(bodyLength - floor, Math.floor(bodyLength * percent)));
   },

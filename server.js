@@ -171,6 +171,13 @@ const POWERUP_INFO = {};
 for (const t of POWERUP_TYPES) {
   POWERUP_INFO[t] = { title: POWERUP_MODULES[t].title || t, description: POWERUP_MODULES[t].description || "" };
 }
+// Which powerups wait in the held slot for the activate button. A module opts
+// in with `requiresActivation: true` (only speedBoost, by design -- see the
+// maintainer decision 2026-07-16). Everything else fires the instant it is
+// picked up; wormhole is separate again (its own charge, auto-triggers on a
+// fatal move, never touches the held slot). Keeping this data-driven means a
+// new powerup only has to set the flag, not edit the pickup/activate handlers.
+const HELD_TYPES = new Set(POWERUP_TYPES.filter(t => POWERUP_MODULES[t].requiresActivation));
 // Zero-resource debug switch. When enableDebug is false, dlog is null and
 // every debug call site is a single falsy short-circuit (`dlog && dlog(...)`)
 // -- no string building, no buffering, no I/O. The client is told via
@@ -306,19 +313,37 @@ function placeFood() {
   } while (!cellFree(x, y) || powerupPickups.some(p => p.x === x && p.y === y));
   food = { x, y };
 }
+const DIR_VECTORS = { up: { x: 0, y: -1 }, down: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 } };
+const TEST_SPAWNS = (() => {
+  try { return process.env.SNAKE_TEST_SPAWNS ? JSON.parse(process.env.SNAKE_TEST_SPAWNS) : null; }
+  catch (_) { return null; }
+})();
 function spawnSnake(slotIndex) {
-  let x, y, attempts = 0;
   const len = MIN_SNAKE_LENGTH;
-  do {
-    x = 3 + Math.floor(Math.random() * (CFG.grid.cols - 6));
-    y = 3 + Math.floor(Math.random() * (CFG.grid.rows - 6));
-    attempts++;
-  } while ((!cellFree(x, y, slotIndex) || !cellFree(x - 1, y, slotIndex) || !cellFree(x - 2, y, slotIndex)) && attempts < 100);
+  let x, y, dir = { x: 1, y: 0 };
+  // Test-only fixed spawns (inert unless SNAKE_TEST_SPAWNS is set): a JSON
+  // array indexed by slot, each { x, y, dir } placing a snake at a known cell
+  // and heading. Used by tests that need a deterministic layout (e.g. a
+  // controlled head-on) instead of walking randomly-spawned snakes together.
+  const forced = TEST_SPAWNS && TEST_SPAWNS[slotIndex];
+  if (forced) {
+    x = forced.x; y = forced.y;
+    dir = DIR_VECTORS[forced.dir] || dir;
+  } else {
+    let attempts = 0;
+    do {
+      x = 3 + Math.floor(Math.random() * (CFG.grid.cols - 6));
+      y = 3 + Math.floor(Math.random() * (CFG.grid.rows - 6));
+      attempts++;
+    } while ((!cellFree(x, y, slotIndex) || !cellFree(x - 1, y, slotIndex) || !cellFree(x - 2, y, slotIndex)) && attempts < 100);
+  }
   const s = slots[slotIndex];
   const body = [];
-  for (let n = 0; n < len; n++) body.push({ x: x - n, y });
+  // Body trails BEHIND the head, opposite the heading, so the snake can move
+  // off in `dir` without immediately reversing into its own neck.
+  for (let n = 0; n < len; n++) body.push({ x: x - dir.x * n, y: y - dir.y * n });
   s.body = body;
-  s.dir = { x: 1, y: 0 };
+  s.dir = dir;
   s.inputQueue = [];
   s.alive = true;
   s.wallStalls = 0;
@@ -339,6 +364,7 @@ function spawnSnake(slotIndex) {
   s.heldPowerup = null;
   s.wormholeCharge = false;
   s.activePowerup = null;
+  s.activatedFx = null;
   s.iceStacks = 0;
   s.iceExpiresAtTick = 0;
   s.teleportedThisTick = false;
@@ -350,7 +376,7 @@ function newPlayerSlot(connId) {
     connId, color: null, body: [], dir: { x: 1, y: 0 }, inputQueue: [],
     alive: true, score: 0, wallStalls: 0, lastAck: 0,
     boost: false, boostSince: null, moveAccumMs: 0, lastInputAt: Date.now(),
-    heldPowerup: null, wormholeCharge: false, activePowerup: null,
+    heldPowerup: null, wormholeCharge: false, activePowerup: null, activatedFx: null,
     iceStacks: 0, iceExpiresAtTick: 0, teleportedThisTick: false,
     driftDir: null, driftUntilMs: 0
   };
@@ -705,6 +731,7 @@ function movementStep(movers) {
   resolveWallCollisions(movers, newHeads, died, stalled);
   resolveSelfCollisions(movers, newHeads, died, stalled);
   resolveSnakeCollisions(movers, newHeads, died, stalled, allAlive);
+  clearMutualKills(died);
   applyMovementAndFood(movers, newHeads, died, stalled);
   applyKillBonuses(died);
   for (const [victimIndex] of died) handleDeath(victimIndex);
@@ -876,23 +903,67 @@ function resolveSnakeCollisions(active, newHeads, died, stalled, allAlive) {
     if (died.has(i) || stalled.has(i)) continue;
     const h = newHeads.get(i);
     for (const { s: other, i: j } of allAlive) {
-      if (j === i || died.has(j)) continue;
+      if (j === i) continue;
       const otherHead = newHeads.get(j); // undefined when j isn't moving this step
-      if (otherHead && !stalled.has(j) && h.x === otherHead.x && h.y === otherHead.y) {
-        // Head-on: each side is checked INDEPENDENTLY for a wormhole charge,
-        // so one snake phasing away does not block the other's own charge
-        // from also firing (or dying normally) this same collision.
+      // Whether j actually advances this step. A snake that dies THIS step is
+      // NOT skipped here: its body is still solid until handleDeath clears it,
+      // so another snake swapping into its cell must still collide with it.
+      // (Skipping died snakes let a head-on SWAP -- two snakes trading cells
+      // -- kill only the first-processed one; the second glided through the
+      // corpse and survived. See round eighteen.) A died/stalled snake does
+      // not move, so its tail does NOT vacate (skipTail false) and its head
+      // is not a same-cell head-on partner.
+      const jMoves = otherHead !== undefined && !stalled.has(j) && !died.has(j);
+      if (jMoves && h.x === otherHead.x && h.y === otherHead.y) {
+        // Head-on into the SAME cell: each side is checked INDEPENDENTLY for a
+        // wormhole charge, so one snake phasing away does not block the
+        // other's own charge from also firing (or dying normally). No kill
+        // credit -- nobody survived the exchange.
         tryWormholeOrDie(i, null, died, stalled, newHeads);
         tryWormholeOrDie(j, null, died, stalled, newHeads);
         if (died.has(i) || stalled.has(i)) break; // i is resolved; stop checking further pairs against it
         continue;
       }
-      if (hitsBody(other.body, h, otherHead !== undefined && !stalled.has(j))) {
+      if (hitsBody(other.body, h, jMoves)) {
         tryWormholeOrDie(i, j, died, stalled, newHeads);
         break; // i is resolved (died or teleported); stop checking further pairs
       }
     }
   }
+}
+// A head-on SWAP (two snakes trading cells) is caught by the body-hit branch
+// above, which records each as the OTHER's killer. But nobody survived, so
+// that is not a kill: strip mutual kill credit so neither corpse scores off
+// the other (matching the same-cell head-on, which already credits no one).
+function clearMutualKills(died) {
+  const mutual = [];
+  for (const [victim, killer] of died) {
+    if (killer != null && died.get(killer) === victim) mutual.push(victim);
+  }
+  for (const v of mutual) died.set(v, null);
+}
+// Applies a powerup's activation effect to a slot: either a one-shot (blueShell
+// launches an independent seeking projectile) or a timed self-buff (everything
+// else -- sets activePowerup with a tick-based expiry). Shared by the pickup
+// path (auto-firing types, fired the instant collected) and the activatePowerup
+// message (the held speedBoost). Not used for wormhole -- see tryWormholeOrDie.
+function firePowerup(slot, slotIndex, type) {
+  if (type === "blueShell") {
+    // Re-targets the CURRENT leader every step (see updateBlueShells), so the
+    // firer is not exempt from being hit by their own shell.
+    const head = slot.body[0];
+    blueShells.push({ id: nextPowerupId++, x: head.x, y: head.y, ownerSlot: slotIndex, moveAccumMs: 0 });
+    dlog && dlog("blueShell launched", { slot: slotIndex, x: head.x, y: head.y });
+  } else {
+    const durationMs = POWERUPS[type].durationMs;
+    const total = Math.ceil(durationMs / currentMoveIntervalMs());
+    slot.activePowerup = { type, startTick: moveSeq, expiresAtTick: moveSeq + total };
+    dlog && dlog("powerup activated", { slot: slotIndex, type });
+  }
+  // One-shot activation-flash marker (client draws a brief colored pop, and
+  // for a one-shot like blueShell it's the only "it fired" cue). Cleared after
+  // the next broadcast, like teleportedThisTick.
+  slot.activatedFx = type;
 }
 function applyMovementAndFood(active, newHeads, died, stalled) {
   for (const { s, i } of active) {
@@ -908,20 +979,34 @@ function applyMovementAndFood(active, newHeads, died, stalled) {
       grew = true;
     }
     // Powerup pickup collection, mirroring the food check above (head lands
-    // on the entity). See the confirmed inventory model: a type that would
-    // be "wasted" (wormhole charge already armed, or the held slot/active
-    // effect already occupied by this type) instead grants the same +1
-    // segment fallback bonus food eating gives, no state change.
+    // on the entity). Three cases:
+    //   - wormhole: arms the independent charge (no held slot).
+    //   - HELD_TYPES (speedBoost): occupies the shared held slot, fired later
+    //     with the activate key.
+    //   - everything else: AUTO-fires immediately (firePowerup) -- trails start
+    //     laying, blueShell launches, growth begins -- no button press.
+    // A pickup that would be "wasted" (charge already armed, held slot full,
+    // or the same timed effect already running) instead grants the +1 segment
+    // fallback that eating food gives, with no state change.
     const pk = powerupPickups.find(p => p.x === h.x && p.y === h.y);
     if (pk) {
-      const blocked = pk.type === "wormhole"
-        ? s.wormholeCharge
-        : (s.heldPowerup != null || (s.activePowerup && s.activePowerup.type === pk.type));
+      const type = pk.type;
+      let blocked;
+      if (type === "wormhole") {
+        blocked = s.wormholeCharge;
+        if (!blocked) s.wormholeCharge = true;
+      } else if (HELD_TYPES.has(type)) {
+        blocked = s.heldPowerup != null || (s.activePowerup && s.activePowerup.type === type);
+        if (!blocked) s.heldPowerup = type;
+      } else {
+        // Auto-fire. A timed self-buff of the SAME type already running is
+        // "wasted" (fallback +1); one-shots (blueShell) always fire.
+        blocked = !!(s.activePowerup && s.activePowerup.type === type);
+        if (!blocked) firePowerup(s, i, type);
+      }
       if (blocked) { growSegment(s); grew = true; }
-      else if (pk.type === "wormhole") s.wormholeCharge = true;
-      else s.heldPowerup = pk.type;
       powerupPickups = powerupPickups.filter(p => p.id !== pk.id);
-      dlog && dlog("powerup collected", { slot: i, type: pk.type, blocked });
+      dlog && dlog("powerup collected", { slot: i, type, blocked, auto: type !== "wormhole" && !HELD_TYPES.has(type) });
     }
     if (!grew) s.body.pop();
     // Trail crossing: this mover's new head landed on a laid tile. The
@@ -1149,15 +1234,25 @@ function broadcastState() {
       heldPowerup: s.heldPowerup,
       wormholeCharge: s.wormholeCharge,
       activePowerup: s.activePowerup ? s.activePowerup.type : null,
+      // Fraction of the active timed powerup still remaining (1 at activation,
+      // 0 at expiry). Drives the client tail-drain countdown -- purely
+      // cosmetic. Omitted when nothing is active.
+      activePct: s.activePowerup
+        ? Math.max(0, Math.min(1, (s.activePowerup.expiresAtTick - moveSeq) /
+            Math.max(1, s.activePowerup.expiresAtTick - s.activePowerup.startTick)))
+        : undefined,
+      // One-shot: the type that JUST fired this tick (client draws a brief
+      // activation flash). Cleared right after this broadcast.
+      activated: s.activatedFx || undefined,
       iceStacks: s.iceStacks,
       teleport: s.teleportedThisTick ? true : undefined
     } : null),
     highScores: { daily: highScores.daily, allTime: highScores.allTime }
   };
   // One-shot flags: true for exactly the one broadcast right after a
-  // successful wormhole fire or a blue shell impact, then cleared so
-  // neither repeats.
-  for (const s of slots) if (s) s.teleportedThisTick = false;
+  // successful wormhole fire, a blue shell impact, or a powerup activation,
+  // then cleared so none repeats.
+  for (const s of slots) if (s) { s.teleportedThisTick = false; s.activatedFx = null; }
   explosions = [];
   // Latency/CPU: the shared portion of the state is identical for every
   // connection, so serialize it ONCE and splice each connection's small
@@ -1326,11 +1421,12 @@ wss.on("connection", ws => {
       slot.boost = on;
     }
     if (msg.type === "activatePowerup") {
-      // Fires the seat's held (non-wormhole) powerup. Wormhole never
-      // occupies heldPowerup (see tryWormholeOrDie) so this naturally no-ops
-      // for it. Deliberately does NOT touch lastInputAt -- see
-      // lifecycleSweep's PLAYER_IDLE_MS comment; a powerup activation must
-      // not silently keep an AFK lobby alive.
+      // Fires the seat's HELD powerup (only speedBoost holds a slot now; all
+      // other types auto-fire on pickup, see the collection handler). Wormhole
+      // never occupies heldPowerup either, so this naturally no-ops for it.
+      // Deliberately does NOT touch lastInputAt -- see lifecycleSweep's
+      // PLAYER_IDLE_MS comment; a powerup activation must not silently keep an
+      // AFK lobby alive.
       const localIdx = Number.isInteger(msg.local) ? msg.local : 0;
       const entry = conn.locals[localIdx];
       if (!entry || entry.role !== "player") return;
@@ -1338,19 +1434,7 @@ wss.on("connection", ws => {
       if (!slot || !slot.alive || !slot.heldPowerup) return;
       const type = slot.heldPowerup;
       slot.heldPowerup = null;
-      if (type === "blueShell") {
-        // Not a timed self-buff: launches an independent seeking projectile
-        // from the activator's current head. See updateBlueShells -- it
-        // re-targets the current leader every step, so the launcher is not
-        // exempt from being hit by their own shell.
-        const head = slot.body[0];
-        blueShells.push({ id: nextPowerupId++, x: head.x, y: head.y, ownerSlot: entry.slotIndex, moveAccumMs: 0 });
-        dlog && dlog("blueShell launched", { slot: entry.slotIndex, x: head.x, y: head.y });
-      } else {
-        const durationMs = POWERUPS[type].durationMs;
-        slot.activePowerup = { type, expiresAtTick: moveSeq + Math.ceil(durationMs / currentMoveIntervalMs()) };
-        dlog && dlog("powerup activated", { slot: entry.slotIndex, type });
-      }
+      firePowerup(slot, entry.slotIndex, type);
     }
     if (msg.type === "leaveLocal") {
       // Explicit exit for one local seat (Leave button). If it was the
