@@ -167,6 +167,16 @@ async function stopServer(handle) {
   try { await Deno.remove(handle.configPath); } catch (_) {}
 }
 
+// Sugar for the server's test-only "testHook" message (requires the server
+// to have been started with startServer(cfg, { SNAKE_TEST_HOOKS: "1" });
+// silently ignored otherwise). Ops:
+//   testHook(c, "spawnPickup", { ptype, x, y })          -- place a pickup
+//   testHook(c, "grantPowerup", { slot, ptype, held? })  -- arm/fire/hold
+//   testHook(c, "placeFood")                             -- re-roll food
+function testHook(client, op, args) {
+  client.send(Object.assign({ type: "testHook", op }, args || {}));
+}
+
 // Waits for a powerup pickup to appear on the board and steers the given
 // client's seat onto it. Each test starts its own server with ONLY the
 // powerup type under test enabled (see startServer configOverrides), so
@@ -220,4 +230,4 @@ function runTest(mainFn, opts) {
   })();
 }
 
-export { connectClient, mySlot, myPlayer, sleep, stepToward, assert, BASE, startServer, stopServer, collectNextPickup, runTest };
+export { connectClient, mySlot, myPlayer, sleep, stepToward, assert, BASE, startServer, stopServer, collectNextPickup, runTest, testHook };

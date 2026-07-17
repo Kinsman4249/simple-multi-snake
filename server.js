@@ -150,17 +150,16 @@ POWERUPS.growthSpurt = Object.assign({ enabled: true, durationMs: 8000, foodMult
 POWERUPS.iceTrail    = Object.assign({ enabled: true, durationMs: 8000, tileDurationMs: 10000, slowDurationMs: 4000, slowMultiplierPerStack: 0.15, minSpeedMultiplier: 0.4 }, POWERUPS.iceTrail || {});
 POWERUPS.poisonTrail = Object.assign({ enabled: true, durationMs: 8000, tileDurationMs: 10000 }, POWERUPS.poisonTrail || {});
 POWERUPS.speedBoost  = Object.assign({ enabled: true, durationMs: 6000, speedMult: 1.6 }, POWERUPS.speedBoost || {});
-// Blue Shell: not a self-buff -- activating it launches a seeking
+// Blue Shell: not a self-buff -- picking it up launches a seeking
 // projectile (see updateBlueShells). segmentLossPercent hits whoever is
-// CURRENTLY longest (re-targeted every tick, including the activator);
+// CURRENTLY longest (re-targeted every tick, including the firer -- the
+// leader is meant to spend effort GUARDING the shell, not just racing food);
 // splashLossPercent hits every other living snake within explosionRadius
 // cells of the impact point. moveIntervalMs governs how often the
-// projectile itself steps (independent of any snake's speed).
-// NOTE: disabled by default (TODO -- see README). The mechanic works, but a
-// robust end-to-end splash-damage test still needs building; until then the
-// operator can opt in via config.json.
+// projectile itself steps (independent of any snake's speed). Never spawns
+// with fewer than two people in the game (see maybeSpawnPowerupPickup).
 POWERUPS.blueShell = Object.assign(
-  { enabled: false, segmentLossPercent: 0.33, explosionRadius: 3, splashLossPercent: 1 / 6, moveIntervalMs: 90 },
+  { enabled: true, segmentLossPercent: 0.33, explosionRadius: 3, splashLossPercent: 1 / 6, moveIntervalMs: 90 },
   POWERUPS.blueShell || {}
 );
 const POWERUP_TYPES = ["wormhole", "growthSpurt", "iceTrail", "poisonTrail", "speedBoost", "blueShell"];
@@ -318,17 +317,24 @@ const TEST_SPAWNS = (() => {
   try { return process.env.SNAKE_TEST_SPAWNS ? JSON.parse(process.env.SNAKE_TEST_SPAWNS) : null; }
   catch (_) { return null; }
 })();
+// Test-only runtime hooks (inert unless SNAKE_TEST_HOOKS=1): enables the
+// "testHook" WS message, which lets a test place a pickup of a chosen type at
+// a chosen cell, grant/fire a powerup on a slot, or re-roll food -- mid-test
+// staging that the startup-time SNAKE_TEST_SPAWNS env cannot express.
+const TEST_HOOKS = process.env.SNAKE_TEST_HOOKS === "1";
 function spawnSnake(slotIndex) {
-  const len = MIN_SNAKE_LENGTH;
+  let len = MIN_SNAKE_LENGTH;
   let x, y, dir = { x: 1, y: 0 };
   // Test-only fixed spawns (inert unless SNAKE_TEST_SPAWNS is set): a JSON
-  // array indexed by slot, each { x, y, dir } placing a snake at a known cell
-  // and heading. Used by tests that need a deterministic layout (e.g. a
-  // controlled head-on) instead of walking randomly-spawned snakes together.
+  // array indexed by slot, each { x, y, dir, len? } placing a snake at a known
+  // cell, heading, and (optionally) length. Used by tests that need a
+  // deterministic layout (e.g. a controlled head-on, or a known leader)
+  // instead of walking randomly-spawned snakes together.
   const forced = TEST_SPAWNS && TEST_SPAWNS[slotIndex];
   if (forced) {
     x = forced.x; y = forced.y;
     dir = DIR_VECTORS[forced.dir] || dir;
+    if (Number.isInteger(forced.len) && forced.len >= MIN_SNAKE_LENGTH) len = forced.len;
   } else {
     let attempts = 0;
     do {
@@ -400,6 +406,23 @@ function currentLeaderIndex() {
     if (s && s.alive && s.body.length > bestLen) { bestLen = s.body.length; bestIdx = i; }
   }
   return bestIdx;
+}
+// How many connected PEOPLE are still in the game: seats in role "player"
+// (alive OR dead awaiting respawn -- the seat persists through the
+// spectatorPromoteDelayMs window) plus seats parked as "held" during an
+// initials flush. Spectators do not count. This is the blue-shell presence
+// gate (maintainer, 2026-07-16): a lone survivor whose opponent is merely
+// dead still self-nukes on pickup; only a genuine disconnect makes the
+// shell fizzle. Note this counts SEATS, not connections -- two couch seats
+// on one computer are two players for shell purposes.
+function playerSeatCount() {
+  let n = 0;
+  for (const [, conn] of connections) {
+    for (const l of conn.locals) {
+      if (l && (l.role === "player" || l.role === "held")) n++;
+    }
+  }
+  return n;
 }
 // Connection record. pendingInitials is the connection-scoped high-score
 // queue ([{ local, targets, score }]); activeInitials is the one prompt
@@ -606,7 +629,12 @@ function maybeSpawnPowerupPickup(now) {
   if (lastPowerupSpawnAt === null) lastPowerupSpawnAt = now;
   if (now - lastPowerupSpawnAt < POWERUPS.spawnIntervalMs) return;
   if (powerupPickups.length >= POWERUPS.maxConcurrentPickups) return;
-  const enabledTypes = POWERUP_TYPES.filter(t => POWERUPS[t].enabled);
+  let enabledTypes = POWERUP_TYPES.filter(t => POWERUPS[t].enabled);
+  // Blue shell needs someone to fire it AT: with fewer than two people still
+  // in the game (see playerSeatCount -- dead-awaiting-respawn counts,
+  // disconnected does not) the shell never spawns. The pickup handler has a
+  // matching fizzle for shells already on the board when the count drops.
+  if (playerSeatCount() < 2) enabledTypes = enabledTypes.filter(t => t !== "blueShell");
   if (enabledTypes.length === 0) { lastPowerupSpawnAt = now; return; }
   const type = enabledTypes[Math.floor(Math.random() * enabledTypes.length)];
   let x, y, attempts = 0;
@@ -1028,11 +1056,19 @@ function applyMovementAndFood(active, newHeads, died, stalled) {
         if (!blocked) s.heldPowerup = type;
       } else {
         // Auto-fire. A timed self-buff of the SAME type already running is
-        // "wasted" (fallback +1); one-shots (blueShell) always fire.
-        blocked = !!(s.activePowerup && s.activePowerup.type === type);
+        // "wasted" (fallback +1). A blueShell collected with fewer than two
+        // people still in the game fizzles the same way (the spawner already
+        // gates this, but a shell can outlive the second player's DISCONNECT
+        // -- a merely-dead opponent still counts, so a lone survivor's pickup
+        // fires and self-nukes; maintainer-specced).
+        blocked = !!(s.activePowerup && s.activePowerup.type === type) ||
+                  (type === "blueShell" && playerSeatCount() < 2);
         if (!blocked) firePowerup(s, i, type);
       }
-      if (blocked) { growSegment(s); grew = true; }
+      // NOTE: growSegment WITHOUT grew=true -- the unshifted head still pops
+      // below, so the net is exactly +1, matching the food fallback the
+      // comment above promises (grew=true here double-counted to +2).
+      if (blocked) growSegment(s);
       powerupPickups = powerupPickups.filter(p => p.id !== pk.id);
       dlog && dlog("powerup collected", { slot: i, type, blocked, auto: type !== "wormhole" && !HELD_TYPES.has(type) });
     }
@@ -1485,6 +1521,24 @@ wss.on("connection", ws => {
       const reason = addLocalPlayer(connId);
       if (reason) sendTo(conn.ws, { type: "joinLocalDenied", reason });
       else broadcastState();
+    }
+    if (msg.type === "testHook" && TEST_HOOKS) {
+      // Test-only staging (see the TEST_HOOKS const): never reachable in prod
+      // (env unset => the whole branch is dead). Ops operate on SLOT indices,
+      // matching what the state broadcast exposes to tests.
+      if (msg.op === "spawnPickup" && POWERUP_TYPES.includes(msg.ptype)) {
+        powerupPickups.push({ id: nextPowerupId++, type: msg.ptype, x: msg.x | 0, y: msg.y | 0 });
+      } else if (msg.op === "grantPowerup" && POWERUP_TYPES.includes(msg.ptype)) {
+        const s = slots[msg.slot];
+        if (s && s.alive) {
+          if (msg.ptype === "wormhole") s.wormholeCharge = true;
+          else if (msg.held) s.heldPowerup = msg.ptype;
+          else firePowerup(s, msg.slot, msg.ptype);
+        }
+      } else if (msg.op === "placeFood") {
+        placeFood();
+      }
+      broadcastState();
     }
     if (msg.type === "initials") {
       // Only the prompt the server itself put on screen can be answered,

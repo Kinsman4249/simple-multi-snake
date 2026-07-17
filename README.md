@@ -264,8 +264,9 @@ Keys:
 - powerups.spawnIntervalMs: how often a pickup spawn is attempted (default 8000).
 - powerups.maxConcurrentPickups: most pickups on the board at once (default 1).
 - powerups.<type>.enabled: on/off per powerup type. Types: wormhole,
-  growthSpurt, speedBoost, iceTrail, poisonTrail, blueShell. All default on
-  EXCEPT blueShell, which is off by default (see Notes and limitations). Each
+  growthSpurt, speedBoost, iceTrail, poisonTrail, blueShell. All default on.
+  Blue Shell additionally requires at least two people in the game to spawn
+  (a pickup collected while alone fizzles into +1 growth instead). Each
   type has its own tuning keys alongside enabled -- for example
   growthSpurt.durationMs / foodMultiplier / killBonusGrowth,
   speedBoost.durationMs / speedMult, iceTrail.slowMultiplierPerStack /
@@ -488,15 +489,12 @@ committed to the repo.
 
 ## Notes and limitations
 
-- Blue Shell is off by default (TODO). The mechanic is complete -- it launches
-  a seeking projectile at the current leader (including the player who fired
-  it), deals a large direct hit and a smaller splash to nearby snakes, and is
-  consumed on impact. What is not yet done is a reliable end-to-end test for
-  the SPLASH portion: staging two live snakes so the second is above the length
-  floor and still alive at the exact tick the shell lands is a test-harness
-  navigation problem, not a gameplay one. The direct hit, targeting, and
-  consumption are covered and pass consistently. Until the splash test is
-  solid, an operator can enable it with powerups.blueShell.enabled: true.
+- Blue Shell is on by default and fires the instant it is picked up. It
+  launches a seeking projectile at the current leader (including the player
+  who fired it -- guarding the shell is the leader's counterplay), deals a
+  large direct hit and a smaller splash to nearby snakes, and is consumed on
+  impact. It never spawns with fewer than two people in the game, and a
+  pickup collected while alone fizzles into +1 growth.
 - A 30 second WebSocket keepalive ping is built into the server because
   Cloudflare closes idle proxied WebSocket connections after about 100 seconds.
 - Dead snake bodies are drawn until respawn but are not solid obstacles; the

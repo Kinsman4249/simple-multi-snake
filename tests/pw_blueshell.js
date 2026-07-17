@@ -1,167 +1,198 @@
-// Blue Shell e2e test: activating it launches a projectile that always
-// targets whoever is CURRENTLY the longest snake, even the activator, and
-// on impact the leader loses a large percentage of length while everyone
-// else within the explosion radius loses a smaller splash percentage. Run:
-// deno run --allow-net --allow-read --allow-write --allow-run --allow-env
-// tests/pw_blueshell.js
-import { connectClient, myPlayer, assert, startServer, stopServer, collectNextPickup, stepToward, runTest } from "./helpers.js";
+// Blue Shell e2e test (Phase 9 rewrite): deterministic staging, no greedy
+// pathing. Snakes are spawned at fixed cells traveling PARALLEL via
+// SNAKE_TEST_SPAWNS (optional len forces a known leader), and the shell
+// pickup is placed directly in the leader's path with the SNAKE_TEST_HOOKS
+// testHook message -- the snake just coasts into it (snakes auto-move; "go
+// straight" means send nothing).
+//
+// Covers, each on its own fresh server:
+//   0. testHook is inert without SNAKE_TEST_HOOKS (prod safety).
+//   A. Auto-fire on pickup + direct-hit percentage on the leader (who
+//      collected it) + REAL splash geometry: a victim inside
+//      explosionRadius loses splashLossPercent, a third snake outside the
+//      radius loses nothing, and the victim stays at/above the floor.
+//   B. Single-player fizzle: collected alone, the shell becomes +1 growth.
+//   C. Dead-awaiting-respawn self-nuke: the opponent is dead but still
+//      CONNECTED (seat persists through spectatorPromoteDelayMs), so the
+//      lone survivor's pickup fires and hits themselves.
+// Run: deno run --allow-net --allow-read --allow-write --allow-run
+//      --allow-env tests/pw_blueshell.js
+import { connectClient, myPlayer, assert, startServer, stopServer, runTest, testHook, sleep } from "./helpers.js";
 
-// The server keeps moving an un-steered snake forward every tick in
-// whatever direction it was last heading -- while a test is busy driving a
-// DIFFERENT client, an idle snake can wander into a wall and die/respawn,
-// silently resetting its length. Two earlier approaches both proved
-// unreliable: a bespoke "avoid nearby walls" heuristic (no real target, not
-// robust enough on its own), and reusing eatOnce's homing-toward-food
-// steering (which seemed safe since every OTHER test uses it without
-// issue -- but those tests only ever have ONE active snake; here BOTH
-// snakes are alive, and having each one independently home toward the same
-// food cell means they frequently collide with EACH OTHER while racing for
-// it). The fix: give the idle snake a FIXED, static target in a corner far
-// from where the other snake is operating, so the two snakes' steering
-// targets can never coincide.
-function keepAlive(client, local, targetX, targetY) {
-  const timer = setInterval(() => {
-    const cur = client.state;
-    const p = myPlayer(cur, local);
-    if (!p) return;
-    const dn = stepToward(cur, local, targetX, targetY);
-    if (dn) client.send({ type: "dir", dir: dn, local });
-  }, 70);
-  return () => clearInterval(timer);
-}
-
-// One food-eat, same proven-safe pattern as pw_growthspurt.js / pw_poisontrail.js
-// (repeated calls to grow by a fixed COUNT, not a greedy walk toward a
-// target length -- growing a long snake via naive greedy pathing toward
-// far-away random food is genuinely prone to self-trapping).
-async function eatOnce(client, local) {
-  const before = myPlayer(client.state, local).body.length;
-  const timer = setInterval(() => {
-    const cur = client.state;
-    const p = myPlayer(cur, local);
-    if (!p || !cur.food) return;
-    const dn = stepToward(cur, local, cur.food.x, cur.food.y);
-    if (dn) client.send({ type: "dir", dir: dn, local });
-  }, 70);
-  try {
-    await client.waitFor(s => { const p = myPlayer(s, local); return p && p.body.length !== before; }, 15000);
-  } finally {
-    clearInterval(timer);
-  }
-}
-async function eatUntilLength(client, local, targetLen) {
-  while (myPlayer(client.state, local).body.length < targetLen) await eatOnce(client, local);
-}
-
-async function main() {
-  const server = await startServer({
+// Base config for every scenario: fixed move cadence (no ramp), natural
+// powerup spawner effectively OFF (pickups come only from testHook, so no
+// stray type can interfere), percentages bumped so losses are observable.
+function baseConfig(grid, extraPowerups) {
+  return {
     maxPlayers: 4,
-    // Larger board than the single-snake tests: with TWO live snakes to keep
-    // out of walls during the strike window, more open space meaningfully
-    // lowers the odds of an unlucky death mid-test.
-    grid: { cols: 24, rows: 24, cellSize: 20 },
-    move: { startIntervalMs: 90, minIntervalMs: 90, rampIntervalSec: 3600, rampStepMs: 0 },
-    powerups: {
-      spawnIntervalMs: 300, maxConcurrentPickups: 3,
-      wormhole: { enabled: false }, growthSpurt: { enabled: false },
-      iceTrail: { enabled: false }, poisonTrail: { enabled: false }, speedBoost: { enabled: false },
-      // explosionRadius larger than the whole board: this test verifies the
-      // DAMAGE PERCENTAGES (direct hit vs. splash) and the targeting rule
-      // (longest snake, even the activator), NOT exact "within N cells"
-      // geometry (that radius math is trivial and not the risky part), so
-      // the two snakes' relative positions are deliberately not load-
-      // bearing. Percentages are bumped above the production defaults so a
-      // decrement is observable at very small lengths.
-      blueShell: { enabled: true, segmentLossPercent: 0.5, explosionRadius: 100, splashLossPercent: 0.5, moveIntervalMs: 90 }
-    }
-  });
+    grid,
+    move: { startIntervalMs: 150, minIntervalMs: 150, rampIntervalSec: 3600, rampStepMs: 0 },
+    minSnakeLength: 3,
+    enableDebug: false, // keep the piped stdout quiet (pipe-stall gotcha)
+    powerups: Object.assign({
+      spawnIntervalMs: 3600000, maxConcurrentPickups: 8,
+      blueShell: { enabled: true, segmentLossPercent: 0.5, explosionRadius: 3, splashLossPercent: 0.34, moveIntervalMs: 90 }
+    }, extraPowerups || {})
+  };
+}
+
+// --- Scenario 0: prod inertness -------------------------------------------
+async function scenarioInert() {
+  const server = await startServer(baseConfig({ cols: 40, rows: 20, cellSize: 20 })); // NO SNAKE_TEST_HOOKS env
   try {
-    // Do ALL of c1's setup first, with no second snake in existence yet, so
-    // nothing can interfere with c1 collecting its pickup.
     const c1 = await connectClient();
     await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
+    testHook(c1, "spawnPickup", { ptype: "blueShell", x: 20, y: 5 });
+    await sleep(600);
+    assert(!c1.state.powerupPickups || c1.state.powerupPickups.length === 0,
+      "testHook must be ignored when SNAKE_TEST_HOOKS is unset");
+    console.log("PASS: testHook inert without SNAKE_TEST_HOOKS.");
+    c1.close();
+  } finally {
+    await stopServer(server);
+  }
+}
 
-    console.log("Growing c1 to length 5 (the leader)...");
-    await eatUntilLength(c1, 0, 5);
-
-    console.log("Collecting blueShell pickup on c1...");
-    await collectNextPickup(c1, 0, 20000);
-    assert(myPlayer(c1.state, 0).heldPowerup === "blueShell", "pickup should occupy heldPowerup");
-    console.log("PASS: pickup occupies heldPowerup.");
-
-    // Keep c1 gently steered toward center from here on so it can't wander
-    // into a wall during the window while c2 connects/grows and the shell
-    // is fired -- c1 must still be alive AND the leader at fire time. Center
-    // steering (versus a corner) never runs a snake into a wall: once near
-    // the target it just oscillates in open space.
-    const CX = 12, CY = 12;
-    let stopC1 = keepAlive(c1, 0, CX, CY);
-
-    // c2 must be one segment above the floor for splash damage to register
-    // (the floor equals the spawn length, so a fresh snake sits exactly AT
-    // it). One eat is enough. It's steered toward a DIFFERENT area than c1
-    // (opposite corner) only during its growth, then left to coast the
-    // ~1 shell-tick until impact.
-    console.log("Connecting c2 and growing it one segment above the floor...");
+// --- Scenario A: auto-fire + splash geometry -------------------------------
+// Three snakes traveling parallel, heading right, fixed rows:
+//   slot0 leader  (row 10, len 24) -- collects the shell, is the target.
+//   slot1 victim  (row 12, len 20) -- spawned 10 cells AHEAD of the leader
+//     so that, whatever the inter-connect lag (later connects start moving
+//     later, so trail in x), its 20-cell body still spans the impact
+//     column. Row distance to the impact is a constant 2 <= radius 3.
+//   slot2 outside (row 36, len 6)  -- row distance 26 > radius, never hit.
+async function scenarioSplash() {
+  const spawns = [
+    { x: 26, y: 10, dir: "right", len: 24 },
+    { x: 36, y: 12, dir: "right", len: 20 },
+    { x: 26, y: 36, dir: "right", len: 6 }
+  ];
+  const server = await startServer(
+    baseConfig({ cols: 160, rows: 40, cellSize: 20 }),
+    { SNAKE_TEST_HOOKS: "1", SNAKE_TEST_SPAWNS: JSON.stringify(spawns) }
+  );
+  try {
+    const c1 = await connectClient();
+    await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
     const c2 = await connectClient();
     await c2.waitFor(s => myPlayer(s, 0) != null, 5000);
-    const floorLen = myPlayer(c2.state, 0).body.length; // == spawn length == MIN_SNAKE_LENGTH
-    await eatUntilLength(c2, 0, floorLen + 1);
+    const c3 = await connectClient();
+    await c3.waitFor(s => myPlayer(s, 0) != null, 5000);
 
-    const c1LenBefore = myPlayer(c1.state, 0).body.length;
-    const c2LenBefore = myPlayer(c2.state, 0).body.length;
-    assert(c1LenBefore > c2LenBefore, "c1 must be the clear leader going into the strike (c1=" + c1LenBefore + ", c2=" + c2LenBefore + ")");
-    assert(c2LenBefore > floorLen, "c2 must be above the floor so splash damage is observable (len=" + c2LenBefore + ", floor=" + floorLen + ")");
+    const st = c1.state;
+    const [leader, victim, outsider] = [st.players[0], st.players[1], st.players[2]];
+    assert(leader && victim && outsider, "three seated snakes expected");
+    assert(leader.body.length > victim.body.length, "slot0 must be the leader");
 
-    // c1 is CURRENTLY the leader, so the shell launched from its own head
-    // overlaps its target immediately -- a deterministic self-hit proving
-    // "hits the lead player even if THEY activate it." Wait on the EXPLOSION
-    // marker specifically (not "length decreased"): a wall/self death also
-    // shrinks length and would otherwise be mistaken for a real impact.
-    c1.send({ type: "activatePowerup", local: 0 });
-    await c1.waitFor(s => s.explosions && s.explosions.length > 0, 15000);
-    stopC1();
+    // Place the shell a few cells ahead in the leader's row; it coasts in.
+    const head = leader.body[0];
+    const lenBefore = [leader.body.length, victim.body.length, outsider.body.length];
+    assert(head.x + 8 < 160, "leader too close to the wall for pickup staging");
+    testHook(c1, "spawnPickup", { ptype: "blueShell", x: head.x + 6, y: 10 });
 
-    // ---- HARD assertions: the deterministic core of the feature. ----
-    // These hold every single run: the shell targets the current leader
-    // (c1, even though c1 activated it), deals the configured direct-hit
-    // percentage, and is consumed on impact.
-    assert(myPlayer(c1.state, 0).alive, "c1 should survive the strike (damaged, not killed)");
-    const c1Loss = c1LenBefore - myPlayer(c1.state, 0).body.length;
-    const expectedC1Loss = Math.floor(c1LenBefore * 0.5);
-    assert(c1Loss === expectedC1Loss, "leader should lose the configured percentage (expected -" + expectedC1Loss + ", got -" + c1Loss + ")");
-    console.log("PASS: blue shell hit the leader (who also activated it) for -" + c1Loss + ".");
+    // Auto-fire: the explosion must arrive with NO activate message and the
+    // held slot never occupied.
+    const boom = await c1.waitFor(s => s.explosions && s.explosions.length > 0, 8000);
+    assert(boom.players[0].heldPowerup == null, "blueShell must never occupy heldPowerup (auto-fire)");
+    assert(!boom.blueShells || boom.blueShells.length === 0, "shell consumed after impact");
 
-    assert(!c1.state.blueShells || c1.state.blueShells.length === 0, "shell should be consumed after impact");
-    console.log("PASS: blue shell consumed after impact (no lingering projectile).");
+    const ex = boom.explosions[0];
+    assert(ex.y === 10, "self-hit impact stays in the leader's row (got y=" + ex.y + ")");
 
-    // ---- BEST-EFFORT observation: splash damage to a nearby non-leader. ----
-    // The splash MECHANIC is exercised and correct (verified directly: an
-    // in-radius non-leader above the floor loses splashLossPercent of its
-    // length). But reliably STAGING it here -- a second live snake, above
-    // the floor, still alive at the exact tick the shell lands -- is a
-    // navigation problem the harness can't guarantee: the idle second snake
-    // sometimes dies/respawns to the floor in the strike window, leaving 0
-    // segments to remove. Rather than make the whole test flaky on a
-    // scenario-setup difficulty (never on wrong behavior), this is reported
-    // but not asserted. See README: Blue Shell is TODO / disabled by
-    // default pending a more robust splash test.
-    const c2Loss = c2LenBefore - myPlayer(c2.state, 0).body.length;
-    if (c2Loss > 0) {
-      assert(c2Loss <= c1Loss, "splash damage to a non-leader should not exceed the direct hit (c2 -" + c2Loss + " vs c1 -" + c1Loss + ")");
-      console.log("PASS: nearby non-leader took splash damage (-" + c2Loss + ").");
-    } else {
-      console.log("NOTE: splash not observed this run (c2 at floor at impact) -- harness staging limit, not a feature failure.");
-    }
+    // Direct hit: exact configured percentage on the leader.
+    const leaderLoss = lenBefore[0] - boom.players[0].body.length;
+    assert(leaderLoss === Math.floor(lenBefore[0] * 0.5),
+      "leader direct hit: expected -" + Math.floor(lenBefore[0] * 0.5) + ", got -" + leaderLoss);
+    assert(boom.players[0].alive, "leader survives the strike");
 
+    // Splash geometry: victim (row distance 2, body spanning the impact
+    // column) loses the splash percentage and stays above the floor ...
+    const victimLoss = lenBefore[1] - boom.players[1].body.length;
+    const expVictim = Math.min(lenBefore[1] - 3, Math.floor(lenBefore[1] * 0.34));
+    const vSeg = boom.players[1].body.some(seg => Math.max(Math.abs(seg.x - ex.x), Math.abs(seg.y - ex.y)) <= 3)
+      || victimLoss > 0; // sanity: it lost segments, so it must have been in radius at impact
+    assert(vSeg, "victim staged inside the blast radius");
+    assert(victimLoss === expVictim, "victim splash: expected -" + expVictim + ", got -" + victimLoss);
+    assert(boom.players[1].body.length >= 3, "victim stays at/above minSnakeLength");
+    // ... and the far snake (row distance 26) loses nothing.
+    assert(lenBefore[2] - boom.players[2].body.length === 0, "outside-radius snake must lose nothing");
+
+    console.log("PASS: auto-fire self-hit -" + leaderLoss + ", splash -" + victimLoss + " inside radius, 0 outside.");
+    c1.close(); c2.close(); c3.close();
+  } finally {
+    await stopServer(server);
+  }
+}
+
+// --- Scenario B: single-player fizzle --------------------------------------
+async function scenarioFizzle() {
+  const spawns = [{ x: 6, y: 10, dir: "right", len: 5 }];
+  const server = await startServer(
+    baseConfig({ cols: 40, rows: 20, cellSize: 20 }),
+    { SNAKE_TEST_HOOKS: "1", SNAKE_TEST_SPAWNS: JSON.stringify(spawns) }
+  );
+  try {
+    const c1 = await connectClient();
+    await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
+    const lenBefore = myPlayer(c1.state, 0).body.length;
+    const head = myPlayer(c1.state, 0).body[0];
+    testHook(c1, "spawnPickup", { ptype: "blueShell", x: head.x + 4, y: 10 });
+    await c1.waitFor(s => s.powerupPickups.length === 0 && myPlayer(s, 0).body.length !== lenBefore, 8000);
+    assert(myPlayer(c1.state, 0).body.length === lenBefore + 1,
+      "lone pickup fizzles into exactly +1 growth (wasted-pickup fallback)");
+    assert(!c1.state.blueShells || c1.state.blueShells.length === 0, "no shell launched while alone");
+    await sleep(800);
+    assert(!c1.state.explosions || c1.state.explosions.length === 0, "no explosion while alone");
+    console.log("PASS: single-player pickup fizzled into +1 growth, no shell.");
+    c1.close();
+  } finally {
+    await stopServer(server);
+  }
+}
+
+// --- Scenario C: opponent dead-but-connected => self-nuke -------------------
+async function scenarioDeadRespawnNuke() {
+  const spawns = [
+    { x: 30, y: 10, dir: "right", len: 8 },
+    { x: 3, y: 20, dir: "left" } // walks into the left wall and dies in a few steps
+  ];
+  const server = await startServer(
+    Object.assign(baseConfig({ cols: 60, rows: 30, cellSize: 20 }), { spectatorPromoteDelayMs: 8000 }),
+    { SNAKE_TEST_HOOKS: "1", SNAKE_TEST_SPAWNS: JSON.stringify(spawns) }
+  );
+  try {
+    const c1 = await connectClient();
+    await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
+    const c2 = await connectClient();
+    await c2.waitFor(s => myPlayer(s, 0) != null, 5000);
+    // c2's snake self-destructs against the wall (assert on the FIRST death;
+    // the widened respawn delay keeps it dead for the whole scenario).
+    await c1.waitFor(s => s.players[1] && s.players[1].alive === false, 8000);
+
+    const lenBefore = c1.state.players[0].body.length;
+    const head = c1.state.players[0].body[0];
+    testHook(c1, "spawnPickup", { ptype: "blueShell", x: head.x + 5, y: 10 });
+    const boom = await c1.waitFor(s => s.explosions && s.explosions.length > 0, 8000);
+    assert(boom.players[1] && boom.players[1].alive === false,
+      "opponent must still be dead-but-connected at impact");
+    const loss = lenBefore - boom.players[0].body.length;
+    assert(loss === Math.floor(lenBefore * 0.5),
+      "lone survivor self-nukes: expected -" + Math.floor(lenBefore * 0.5) + ", got -" + loss);
+    console.log("PASS: shell fired and self-nuked while opponent was dead awaiting respawn.");
     c1.close(); c2.close();
   } finally {
     await stopServer(server);
   }
 }
 
-// One retry still guards the deterministic assertions against the
-// occasional test-snake nav mishap (c1 dying and losing the lead before it
-// can fire). The splash observation above is best-effort, so it never
-// forces a retry on its own.
+async function main() {
+  await scenarioInert();
+  await scenarioSplash();
+  await scenarioFizzle();
+  await scenarioDeadRespawnNuke();
+}
+
+// Staging is deterministic now (forced spawns + hook-placed pickups); the
+// retries only absorb environment noise (a food pellet randomly landing in
+// a staged snake's path can shift a length by one).
 runTest(main, { attempts: 3, watchdogMs: 180000 });

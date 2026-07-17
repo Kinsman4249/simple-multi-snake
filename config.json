@@ -53,6 +53,6 @@
     "iceTrail":    { "enabled": true, "durationMs": 8000, "tileDurationMs": 10000, "slowDurationMs": 4000, "slowMultiplierPerStack": 0.15, "minSpeedMultiplier": 0.4 },
     "poisonTrail": { "enabled": true, "durationMs": 8000, "tileDurationMs": 10000 },
     "speedBoost":  { "enabled": true, "durationMs": 6000, "speedMult": 1.6 },
-    "blueShell":   { "enabled": false, "segmentLossPercent": 0.33, "explosionRadius": 3, "splashLossPercent": 0.1667, "moveIntervalMs": 90 }
+    "blueShell":   { "enabled": true, "segmentLossPercent": 0.33, "explosionRadius": 3, "splashLossPercent": 0.1667, "moveIntervalMs": 90 }
   }
 }
