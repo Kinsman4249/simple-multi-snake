@@ -836,7 +836,10 @@ function computeNewHeads(active) {
 function tryWormholeOrDie(idx, killerIdxOrNull, died, stalled, newHeads) {
   const s = slots[idx];
   if (s && s.wormholeCharge) {
-    const fatalHead = newHeads.get(idx);
+    // A split-step head-on can kill a snake that is NOT moving this step --
+    // it has no newHeads entry, and its fatal contact point is simply its own
+    // (stationary) head cell.
+    const fatalHead = newHeads.get(idx) || s.body[0];
     const result = POWERUP_MODULES.wormhole.attemptWormhole(idx, s, fatalHead, slots, CFG.grid, POWERUPS.wormhole.lookaheadDepth);
     s.wormholeCharge = false;
     if (result) {
@@ -894,12 +897,25 @@ function resolveSelfCollisions(active, newHeads, died, stalled) {
 }
 // Movers are checked against EVERY living snake (allAlive), not just other
 // movers: with per-snake boost cadence a slower snake may not step this
-// tick, but its body is still a solid obstacle. Head-on (both die) applies
-// only between two snakes moving this same step; a non-mover's stationary
-// head counts as part of its body. A non-mover's tail does NOT vacate this
-// step, so skipTail is false for them.
+// tick, but its body is still a solid obstacle. A non-mover's tail does NOT
+// vacate this step, so skipTail is false for them.
+//
+// HEAD-ON (both die) has TWO shapes, and both must kill both:
+//   - Same-step: both snakes move this step into the same cell (or trade
+//     cells -- the swap is caught by the body-hit branch plus
+//     clearMutualKills).
+//   - Split-step (the real-play common case, round nineteen): movement is
+//     per-snake accumulators (s.moveAccumMs), and two snakes that joined at
+//     different times cross the movement threshold on DIFFERENT sim ticks --
+//     so in a live game two equal-speed snakes almost never move in the same
+//     movers set. A head-on then resolves sequentially: the snake whose tick
+//     fires first lands on the other's STATIONARY head. That is still two
+//     snakes meeting face-to-face -- if the mover's new head lands exactly on
+//     a non-mover's head cell while their directions oppose, BOTH die, no
+//     kill credit. (Landing on a head cell with a perpendicular heading is a
+//     T-bone into the side of the head: a normal ram, only the mover dies.)
 function resolveSnakeCollisions(active, newHeads, died, stalled, allAlive) {
-  for (const { i } of active) {
+  for (const { s: me, i } of active) {
     if (died.has(i) || stalled.has(i)) continue;
     const h = newHeads.get(i);
     for (const { s: other, i: j } of allAlive) {
@@ -915,13 +931,25 @@ function resolveSnakeCollisions(active, newHeads, died, stalled, allAlive) {
       // is not a same-cell head-on partner.
       const jMoves = otherHead !== undefined && !stalled.has(j) && !died.has(j);
       if (jMoves && h.x === otherHead.x && h.y === otherHead.y) {
-        // Head-on into the SAME cell: each side is checked INDEPENDENTLY for a
-        // wormhole charge, so one snake phasing away does not block the
-        // other's own charge from also firing (or dying normally). No kill
-        // credit -- nobody survived the exchange.
+        // Same-step head-on into the SAME cell: each side is checked
+        // INDEPENDENTLY for a wormhole charge, so one snake phasing away does
+        // not block the other's own charge from also firing (or dying
+        // normally). No kill credit -- nobody survived the exchange.
         tryWormholeOrDie(i, null, died, stalled, newHeads);
         tryWormholeOrDie(j, null, died, stalled, newHeads);
         if (died.has(i) || stalled.has(i)) break; // i is resolved; stop checking further pairs against it
+        continue;
+      }
+      // Split-step head-on: j is not moving this step (different accumulator
+      // phase), but the mover's new head lands exactly on j's head cell while
+      // the two face each other. Both die. !died.has(j) keeps a corpse from
+      // re-dying (a corpse is a plain solid obstacle, handled below).
+      const oh = other.body.length ? other.body[0] : null;
+      if (!jMoves && !died.has(j) && oh && h.x === oh.x && h.y === oh.y &&
+          other.dir && other.dir.x === -me.dir.x && other.dir.y === -me.dir.y) {
+        tryWormholeOrDie(i, null, died, stalled, newHeads);
+        tryWormholeOrDie(j, null, died, stalled, newHeads);
+        if (died.has(i) || stalled.has(i)) break;
         continue;
       }
       if (hitsBody(other.body, h, jMoves)) {
