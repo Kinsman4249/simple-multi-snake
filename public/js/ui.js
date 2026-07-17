@@ -3,7 +3,7 @@
 // prompt with countdown, spectator overlay, explicit JOIN offer button,
 // and a DEBUG button/panel (recording enabled only while open).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-16.2";
+(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-17.1";
 const UI = (() => {
   const statusEl = document.getElementById("status");
   let captchaId = null;
@@ -106,8 +106,11 @@ const UI = (() => {
       const label = present.length > 1 ? (entry.local === 0 ? "P1" : "P2") + ": " : "You: ";
       if (entry.role === "player") {
         const me = curr.players[entry.slot];
+        // Banana slip: the server flips this seat's controls while
+        // `inverted` -- say so where the player is already looking.
         return label + "slot " + (entry.slot + 1) + " | score " +
-          (me ? me.score : 0) + (me && !me.alive ? " | waiting" : "");
+          (me ? me.score : 0) + (me && !me.alive ? " | waiting" : "") +
+          (me && me.alive && me.inverted ? " | ⇄ CONTROLS REVERSED" : "");
       }
       if (entry.role === "held") return label + "high score entry pending...";
       return label + "spectating (queue " + entry.queuePos + " of " + entry.queueLen + ")";

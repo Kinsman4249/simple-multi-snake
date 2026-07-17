@@ -12,7 +12,7 @@
     { head: "#88f", body: "#33c" },
     { head: "#ff8", body: "#cc3" }
   ];
-  const PICKUP_TYPES = ["wormhole", "growthSpurt", "iceTrail", "poisonTrail", "speedBoost", "blueShell"];
+  const PICKUP_TYPES = ["wormhole", "growthSpurt", "iceTrail", "poisonTrail", "speedBoost", "blueShell", "bananaTrail"];
 
   // Serpentine body of `len` segments inside the quadrant box, head first.
   function serpentine(x0, y0, w, h, len) {
@@ -65,7 +65,7 @@
       trails.push({
         x: 1 + ((i * 7) % (cols - 2)),
         y: 1 + ((i * 13) % (rows - 2)),
-        type: i % 2 ? "iceTrail" : "poisonTrail"
+        type: i % 3 === 0 ? "bananaTrail" : (i % 2 ? "iceTrail" : "poisonTrail")
       });
     }
     const powerupPickups = PICKUP_TYPES.map((type, i) => ({

@@ -116,6 +116,7 @@ function rgba(r: u32, g: u32, b: u32, a: u32): u32 { return r | (g << 8) | (b <<
 const COLOR_FOOD: u32 = rgba(0xee, 0x33, 0x33, 255);        // #e33
 const COLOR_TRAIL_ICE: u32 = rgba(150, 225, 255, 166);      // rgba(150,225,255,0.65)
 const COLOR_TRAIL_POISON: u32 = rgba(110, 210, 70, 153);    // rgba(110,210,70,0.6)
+const COLOR_TRAIL_BANANA: u32 = rgba(255, 221, 68, 153);    // rgba(255,221,68,0.6)
 const COLOR_TRAIL_FALLBACK: u32 = rgba(255, 255, 255, 51);  // rgba(255,255,255,0.2)
 const COLOR_SHELL: u32 = rgba(0x33, 0x99, 0xff, 255);       // #39f
 const COLOR_SHELL_HILIGHT: u32 = rgba(0xdd, 0xff, 0xff, 255); // #dff
@@ -126,7 +127,8 @@ const COLOR_BLACK: u32 = rgba(0, 0, 0, 255);
 
 // Pickup colors by type index (must match the facade's POWERUP_TYPE_INDEX
 // order): 0 wormhole #a3f, 1 growthSpurt #fd6, 2 iceTrail #9df,
-// 3 poisonTrail #4a2, 4 speedBoost #f93, 5 blueShell #39f.
+// 3 poisonTrail #4a2, 4 speedBoost #f93, 5 blueShell #39f,
+// 6 bananaTrail #fd4.
 function pickupColor(t: i32): u32 {
   if (t == 0) return rgba(0xaa, 0x33, 0xff, 255);
   if (t == 1) return rgba(0xff, 0xdd, 0x66, 255);
@@ -134,11 +136,13 @@ function pickupColor(t: i32): u32 {
   if (t == 3) return rgba(0x44, 0xaa, 0x22, 255);
   if (t == 4) return rgba(0xff, 0x99, 0x33, 255);
   if (t == 5) return rgba(0x33, 0x99, 0xff, 255);
+  if (t == 6) return rgba(0xff, 0xdd, 0x44, 255);
   return COLOR_WHITE;
 }
 function trailColor(t: i32): u32 {
   if (t == 2) return COLOR_TRAIL_ICE;     // iceTrail
   if (t == 3) return COLOR_TRAIL_POISON;  // poisonTrail
+  if (t == 6) return COLOR_TRAIL_BANANA;  // bananaTrail
   return COLOR_TRAIL_FALLBACK;
 }
 

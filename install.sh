@@ -297,9 +297,14 @@ detect_prior_failure() {
 
   # Work out which port the failed install was trying to use.
   local prior_port=""
-  if [ -r "${APP_DIR}/server.js" ]; then
-    prior_port="$(grep -oE 'const PORT = [0-9]+' "${APP_DIR}/server.js" | grep -oE '[0-9]+' | head -n1 || true)"
-  fi
+  # PORT lived in server.js before v3.2.0 and lives in server/config.js
+  # after -- check both so upgrades from either shape are diagnosed.
+  local port_file_candidate
+  for port_file_candidate in "${APP_DIR}/server/config.js" "${APP_DIR}/server.js"; do
+    if [ -z "$prior_port" ] && [ -r "$port_file_candidate" ]; then
+      prior_port="$(grep -oE 'const PORT = [0-9]+' "$port_file_candidate" | grep -oE '[0-9]+' | head -n1 || true)"
+    fi
+  done
   if [ -z "$prior_port" ] && [ -r "$PORT_FILE" ]; then
     prior_port="$(cat "$PORT_FILE" 2>/dev/null || true)"
   fi
@@ -534,8 +539,28 @@ find "${APP_DIR}/powerups" -type f -print0 2>/dev/null | while IFS= read -r -d '
   [ -f "${SRC}/powerups/${rel}" ] || { rm -f "$f"; echo "  Removed stale powerups/${rel} (no longer shipped)."; }
 done
 
-# server.js ships with a default of 8080; set it to the chosen port.
-sed -i "s/const PORT = [0-9]\+;/const PORT = ${CHOSEN_PORT};/" "${APP_DIR}/server.js"
+# Server-side server/ modules (config/state/sim/... -- server.js became a
+# thin entry point over this tree in v3.2.0). Same walk-the-tree rule as
+# powerups/ and public/ above: a missing tree crashes the service on boot
+# with MODULE_NOT_FOUND, and naming files individually is how deploys rot.
+mkdir -p "${APP_DIR}/server"
+find "${SRC}/server" -type f -print0 | while IFS= read -r -d '' f; do
+  rel="${f#"${SRC}"/server/}"
+  dest="${APP_DIR}/server/${rel}"
+  mkdir -p "$(dirname "$dest")"
+  install -m 0644 "$f" "$dest"
+done
+find "${APP_DIR}/server" -type f -print0 2>/dev/null | while IFS= read -r -d '' f; do
+  rel="${f#"${APP_DIR}"/server/}"
+  [ -f "${SRC}/server/${rel}" ] || { rm -f "$f"; echo "  Removed stale server/${rel} (no longer shipped)."; }
+done
+
+# The app ships with a default port of 8080; set it to the chosen port. The
+# PORT const moved from server.js to server/config.js in v3.2.0 -- patch
+# whichever file carries it so both fresh installs and this repo's history
+# keep working.
+sed -i "s/const PORT = [0-9]\+;/const PORT = ${CHOSEN_PORT};/" "${APP_DIR}/server/config.js"
+sed -i "s/const PORT = [0-9]\+;/const PORT = ${CHOSEN_PORT};/" "${APP_DIR}/server.js" 2>/dev/null || true
 
 # config.json ships with a default simHz; set it to the chosen sim rate using
 # the Node runtime this installer just ensured is present. Editing JSON with

@@ -51,7 +51,7 @@
 // to "2d". The 2D context is acquired lazily on the first draw (NOT at load
 // time): a canvas can only ever hold one context type, so grabbing "2d"
 // eagerly would poison the facade's wasm path before it could decide.
-(window.__BUILDS__ = window.__BUILDS__ || {}).render2d = "render2d 2026-07-16.5";
+(window.__BUILDS__ = window.__BUILDS__ || {}).render2d = "render2d 2026-07-17.1";
 const Render2D = (() => {
   const canvas = document.getElementById("game");
   let ctx = null;
@@ -65,12 +65,17 @@ const Render2D = (() => {
     iceTrail: "#9df",
     poisonTrail: "#4a2",
     speedBoost: "#f93",
-    blueShell: "#39f"
+    blueShell: "#39f",
+    bananaTrail: "#fd4"
   };
   // Trail tints sit directly on the black background, so they need far more
   // alpha than an overlay would: the old 0.35-0.4 read as near-black,
   // especially after a fractional downscale.
-  const TRAIL_STYLE = { iceTrail: "rgba(150,225,255,0.65)", poisonTrail: "rgba(110,210,70,0.6)" };
+  const TRAIL_STYLE = {
+    iceTrail: "rgba(150,225,255,0.65)",
+    poisonTrail: "rgba(110,210,70,0.6)",
+    bananaTrail: "rgba(255,221,68,0.6)"
+  };
   // Gap between cells, in internal-resolution pixels. Scales with cell size
   // so it survives fractional CSS downscales (a fixed 1px gap lands between
   // destination pixels below scale 1 and vanishes).

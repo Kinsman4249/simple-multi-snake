@@ -27,18 +27,28 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
   captcha is being solved. Configurable, and can be turned off entirely.
 - Held-powerup glow: a snake carrying a powerup (or an armed wormhole charge)
   glows in that powerup's color -- visible to EVERYONE, not just the holder,
-  so opponents can see what's coming and play around it. Cosmetic-only flag
+  so opponents can see what's coming and play around it. When a snake has
+  BOTH a held powerup and an armed wormhole charge, the glow alternates
+  between the two colors so neither ready cue is hidden. Cosmetic-only flag
   clientFx.heldGlow (default true).
 - Powerups: pickups spawn on the board and fire the instant you collect them --
   the only exception is Speed Boost, which you hold and trigger with your seat's
   activation key (default Right Shift for the arrows seat, Space for the WASD
   seat). Wormhole is also held, as an independent charge, and auto-fires the
-  instant a move would otherwise kill you, teleporting you somewhere safe. The
-  set: Wormhole, Growth Spurt, Speed Boost, Ice Trail, Poison Trail, and Blue
-  Shell (a projectile that hunts whoever is longest -- even the player who fired
-  it). Each type has its own config block and on/off switch. A "What do the
-  powerups do?" button on the join screen explains them, and every powerup can
-  be disabled. See Configuration.
+  instant a move would otherwise kill you (a wall, another snake, or your own
+  body), teleporting you somewhere safe. The set: Wormhole, Growth Spurt,
+  Speed Boost, Ice Trail, Poison Trail, Blue Shell (a projectile that hunts
+  whoever is longest -- even the player who fired it), and Banana Trail (lays
+  banana peels; any snake that slips on one, the layer included, has its
+  controls REVERSED for a few seconds -- the status bar shows a "controls
+  reversed" notice while it lasts). Each type has its own config block and
+  on/off switch. A "What do the powerups do?" button on the join screen
+  explains them, and every powerup can be disabled. See Configuration.
+- Rubberbanding (silent catch-up, config block `rubberband`): food spawns
+  biased toward the shortest living snake, and when the leader is at least
+  30% longer than the next snake, Blue Shells spawn sooner and more often --
+  pressure on the runaway leader from both ends. Both mechanics have their
+  own enable switches and tuning knobs.
 - Powerup feedback on the snake itself (clientFx.powerupFx, default true): a
   brief bright flash in the powerup's color when it fires, a jetstream while
   Speed Boost is active, and a built-in timer -- an active powerup tints the
@@ -264,15 +274,26 @@ Keys:
 - powerups.spawnIntervalMs: how often a pickup spawn is attempted (default 8000).
 - powerups.maxConcurrentPickups: most pickups on the board at once (default 1).
 - powerups.<type>.enabled: on/off per powerup type. Types: wormhole,
-  growthSpurt, speedBoost, iceTrail, poisonTrail, blueShell. All default on.
-  Blue Shell additionally requires at least two people in the game to spawn
-  (a pickup collected while alone fizzles into +1 growth instead). Each
-  type has its own tuning keys alongside enabled -- for example
-  growthSpurt.durationMs / foodMultiplier / killBonusGrowth,
+  growthSpurt, speedBoost, iceTrail, poisonTrail, blueShell, bananaTrail.
+  All default on. Blue Shell additionally requires at least two people in
+  the game to spawn (a pickup collected while alone fizzles into +1 growth
+  instead). Each type has its own tuning keys alongside enabled -- for
+  example growthSpurt.durationMs / foodMultiplier / killBonusGrowth,
   speedBoost.durationMs / speedMult, iceTrail.slowMultiplierPerStack /
-  minSpeedMultiplier / tileDurationMs, wormhole.lookaheadDepth, and
-  blueShell.segmentLossPercent / explosionRadius / splashLossPercent. See the
-  powerups block in config.json for the full set and defaults.
+  minSpeedMultiplier / tileDurationMs, wormhole.lookaheadDepth,
+  blueShell.segmentLossPercent / explosionRadius / splashLossPercent, and
+  bananaTrail.invertDurationMs / tileDurationMs. See the powerups block in
+  config.json for the full set and defaults.
+- rubberband.foodBias: bias food placement toward the shortest living snake
+  (enabled default true). A free cell within `radius` (default 15, Chebyshev)
+  of the trailing snake's head is always accepted; farther cells only with
+  probability 1/strength (default 3). Inert with one player or all-equal
+  lengths.
+- rubberband.shellPressure: when the longest snake is at least `leadRatio`
+  (default 1.3, i.e. 30% longer) times the second-longest, Blue Shells spawn
+  at spawnIntervalMs x intervalScale (default 0.5) and the spawn type roll
+  weights blueShell at `typeWeight` (default 4) vs 1 for the others. Never
+  overrides the two-player spawn gate.
 - enableDebug: master switch for the debug system (default true). When set
   to false, the server never builds or logs a debug line (a single null
   check at every call site) and the client never constructs the DEBUG
@@ -375,6 +396,7 @@ sudo mkdir -p /opt/multisnake/public
 sudo cp server.js config.json package.json /opt/multisnake/
 sudo cp -r public/. /opt/multisnake/public/
 sudo cp -r powerups/. /opt/multisnake/powerups/
+sudo cp -r server/. /opt/multisnake/server/
 cd /opt/multisnake
 sudo npm install --omit=dev
 
@@ -391,17 +413,20 @@ alone. The client is split across `public/index.html` and `public/js/*.js`
 browser console, even though the Node process itself comes up fine.
 
 Likewise copy the whole `powerups/` directory (`base.js`, `index.js`, and one
-file per powerup): `server.js` does `require("./powerups")` at startup, so a
-missing tree crashes the service on boot with `Cannot find module
-'./powerups'` before it ever listens.
+file per powerup) AND the whole `server/` directory (the server core split
+into modules in v3.2.0 -- config.js, state.js, sim.js, lifecycle.js, net.js,
+highscores.js, captcha.js): `server.js` is a thin entry point that requires
+both trees at startup, so a missing one crashes the service on boot with
+`Cannot find module` before it ever listens.
 
 ### 3. Choose the listening port
 
-server.js ships with a default of 8080 (const PORT = 8080;). If 8080 is already
-used by another service, check what holds it and pick a free port:
+The app ships with a default of 8080 (`const PORT = 8080;` in
+server/config.js). If 8080 is already used by another service, check what
+holds it and pick a free port:
 
 sudo ss -ltnp | grep ':8080'
-sudo sed -i 's/const PORT = 8080;/const PORT = 8091;/' /opt/multisnake/server.js
+sudo sed -i 's/const PORT = 8080;/const PORT = 8091;/' /opt/multisnake/server/config.js
 
 Use the same port everywhere below in place of 8080.
 

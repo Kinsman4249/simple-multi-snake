@@ -23,7 +23,7 @@
 //     debug button/panel/recording are never created at all -- the only
 //     residue is one boolean test at startup.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-16.3";
+(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-17.1";
 let CLIENT_FX = { inputFlash: true, inputFlashMs: 90, correctionGlide: true, correctionGlideMs: 90, boostTrail: true, slideDust: true, heldGlow: true, powerupFx: true };
 let CLIENT_RENDER = { interpolate: true, renderer: "auto" };
 let BOOST_CFG = { enabled: true, boostSpeed: 2.0, driftMs: 250, rampMs: 400, holdGraceMs: 120 };
@@ -117,6 +117,17 @@ const boostOnSince = [0, 0];
 function boostEngaged(localIdx) {
   return boostOn[localIdx] &&
     (performance.now() - boostOnSince[localIdx]) > (BOOST_CFG.holdGraceMs || 0);
+}
+// Banana-trail inversion (server-authoritative): while this seat's player is
+// flagged `inverted`, the server flips every dir it receives, so the one-cell
+// predictor must NOT pre-play the raw keypress -- reuse the drift's `delayed`
+// mechanism (send + ack normally, render the authoritative body).
+function seatInverted(localIdx) {
+  const entry = myLocals && myLocals[localIdx];
+  if (!entry || entry.role !== "player") return false;
+  const { curr } = Net.snapshots();
+  const p = curr && curr.players && curr.players[entry.slot];
+  return !!(p && p.inverted);
 }
 // Blue Shell explosions: state.explosions is a one-shot list (populated only
 // on the broadcast where an impact happened, per server.js). Each one is
@@ -274,7 +285,7 @@ function steerTouch(dir) {
   if (entry.role !== "player") return;
   const p = myPlayers.get(0);
   if (!p) return;
-  const accepted = p.queueInput(dir, boostEngaged(0));
+  const accepted = p.queueInput(dir, boostEngaged(0) || seatInverted(0));
   if (accepted && CLIENT_FX.inputFlash) lastInputFlash[0] = { dir, t: performance.now() };
 }
 function initSwipeSteering() {
@@ -436,8 +447,9 @@ document.addEventListener("keydown", e => {
     if (!wasHeld) {
       // A turn typed while boost is ENGAGED (past the hold grace) drifts the
       // body server-side; tell the predictor not to pre-play it (see
-      // predict.js). Inside the grace it's a plain, predictable turn.
-      const accepted = myPlayers.get(localIdx).queueInput(dir, boostEngaged(localIdx));
+      // predict.js). Inside the grace it's a plain, predictable turn. A turn
+      // typed while banana-INVERTED is flipped server-side -- same rule.
+      const accepted = myPlayers.get(localIdx).queueInput(dir, boostEngaged(localIdx) || seatInverted(localIdx));
       if (accepted && CLIENT_FX.inputFlash) lastInputFlash[localIdx] = { dir, t: performance.now() };
     }
     if (key.startsWith("arrow")) e.preventDefault();

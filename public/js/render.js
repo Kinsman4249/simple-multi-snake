@@ -24,12 +24,12 @@
 //
 // Display scaling (fitCanvas) is CSS-only and identical for both paths.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-16.5 (wasm facade)";
+(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-17.1 (wasm facade)";
 const Render = (() => {
   const canvas = document.getElementById("game");
   const POWERUP_STYLE = Render2D.POWERUP_STYLE;
   // Must match wasm/renderer.ts pickupColor()/trailColor() index order.
-  const POWERUP_TYPE_INDEX = { wormhole: 0, growthSpurt: 1, iceTrail: 2, poisonTrail: 3, speedBoost: 4, blueShell: 5 };
+  const POWERUP_TYPE_INDEX = { wormhole: 0, growthSpurt: 1, iceTrail: 2, poisonTrail: 3, speedBoost: 4, blueShell: 5, bananaTrail: 6 };
   const DIR_INDEX = { up: 0, down: 1, left: 2, right: 3 };
   const PLAYER_STRIDE_I32 = 16;   // 64 bytes (activeIdx i32 + activePct f32, then wormholeCharge i32 + pad)
   const PLAYER_STRIDE_B = PLAYER_STRIDE_I32 * 4;
