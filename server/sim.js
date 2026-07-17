@@ -6,7 +6,7 @@
 // ============================================================
 const {
   CFG, SIM_MS, BOOST, boostRamp, POWERUPS, POWERUP_TYPES, POWERUP_MODULES,
-  HELD_TYPES, WALL_GRACE_TICKS, MIN_SNAKE_LENGTH, dlog, PERF, RUBBERBAND
+  HELD_TYPES, TRAIL_TYPES, WALL_GRACE_TICKS, MIN_SNAKE_LENGTH, dlog, PERF, RUBBERBAND
 } = require("./config");
 const {
   S, cellFree, placeFood, growSegment, removeSegments, currentLeaderIndex,
@@ -469,13 +469,21 @@ function applyMovementAndFood(active, newHeads, died, stalled) {
         const before = s.body.length;
         POWERUP_MODULES.poisonTrail.onCross(s, null, trail, MIN_SNAKE_LENGTH);
         if (s.body.length < before) dlog && dlog("poison trail crossed", { slot: i, length: s.body.length });
+      } else if (trail.type === "bananaTrail") {
+        // Slipping on a banana REVERSES the crosser's controls for a while
+        // (the transform itself lives in the dir handler; this just stamps
+        // the sim-clock window, same shape as the ice slow). Re-crossing
+        // refreshes the window.
+        POWERUP_MODULES.bananaTrail.onCross(s);
+        s.invertUntilTick = S.moveSeq + Math.ceil(POWERUPS.bananaTrail.invertDurationMs / currentMoveIntervalMs());
+        dlog && dlog("banana trail crossed", { slot: i, untilTick: s.invertUntilTick });
       }
     }
     // Trail laying: one tile per movement step while this mover's
     // activePowerup is a trail type, laid at the vacated (previous) cell so
     // the trail sits behind the snake rather than under its new head. One
     // entry per (x,y) -- a later lay on an occupied cell replaces it.
-    if (s.activePowerup && (s.activePowerup.type === "iceTrail" || s.activePowerup.type === "poisonTrail")) {
+    if (s.activePowerup && TRAIL_TYPES.has(s.activePowerup.type)) {
       const type = s.activePowerup.type;
       const layCell = s.body[1] || h;
       S.trails = S.trails.filter(t => !(t.x === layCell.x && t.y === layCell.y));

@@ -5,7 +5,7 @@
 const {
   BUILD, SIM_HZ, CFG, BOOST, boostRamp, POWERUPS, POWERUP_MODULES, PERF
 } = require("./config");
-const { S, currentMoveIntervalMs } = require("./state");
+const { S, currentMoveIntervalMs, isInverted } = require("./state");
 const { getHighScores } = require("./highscores");
 
 function sendTo(ws, msg) { if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg)); }
@@ -50,6 +50,9 @@ function broadcastState() {
       // activation flash). Cleared right after this broadcast.
       activated: s.activatedFx || undefined,
       iceStacks: s.iceStacks,
+      // Banana-trail control inversion, while it lasts (drives the client's
+      // "controls reversed" chip + head ring; omitted when not slipping).
+      inverted: isInverted(s) ? true : undefined,
       teleport: s.teleportedThisTick ? true : undefined
     } : null),
     highScores: { daily: highScores.daily, allTime: highScores.allTime }

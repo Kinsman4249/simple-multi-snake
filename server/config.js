@@ -147,7 +147,20 @@ POWERUPS.blueShell = Object.assign(
   { enabled: true, segmentLossPercent: 0.33, explosionRadius: 3, splashLossPercent: 1 / 6, moveIntervalMs: 90 },
   POWERUPS.blueShell || {}
 );
-const POWERUP_TYPES = ["wormhole", "growthSpurt", "iceTrail", "poisonTrail", "speedBoost", "blueShell"];
+// Banana Trail (Phase 11): lays tiles like ice/poison; crossing one INVERTS
+// the crosser's controls for invertDurationMs (see the dir handler + the
+// module doc in powerups/bananaTrail.js).
+POWERUPS.bananaTrail = Object.assign(
+  { enabled: true, durationMs: 8000, tileDurationMs: 10000, invertDurationMs: 4000 },
+  POWERUPS.bananaTrail || {}
+);
+// ORDER IS LOAD-BEARING: index order must match the renderers' color tables
+// (render.js POWERUP_TYPE_INDEX, render2d.js POWERUP_STYLE, wasm
+// pickupColor/trailColor). New types are always APPENDED.
+const POWERUP_TYPES = ["wormhole", "growthSpurt", "iceTrail", "poisonTrail", "speedBoost", "blueShell", "bananaTrail"];
+// Trail-laying powerups: while one is the activePowerup, each movement step
+// lays a tile of that type at the vacated cell (see applyMovementAndFood).
+const TRAIL_TYPES = new Set(["iceTrail", "poisonTrail", "bananaTrail"]);
 // Short, ESL-friendly title/description per powerup, sourced from each
 // module (not duplicated here) so the client's info popup and the modules
 // themselves can never drift out of sync with each other.
@@ -218,7 +231,7 @@ module.exports = {
   SIM_HZ, SIM_MS, MOVE, MAX_LOCAL_PLAYERS, CLIENT_FX, CLIENT_RENDER,
   WALL_GRACE_TICKS, INITIALS_TIMEOUT_MS, SPECTATOR_IDLE_MS, PLAYER_IDLE_MS,
   JOIN_OFFER_MS, INPUT_BUFFER, BOOST, boostRamp, MIN_SNAKE_LENGTH,
-  POWERUPS, POWERUP_TYPES, POWERUP_INFO, HELD_TYPES, POWERUP_MODULES,
+  POWERUPS, POWERUP_TYPES, POWERUP_INFO, HELD_TYPES, TRAIL_TYPES, POWERUP_MODULES,
   ENABLE_DEBUG, dlog, PERF, COLORS, DIR_VECTORS, TEST_SPAWNS, TEST_HOOKS,
   RUBBERBAND
 };

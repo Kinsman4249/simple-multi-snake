@@ -133,6 +133,7 @@ function spawnSnake(slotIndex) {
   s.teleportedThisTick = false;
   s.driftDir = null;
   s.driftUntilMs = 0;
+  s.invertUntilTick = 0;
 }
 function newPlayerSlot(connId) {
   return {
@@ -141,9 +142,12 @@ function newPlayerSlot(connId) {
     boost: false, boostSince: null, moveAccumMs: 0, lastInputAt: Date.now(),
     heldPowerup: null, wormholeCharge: false, activePowerup: null, activatedFx: null,
     iceStacks: 0, iceExpiresAtTick: 0, teleportedThisTick: false,
-    driftDir: null, driftUntilMs: 0
+    driftDir: null, driftUntilMs: 0, invertUntilTick: 0
   };
 }
+// Banana-trail control inversion status (sim-clock based, like the ice
+// slow). Checked at dir-enqueue time and in the broadcast.
+function isInverted(s) { return S.moveSeq < s.invertUntilTick; }
 function growSegment(s) {
   const tail = s.body[s.body.length - 1];
   s.body.push({ ...tail });
@@ -214,5 +218,5 @@ function currentMoveIntervalMs() {
 module.exports = {
   S, cellFree, placeFood, spawnSnake, newPlayerSlot, growSegment,
   removeSegments, currentLeaderIndex, currentTrailingIndex, playerSeatCount,
-  inBounds, hitsBody, currentMoveIntervalMs
+  inBounds, hitsBody, currentMoveIntervalMs, isInverted
 };

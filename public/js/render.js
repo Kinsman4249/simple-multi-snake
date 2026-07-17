@@ -31,7 +31,7 @@ const Render = (() => {
   // Must match wasm/renderer.ts pickupColor()/trailColor() index order.
   const POWERUP_TYPE_INDEX = { wormhole: 0, growthSpurt: 1, iceTrail: 2, poisonTrail: 3, speedBoost: 4, blueShell: 5 };
   const DIR_INDEX = { up: 0, down: 1, left: 2, right: 3 };
-  const PLAYER_STRIDE_I32 = 14;   // 56 bytes (added activeIdx i32 + activePct f32)
+  const PLAYER_STRIDE_I32 = 16;   // 64 bytes (activeIdx i32 + activePct f32, then wormholeCharge i32 + pad)
   const PLAYER_STRIDE_B = PLAYER_STRIDE_I32 * 4;
   const SNAP_PLAYERS_I32 = 8;     // header is 32 bytes
   const MAX_PLAYERS = 8, MAX_SEGS = 16384, MAX_TRAILS = 8192, MAX_PICKUPS = 32, MAX_SHELLS = 16;
@@ -148,12 +148,16 @@ const Render = (() => {
       const len = Math.min(body.length, MAX_SEGS - segOff);
       i32[po + 9] = len;
       i32[po + 10] = segOff;
-      const heldType = p.heldPowerup || (p.wormholeCharge ? "wormhole" : null);
-      i32[po + 11] = heldType != null && heldType in POWERUP_TYPE_INDEX ? POWERUP_TYPE_INDEX[heldType] : -1;
+      // heldIdx (+11) is the HELD powerup only; the wormhole charge rides in
+      // its own flag (+14) so the wasm can alternate the glow between both
+      // colors when both are ready (must match render2d's readyGlows order:
+      // held first, wormhole second).
+      i32[po + 11] = p.heldPowerup != null && p.heldPowerup in POWERUP_TYPE_INDEX ? POWERUP_TYPE_INDEX[p.heldPowerup] : -1;
       // activeIdx (+12) and activePct (+13): the currently-active timed powerup
       // for the tail-drain countdown / speed jetstream (see wasm player loop).
       i32[po + 12] = p.activePowerup != null && p.activePowerup in POWERUP_TYPE_INDEX ? POWERUP_TYPE_INDEX[p.activePowerup] : -1;
       f32[po + 13] = typeof p.activePct === "number" ? p.activePct : 0;
+      i32[po + 14] = p.wormholeCharge ? 1 : 0;
       for (let s = 0; s < len; s++) {
         i16[bodyBase16 + ((segOff + s) << 1)] = body[s].x;
         i16[bodyBase16 + ((segOff + s) << 1) + 1] = body[s].y;

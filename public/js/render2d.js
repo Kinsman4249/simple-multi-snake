@@ -297,7 +297,14 @@ const Render2D = (() => {
       // shared broadcast precisely so opponents can plan counterplay).
       // Drawn at grid positions (not interpolated) -- a soft halo reads fine
       // slightly trailing a gliding snake, and it keeps 2D/wasm parity exact.
-      const heldType = p.heldPowerup || (p.wormholeCharge ? "wormhole" : null);
+      // With BOTH a held powerup and a wormhole charge ready, the glow
+      // ALTERNATES between their colors (600ms each, keyed off the shared
+      // clock so wasm parity stays exact) -- maintainer request 2026-07-16:
+      // the charge must stay visible even while something is held.
+      const readyGlows = [];
+      if (p.heldPowerup) readyGlows.push(p.heldPowerup);
+      if (p.wormholeCharge) readyGlows.push("wormhole");
+      const heldType = readyGlows.length ? readyGlows[Math.floor(now / 600) % readyGlows.length] : null;
       if (opts && opts.heldGlow && p.alive && heldType) {
         const cs2 = grid.cellSize;
         const cell = cs2 - cellGap;

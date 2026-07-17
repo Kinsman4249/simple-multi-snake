@@ -25,15 +25,16 @@
 //   20 nTrails    i32
 //   24 nPickups   i32
 //   28 nShells    i32
-//   32 players[MAX_PLAYERS] stride 56:
+//   32 players[MAX_PLAYERS] stride 64:
 //        0 present i32, 4 alive i32, 8 colorHead u32 (ABGR byte order:
 //        r=low byte), 12 colorBody u32, 16 dirX i32, 20 dirY i32,
 //        24 moveMs f32, 28 boost i32, 32 sliding i32, 36 bodyLen i32,
 //        40 bodyOff i32 (segment index into body pool), 44 heldIdx i32
-//        (held-powerup type index for the glow, -1 = none; wormholeCharge
-//        maps to the wormhole index), 48 activeIdx i32 (active-powerup type
-//        index for the tail-drain/speed jetstream, -1 = none), 52 activePct
-//        f32 (fraction of the active powerup remaining, 1..0)
+//        (HELD-powerup type index for the glow, -1 = none), 48 activeIdx i32
+//        (active-powerup type index for the tail-drain/speed jetstream,
+//        -1 = none), 52 activePct f32 (fraction of the active powerup
+//        remaining, 1..0), 56 wormholeCharge i32 (glow alternates between
+//        the held color and the wormhole color when both are ready), 60 pad
 //   +players: body pool, MAX_SEGS x {x:i16, y:i16}
 //   +pool: trails, MAX_TRAILS stride 8: {x:i16, y:i16, type:i16, pad}
 //   +trails: pickups, MAX_PICKUPS stride 16: {x:i32, y:i32, type:i32, id:i32}
@@ -77,10 +78,10 @@ const MAX_LOCALS: i32 = 4;
 const MAX_LOCAL_SEGS: i32 = 16384;
 const INSTANCE_CAP: i32 = 40960;
 
-// snapshot-internal offsets. Player stride 56: fields 0..44 as before, plus
-// +48 activeIdx i32 (active-powerup type index, -1 none) and +52 activePct f32.
+// snapshot-internal offsets. Player stride 64: fields 0..52 as before, plus
+// +56 wormholeCharge i32 (and 4 bytes of pad to stay 8-aligned).
 const SNAP_PLAYERS: i32 = 32;
-const PLAYER_STRIDE: i32 = 56;
+const PLAYER_STRIDE: i32 = 64;
 const SNAP_BODY: i32 = SNAP_PLAYERS + MAX_PLAYERS * PLAYER_STRIDE;
 const SNAP_TRAILS: i32 = SNAP_BODY + MAX_SEGS * 4;
 const SNAP_PICKUPS: i32 = SNAP_TRAILS + MAX_TRAILS * 8;
@@ -331,12 +332,20 @@ export function render(now: f64, which: i32): i32 {
     const prevOff = smooth ? load<i32>(pPrev, 40) : 0;
     // Held-powerup glow: a pulsing halo in the powerup's color under every
     // segment, visible to EVERYONE (the server broadcasts heldPowerup to all
-    // players precisely so opponents can plan counterplay).
+    // players precisely so opponents can plan counterplay). When BOTH a held
+    // powerup and a wormhole charge are ready, the glow alternates colors
+    // every 600ms -- same list order and clock formula as render2d.js's
+    // readyGlows (held first, wormhole second) so parity stays exact.
     const heldIdx = load<i32>(p, 44);
-    if (heldGlow && alive && heldIdx >= 0) {
+    const wormCharge = load<i32>(p, 56) != 0;
+    if (heldGlow && alive && (heldIdx >= 0 || wormCharge)) {
+      let glowIdx = heldIdx >= 0 ? heldIdx : 0; // 0 = wormhole type index
+      if (heldIdx >= 0 && wormCharge) {
+        if (<i32>Math.floor(now / 600.0) % 2 == 1) glowIdx = 0;
+      }
       const glowAlpha = <f32>(0.22 + 0.13 * Math.sin(now / 250.0 + <f64>i));
       const grow = cs * <f32>0.35;
-      const glowColor = pickupColor(heldIdx);
+      const glowColor = pickupColor(glowIdx);
       for (let si = 0; si < bodyLen; si++) {
         inst(<f32>segX(bodyPool, bodyOff + si) * cs - grow, <f32>segY(bodyPool, bodyOff + si) * cs - grow, cell + grow * 2, cell + grow * 2, glowColor, glowAlpha, KIND_ELLIPSE, 0, 0);
       }

@@ -4,5 +4,6 @@ module.exports = {
   iceTrail: require("./iceTrail"),
   poisonTrail: require("./poisonTrail"),
   speedBoost: require("./speedBoost"),
-  blueShell: require("./blueShell")
+  blueShell: require("./blueShell"),
+  bananaTrail: require("./bananaTrail")
 };

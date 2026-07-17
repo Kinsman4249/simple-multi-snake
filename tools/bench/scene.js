@@ -40,9 +40,11 @@
         slot: s, alive: s !== 3, score: 10 * s,
         color: PLAYER_COLORS[s], dir: { x: 1, y: 0 }, body,
         moveMs: 100, boost: true, sliding: s === 1,
-        // exercise the held-powerup glow: one held type, one wormhole charge
+        // exercise the held-powerup glow: slot 1 holds a type AND carries a
+        // wormhole charge (the alternating both-ready glow), slot 2 is
+        // charge-only.
         heldPowerup: s === 1 ? "speedBoost" : null,
-        wormholeCharge: s === 2,
+        wormholeCharge: s === 1 || s === 2,
         // exercise the tail-drain countdown + speedBoost active jetstream:
         // slot 0 (local, non-smooth branch) speedBoost, slot 2 (smooth branch)
         // growthSpurt, at different remaining fractions.
@@ -85,7 +87,7 @@
     const scene = {
       grid, prev, curr, localBodies, eatenKeys: [],
       fx: { flashes: [], glides: [], explosions: [], powerFlashes: [] },
-      opts: { interpolate: true, boostTrail: true, slideDust: true, powerupFx: true },
+      opts: { interpolate: true, boostTrail: true, slideDust: true, powerupFx: true, heldGlow: true },
       // Refresh time-anchored pieces each frame: keeps interpolation t~0.5,
       // flash alpha ~0.5, glide mid-flight -- stable worst-case work. Pass a
       // FROZEN `now` for parity screenshots.

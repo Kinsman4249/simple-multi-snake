@@ -38,7 +38,7 @@ const {
   ENABLE_DEBUG, BOOST, boostRamp, POWERUPS, POWERUP_TYPES, POWERUP_INFO,
   INPUT_BUFFER, PERF, TEST_HOOKS
 } = require("./server/config");
-const { S, placeFood } = require("./server/state");
+const { S, placeFood, isInverted } = require("./server/state");
 const { makeCaptcha, verifyCaptcha, issueJoinToken, consumeJoinToken } = require("./server/captcha");
 const { sendTo, broadcastState } = require("./server/net");
 const {
@@ -161,8 +161,16 @@ wss.on("connection", ws => {
       if (!slot || !slot.alive) return;
       slot.lastInputAt = Date.now();
       const dirMap = { up: { x: 0, y: -1 }, down: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 } };
-      const nd = dirMap[msg.dir];
+      let nd = dirMap[msg.dir];
       if (!nd) return;
+      // Banana-trail inversion: applied BEFORE the reversal/duplicate checks,
+      // deliberately -- left/right and up/down swap, while the "keep going
+      // forward" key inverts into a reversal and is rejected below (the snake
+      // coasts; slipping never introduces a new self-death mode). Commit at
+      // keypress: a press made while inverted stays inverted even if the
+      // effect expires before the queue drains (same philosophy as the drift
+      // tag further down).
+      if (isInverted(slot)) nd = { x: -nd.x, y: -nd.y };
       const cseq = Number.isFinite(msg.cseq) ? msg.cseq : null;
       if (slot.inputQueue.length >= INPUT_BUFFER) {
         if (cseq != null && cseq > slot.lastAck) slot.lastAck = cseq;
