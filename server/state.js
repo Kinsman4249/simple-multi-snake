@@ -5,7 +5,7 @@
 // writes THE SAME state -- reassignments like `S.trails = S.trails.filter`
 // stay visible everywhere, which plain destructured bindings would break.
 // ============================================================
-const { CFG, MOVE, MIN_SNAKE_LENGTH, DIR_VECTORS, TEST_SPAWNS } = require("./config");
+const { CFG, MOVE, MIN_SNAKE_LENGTH, DIR_VECTORS, TEST_SPAWNS, RUBBERBAND } = require("./config");
 
 const S = {
   slots: new Array(CFG.maxPlayers).fill(null),
@@ -37,13 +37,47 @@ function cellFree(x, y, ignoreSlotIndex = -1) {
   }
   return true;
 }
+// Food placement. Uniform rejection sampling over free cells -- except when
+// the rubberband food bias is active (>= 2 living snakes with a real length
+// gap): then a free candidate within `radius` (Chebyshev) of the TRAILING
+// snake's head is always accepted, while a farther one is only accepted with
+// probability 1/strength, so food lands near whoever is behind more often.
+// The catch-up mechanic is silent by design (maintainer, 2026-07-16).
+// Bounded: hard 500-attempt cap with a first-free-cell fallback (bias is
+// abandoned past 300 attempts), plus a full-board scan if sampling never hit
+// a free cell -- the pre-split placeFood loop was uncapped and could
+// in principle spin on a pathologically full board.
 function placeFood() {
-  let x, y;
-  do {
-    x = Math.floor(Math.random() * CFG.grid.cols);
-    y = Math.floor(Math.random() * CFG.grid.rows);
-  } while (!cellFree(x, y) || S.powerupPickups.some(p => p.x === x && p.y === y));
-  S.food = { x, y };
+  const fb = RUBBERBAND.foodBias;
+  let target = null;
+  if (fb.enabled) {
+    const ti = currentTrailingIndex();
+    const li = currentLeaderIndex();
+    if (ti != null && li != null && ti !== li &&
+        S.slots[li].body.length > S.slots[ti].body.length) {
+      target = S.slots[ti].body[0];
+    }
+  }
+  let chosen = null, fallback = null;
+  for (let attempts = 0; attempts < 500; attempts++) {
+    const x = Math.floor(Math.random() * CFG.grid.cols);
+    const y = Math.floor(Math.random() * CFG.grid.rows);
+    if (!cellFree(x, y) || S.powerupPickups.some(p => p.x === x && p.y === y)) continue;
+    if (!fallback) fallback = { x, y };
+    if (!target || attempts >= 300) { chosen = { x, y }; break; }
+    const d = Math.max(Math.abs(x - target.x), Math.abs(y - target.y));
+    if (d <= fb.radius || Math.random() < 1 / fb.strength) { chosen = { x, y }; break; }
+  }
+  if (!chosen) chosen = fallback;
+  if (!chosen) {
+    // Sampling never found a free cell: linear scan (near-full board).
+    for (let y = 0; y < CFG.grid.rows && !chosen; y++) {
+      for (let x = 0; x < CFG.grid.cols; x++) {
+        if (cellFree(x, y) && !S.powerupPickups.some(p => p.x === x && p.y === y)) { chosen = { x, y }; break; }
+      }
+    }
+  }
+  if (chosen) S.food = chosen;
 }
 function spawnSnake(slotIndex) {
   let len = MIN_SNAKE_LENGTH;
@@ -130,6 +164,16 @@ function currentLeaderIndex() {
   }
   return bestIdx;
 }
+// The living snake with the FEWEST segments (inverse of currentLeaderIndex,
+// same tie rule). Who the rubberband food bias helps.
+function currentTrailingIndex() {
+  let worstIdx = null, worstLen = Infinity;
+  for (let i = 0; i < S.slots.length; i++) {
+    const s = S.slots[i];
+    if (s && s.alive && s.body.length < worstLen) { worstLen = s.body.length; worstIdx = i; }
+  }
+  return worstIdx;
+}
 // How many connected PEOPLE are still in the game: seats in role "player"
 // (alive OR dead awaiting respawn -- the seat persists through the
 // spectatorPromoteDelayMs window) plus seats parked as "held" during an
@@ -169,6 +213,6 @@ function currentMoveIntervalMs() {
 
 module.exports = {
   S, cellFree, placeFood, spawnSnake, newPlayerSlot, growSegment,
-  removeSegments, currentLeaderIndex, playerSeatCount, inBounds, hitsBody,
-  currentMoveIntervalMs
+  removeSegments, currentLeaderIndex, currentTrailingIndex, playerSeatCount,
+  inBounds, hitsBody, currentMoveIntervalMs
 };

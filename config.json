@@ -54,5 +54,9 @@
     "poisonTrail": { "enabled": true, "durationMs": 8000, "tileDurationMs": 10000 },
     "speedBoost":  { "enabled": true, "durationMs": 6000, "speedMult": 1.6 },
     "blueShell":   { "enabled": true, "segmentLossPercent": 0.33, "explosionRadius": 3, "splashLossPercent": 0.1667, "moveIntervalMs": 90 }
+  },
+  "rubberband": {
+    "foodBias":      { "enabled": true, "radius": 15, "strength": 3 },
+    "shellPressure": { "enabled": true, "leadRatio": 1.3, "typeWeight": 4, "intervalScale": 0.5 }
   }
 }

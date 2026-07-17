@@ -6,7 +6,7 @@
 // ============================================================
 const {
   CFG, SIM_MS, BOOST, boostRamp, POWERUPS, POWERUP_TYPES, POWERUP_MODULES,
-  HELD_TYPES, WALL_GRACE_TICKS, MIN_SNAKE_LENGTH, dlog, PERF
+  HELD_TYPES, WALL_GRACE_TICKS, MIN_SNAKE_LENGTH, dlog, PERF, RUBBERBAND
 } = require("./config");
 const {
   S, cellFree, placeFood, growSegment, removeSegments, currentLeaderIndex,
@@ -20,16 +20,47 @@ const { lifecycleSweep, handleDeath } = require("./lifecycle");
 // per spawn, rejection-sampled onto a cell with no snake/food/other pickup.
 function maybeSpawnPowerupPickup(now) {
   if (S.lastPowerupSpawnAt === null) S.lastPowerupSpawnAt = now;
-  if (now - S.lastPowerupSpawnAt < POWERUPS.spawnIntervalMs) return;
-  if (S.powerupPickups.length >= POWERUPS.maxConcurrentPickups) return;
   let enabledTypes = POWERUP_TYPES.filter(t => POWERUPS[t].enabled);
   // Blue shell needs someone to fire it AT: with fewer than two people still
   // in the game (see playerSeatCount -- dead-awaiting-respawn counts,
   // disconnected does not) the shell never spawns. The pickup handler has a
   // matching fizzle for shells already on the board when the count drops.
+  // ORDER MATTERS: this gate runs BEFORE the rubberband shell pressure below,
+  // so pressure can never re-introduce a blueShell the gate removed.
   if (playerSeatCount() < 2) enabledTypes = enabledTypes.filter(t => t !== "blueShell");
+  // Rubberband shell pressure: leader >= leadRatio x the second-longest
+  // living snake -> shells spawn sooner (interval scaled down) and the type
+  // roll is weighted toward blueShell. Needs a second living snake by
+  // construction (second > 0).
+  const sp = RUBBERBAND.shellPressure;
+  let pressure = false;
+  if (sp.enabled && enabledTypes.includes("blueShell")) {
+    let best = 0, second = 0;
+    for (const s of S.slots) {
+      if (!s || !s.alive) continue;
+      const len = s.body.length;
+      if (len > best) { second = best; best = len; }
+      else if (len > second) second = len;
+    }
+    pressure = second > 0 && best >= sp.leadRatio * second;
+  }
+  const effectiveIntervalMs = POWERUPS.spawnIntervalMs * (pressure ? sp.intervalScale : 1);
+  if (now - S.lastPowerupSpawnAt < effectiveIntervalMs) return;
+  if (S.powerupPickups.length >= POWERUPS.maxConcurrentPickups) return;
   if (enabledTypes.length === 0) { S.lastPowerupSpawnAt = now; return; }
-  const type = enabledTypes[Math.floor(Math.random() * enabledTypes.length)];
+  let type;
+  if (pressure) {
+    let totalW = 0;
+    for (const t of enabledTypes) totalW += t === "blueShell" ? sp.typeWeight : 1;
+    let roll = Math.random() * totalW;
+    type = enabledTypes[enabledTypes.length - 1];
+    for (const t of enabledTypes) {
+      roll -= t === "blueShell" ? sp.typeWeight : 1;
+      if (roll < 0) { type = t; break; }
+    }
+  } else {
+    type = enabledTypes[Math.floor(Math.random() * enabledTypes.length)];
+  }
   let x, y, attempts = 0;
   do {
     x = Math.floor(Math.random() * CFG.grid.cols);

@@ -181,6 +181,20 @@ const PERF = process.env.SNAKE_PERF ? {
   bytesBase: 0, bytesTotal: 0, sends: 0
 } : null;
 const CLIENT_RENDER = Object.assign({ interpolate: true, renderer: "auto" }, CFG.clientRender || {});
+// Rubberbanding (Phase 8, maintainer-specced): silent catch-up mechanics.
+//   foodBias: food placement prefers cells near the SHORTEST living snake's
+//     head -- a free cell within `radius` (Chebyshev) is always accepted, a
+//     farther one only with probability 1/strength. Inert with one player
+//     or all-equal lengths (see placeFood).
+//   shellPressure: when the leader is at least `leadRatio` times the length
+//     of the second-longest snake (1.3 = "30% longer"), blue shells spawn
+//     sooner (spawn interval x intervalScale) and the type roll weights
+//     blueShell at `typeWeight` vs 1 for everything else. Runs AFTER the
+//     presence gate -- pressure can never re-introduce a blueShell the gate
+//     removed.
+const RUBBERBAND = Object.assign({}, CFG.rubberband || {});
+RUBBERBAND.foodBias = Object.assign({ enabled: true, radius: 15, strength: 3 }, RUBBERBAND.foodBias || {});
+RUBBERBAND.shellPressure = Object.assign({ enabled: true, leadRatio: 1.3, typeWeight: 4, intervalScale: 0.5 }, RUBBERBAND.shellPressure || {});
 
 const COLORS = [
   { head: "#6f6", body: "#3a3" },
@@ -205,5 +219,6 @@ module.exports = {
   WALL_GRACE_TICKS, INITIALS_TIMEOUT_MS, SPECTATOR_IDLE_MS, PLAYER_IDLE_MS,
   JOIN_OFFER_MS, INPUT_BUFFER, BOOST, boostRamp, MIN_SNAKE_LENGTH,
   POWERUPS, POWERUP_TYPES, POWERUP_INFO, HELD_TYPES, POWERUP_MODULES,
-  ENABLE_DEBUG, dlog, PERF, COLORS, DIR_VECTORS, TEST_SPAWNS, TEST_HOOKS
+  ENABLE_DEBUG, dlog, PERF, COLORS, DIR_VECTORS, TEST_SPAWNS, TEST_HOOKS,
+  RUBBERBAND
 };
