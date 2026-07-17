@@ -154,10 +154,16 @@ POWERUPS.bananaTrail = Object.assign(
   { enabled: true, durationMs: 8000, tileDurationMs: 10000, invertDurationMs: 4000 },
   POWERUPS.bananaTrail || {}
 );
+// Hello World: the powerups/README.md teaching template. Off by default --
+// it exists to be read and copied, not played (a test flips it on).
+POWERUPS.helloWorld = Object.assign(
+  { enabled: false, durationMs: 1000, speedMult: 1.02 },
+  POWERUPS.helloWorld || {}
+);
 // ORDER IS LOAD-BEARING: index order must match the renderers' color tables
 // (render.js POWERUP_TYPE_INDEX, render2d.js POWERUP_STYLE, wasm
 // pickupColor/trailColor). New types are always APPENDED.
-const POWERUP_TYPES = ["wormhole", "growthSpurt", "iceTrail", "poisonTrail", "speedBoost", "blueShell", "bananaTrail"];
+const POWERUP_TYPES = ["wormhole", "growthSpurt", "iceTrail", "poisonTrail", "speedBoost", "blueShell", "bananaTrail", "helloWorld"];
 // Trail-laying powerups: while one is the activePowerup, each movement step
 // lays a tile of that type at the vacated cell (see applyMovementAndFood).
 const TRAIL_TYPES = new Set(["iceTrail", "poisonTrail", "bananaTrail"]);
@@ -175,6 +181,10 @@ for (const t of POWERUP_TYPES) {
 // fatal move, never touches the held slot). Keeping this data-driven means a
 // new powerup only has to set the flag, not edit the pickup/activate handlers.
 const HELD_TYPES = new Set(POWERUP_TYPES.filter(t => POWERUP_MODULES[t].requiresActivation));
+// Every module exposing a speedMultiplier hook -- multiplied into the
+// per-snake movement accumulator (simLoop) and the broadcast moveMs
+// (broadcastState) so a new speed-affecting powerup only writes the hook.
+const SPEED_MULT_TYPES = POWERUP_TYPES.filter(t => typeof POWERUP_MODULES[t].speedMultiplier === "function");
 // Zero-resource debug switch. When enableDebug is false, dlog is null and
 // every debug call site is a single falsy short-circuit (`dlog && dlog(...)`)
 // -- no string building, no buffering, no I/O. The client is told via
@@ -231,7 +241,7 @@ module.exports = {
   SIM_HZ, SIM_MS, MOVE, MAX_LOCAL_PLAYERS, CLIENT_FX, CLIENT_RENDER,
   WALL_GRACE_TICKS, INITIALS_TIMEOUT_MS, SPECTATOR_IDLE_MS, PLAYER_IDLE_MS,
   JOIN_OFFER_MS, INPUT_BUFFER, BOOST, boostRamp, MIN_SNAKE_LENGTH,
-  POWERUPS, POWERUP_TYPES, POWERUP_INFO, HELD_TYPES, TRAIL_TYPES, POWERUP_MODULES,
+  POWERUPS, POWERUP_TYPES, POWERUP_INFO, HELD_TYPES, TRAIL_TYPES, SPEED_MULT_TYPES, POWERUP_MODULES,
   ENABLE_DEBUG, dlog, PERF, COLORS, DIR_VECTORS, TEST_SPAWNS, TEST_HOOKS,
   RUBBERBAND
 };

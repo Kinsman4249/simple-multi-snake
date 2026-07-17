@@ -128,7 +128,7 @@ const COLOR_BLACK: u32 = rgba(0, 0, 0, 255);
 // Pickup colors by type index (must match the facade's POWERUP_TYPE_INDEX
 // order): 0 wormhole #a3f, 1 growthSpurt #fd6, 2 iceTrail #9df,
 // 3 poisonTrail #4a2, 4 speedBoost #f93, 5 blueShell #39f,
-// 6 bananaTrail #fd4.
+// 6 bananaTrail #fd4, 7 helloWorld #0ff.
 function pickupColor(t: i32): u32 {
   if (t == 0) return rgba(0xaa, 0x33, 0xff, 255);
   if (t == 1) return rgba(0xff, 0xdd, 0x66, 255);
@@ -137,6 +137,7 @@ function pickupColor(t: i32): u32 {
   if (t == 4) return rgba(0xff, 0x99, 0x33, 255);
   if (t == 5) return rgba(0x33, 0x99, 0xff, 255);
   if (t == 6) return rgba(0xff, 0xdd, 0x44, 255);
+  if (t == 7) return rgba(0x00, 0xff, 0xff, 255);
   return COLOR_WHITE;
 }
 function trailColor(t: i32): u32 {

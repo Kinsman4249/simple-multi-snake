@@ -3,7 +3,7 @@
 // prompt with countdown, spectator overlay, explicit JOIN offer button,
 // and a DEBUG button/panel (recording enabled only while open).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-17.1";
+(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-17.2";
 const UI = (() => {
   const statusEl = document.getElementById("status");
   let captchaId = null;
@@ -117,10 +117,24 @@ const UI = (() => {
     }).filter(s => s);
     statusEl.textContent = parts.join("   ");
   }
-  function updateLeaderboards(hs) {
-    const fmt = list => list.map(e => "<li>" + e.initials + " - " + e.score + "</li>").join("");
-    document.getElementById("dailyList").innerHTML = fmt(hs.daily);
-    document.getElementById("allTimeList").innerHTML = fmt(hs.allTime);
+  // Phase 12: hs is { local: {daily, allTime}, networked: {daily, allTime} }
+  // and `mode` is the session's CURRENT classification ("local" |
+  // "networked") -- the matching section gets the .current highlight so a
+  // player knows which board this run lands on.
+  function updateLeaderboards(hs, mode) {
+    const fmt = list => (list || []).map(e => "<li>" + e.initials + " - " + e.score + "</li>").join("");
+    const local = hs.local || hs; // tolerate a pre-split server during a rolling deploy
+    const net = hs.networked || { daily: [], allTime: [] };
+    document.getElementById("dailyList").innerHTML = fmt(local.daily);
+    document.getElementById("allTimeList").innerHTML = fmt(local.allTime);
+    const nd = document.getElementById("netDailyList");
+    const na = document.getElementById("netAllTimeList");
+    if (nd) nd.innerHTML = fmt(net.daily);
+    if (na) na.innerHTML = fmt(net.allTime);
+    const secLocal = document.getElementById("hsLocal");
+    const secNet = document.getElementById("hsNetworked");
+    if (secLocal) secLocal.classList.toggle("current", mode !== "networked");
+    if (secNet) secNet.classList.toggle("current", mode === "networked");
   }
 
   // ---- Fading top menu (Phase 5) --------------------------------------

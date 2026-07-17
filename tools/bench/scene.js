@@ -12,7 +12,7 @@
     { head: "#88f", body: "#33c" },
     { head: "#ff8", body: "#cc3" }
   ];
-  const PICKUP_TYPES = ["wormhole", "growthSpurt", "iceTrail", "poisonTrail", "speedBoost", "blueShell", "bananaTrail"];
+  const PICKUP_TYPES = ["wormhole", "growthSpurt", "iceTrail", "poisonTrail", "speedBoost", "blueShell", "bananaTrail", "helloWorld"];
 
   // Serpentine body of `len` segments inside the quadrant box, head first.
   function serpentine(x0, y0, w, h, len) {

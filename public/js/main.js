@@ -23,7 +23,7 @@
 //     debug button/panel/recording are never created at all -- the only
 //     residue is one boolean test at startup.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-17.1";
+(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-17.2";
 let CLIENT_FX = { inputFlash: true, inputFlashMs: 90, correctionGlide: true, correctionGlideMs: 90, boostTrail: true, slideDust: true, heldGlow: true, powerupFx: true };
 let CLIENT_RENDER = { interpolate: true, renderer: "auto" };
 let BOOST_CFG = { enabled: true, boostSpeed: 2.0, driftMs: 250, rampMs: 400, holdGraceMs: 120 };
@@ -355,7 +355,7 @@ function handleState(curr) {
   refreshBoost(); // direction may have changed under a held key
   UI.updateStatus(curr);
   UI.updateLeaveButtons(myLocals);
-  UI.updateLeaderboards(curr.highScores);
+  UI.updateLeaderboards(curr.highScores, curr.mode);
 }
 function frame() {
   const { prev, curr } = Net.snapshots();

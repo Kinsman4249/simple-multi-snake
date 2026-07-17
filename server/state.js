@@ -195,6 +195,23 @@ function playerSeatCount() {
   }
   return n;
 }
+// "How many computers" (Phase 12 leaderboard split): connections that own at
+// least one seat still in the game (role "player" -- alive or
+// dead-awaiting-respawn -- or "held" during an initials flush). 1 => "local"
+// (solo or couch co-op on one machine); 2+ => "networked". Spectator-only
+// connections don't count -- a watcher isn't a competitor. Sampled at
+// DEATH/LEAVE time and stored with the pending score (lifecycle.js
+// queueInitials), so a session changing shape later can't reclassify a
+// finished run. Distinct from playerSeatCount above, which counts SEATS
+// (two couch seats = two players for the blue shell) -- this counts
+// MACHINES.
+function scoreMode() {
+  let n = 0;
+  for (const [, conn] of S.connections) {
+    if (conn.locals.some(l => l && (l.role === "player" || l.role === "held"))) n++;
+  }
+  return n >= 2 ? "networked" : "local";
+}
 function inBounds(h) { return h.x >= 0 && h.x < CFG.grid.cols && h.y >= 0 && h.y < CFG.grid.rows; }
 // hitsBody: does (h) land on any segment of `body` except the tail? The tail
 // cell vacates this step. Index loop instead of slice().some() on purpose:
@@ -218,5 +235,5 @@ function currentMoveIntervalMs() {
 module.exports = {
   S, cellFree, placeFood, spawnSnake, newPlayerSlot, growSegment,
   removeSegments, currentLeaderIndex, currentTrailingIndex, playerSeatCount,
-  inBounds, hitsBody, currentMoveIntervalMs, isInverted
+  inBounds, hitsBody, currentMoveIntervalMs, isInverted, scoreMode
 };

@@ -6,7 +6,7 @@
 // ============================================================
 const {
   CFG, SIM_MS, BOOST, boostRamp, POWERUPS, POWERUP_TYPES, POWERUP_MODULES,
-  HELD_TYPES, TRAIL_TYPES, WALL_GRACE_TICKS, MIN_SNAKE_LENGTH, dlog, PERF, RUBBERBAND
+  HELD_TYPES, TRAIL_TYPES, SPEED_MULT_TYPES, WALL_GRACE_TICKS, MIN_SNAKE_LENGTH, dlog, PERF, RUBBERBAND
 } = require("./config");
 const {
   S, cellFree, placeFood, growSegment, removeSegments, currentLeaderIndex,
@@ -107,8 +107,10 @@ function simLoop() {
       if (guard === 0) {
         let mult = 1;
         mult *= 1 + (BOOST.boostSpeed - 1) * boostRamp(s, now);
-        mult *= POWERUP_MODULES.speedBoost.speedMultiplier(s, POWERUPS);
-        mult *= POWERUP_MODULES.iceTrail.speedMultiplier(s, POWERUPS);
+        // Every speedMultiplier hook stacks multiplicatively (speedBoost,
+        // ice slow, helloWorld, ... -- see SPEED_MULT_TYPES): a new
+        // speed-affecting powerup only writes the hook, never this loop.
+        for (const t of SPEED_MULT_TYPES) mult *= POWERUP_MODULES[t].speedMultiplier(s, POWERUPS);
         s.moveAccumMs += dt * mult;
       }
       if (s.moveAccumMs >= interval) { s.moveAccumMs -= interval; movers.push({ s, i }); }
@@ -399,6 +401,11 @@ function firePowerup(slot, slotIndex, type) {
     const total = Math.ceil(durationMs / currentMoveIntervalMs());
     slot.activePowerup = { type, startTick: S.moveSeq, expiresAtTick: S.moveSeq + total };
     dlog && dlog("powerup activated", { slot: slotIndex, type });
+  }
+  // Optional module hook: runs once at activation (either path). Receives
+  // dlog so a module can log without importing anything.
+  if (typeof POWERUP_MODULES[type].onActivate === "function") {
+    POWERUP_MODULES[type].onActivate(slot, slotIndex, dlog);
   }
   // One-shot activation-flash marker (client draws a brief colored pop, and
   // for a one-shot like blueShell it's the only "it fired" cue). Cleared after

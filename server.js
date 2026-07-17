@@ -274,7 +274,10 @@ wss.on("connection", ws => {
       const active = conn.activeInitials;
       if (!active || active.local !== localIdx) return;
       const initials = String(msg.value || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 3).padEnd(3, "A");
-      recordScore(active.targets, initials, active.score);
+      // active.mode is the scoreMode() sampled at death/leave time -- the
+      // run's classification (local vs networked board), never re-derived
+      // here where the session shape may already have changed.
+      recordScore(active.targets, initials, active.score, active.mode);
       advanceInitialsFlush(connId);
       broadcastState();
     }

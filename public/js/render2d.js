@@ -66,7 +66,8 @@ const Render2D = (() => {
     poisonTrail: "#4a2",
     speedBoost: "#f93",
     blueShell: "#39f",
-    bananaTrail: "#fd4"
+    bananaTrail: "#fd4",
+    helloWorld: "#0ff"
   };
   // Trail tints sit directly on the black background, so they need far more
   // alpha than an overlay would: the old 0.35-0.4 read as near-black,

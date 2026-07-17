@@ -3,9 +3,9 @@
 // per-tick state fanout, with the serialize-once you-splice optimization).
 // ============================================================
 const {
-  BUILD, SIM_HZ, CFG, BOOST, boostRamp, POWERUPS, POWERUP_MODULES, PERF
+  BUILD, SIM_HZ, CFG, BOOST, boostRamp, POWERUPS, POWERUP_MODULES, SPEED_MULT_TYPES, PERF
 } = require("./config");
-const { S, currentMoveIntervalMs, isInverted } = require("./state");
+const { S, currentMoveIntervalMs, isInverted, scoreMode } = require("./state");
 const { getHighScores } = require("./highscores");
 
 function sendTo(ws, msg) { if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg)); }
@@ -24,12 +24,8 @@ function broadcastState() {
       // CLIENT-SIDE render smoothing: the client interpolates each snake's
       // on-screen travel in lock step with this known fixed cadence. Server
       // collision/authority are untouched.
-      moveMs: Math.round(
-        interval /
-        ((1 + (BOOST.boostSpeed - 1) * boostRamp(s, bNow)) *
-          POWERUP_MODULES.speedBoost.speedMultiplier(s, POWERUPS) *
-          POWERUP_MODULES.iceTrail.speedMultiplier(s, POWERUPS))
-      ),
+      moveMs: Math.round(interval / ((1 + (BOOST.boostSpeed - 1) * boostRamp(s, bNow)) *
+        SPEED_MULT_TYPES.reduce((m, t) => m * POWERUP_MODULES[t].speedMultiplier(s, POWERUPS), 1))),
       // Visual-only flags for the client's boost jetstream / slide dust
       // effects (no gameplay meaning beyond what moveMs already carries).
       // boost is true once the hold has ENGAGED (past holdGraceMs), not on
@@ -55,7 +51,14 @@ function broadcastState() {
       inverted: isInverted(s) ? true : undefined,
       teleport: s.teleportedThisTick ? true : undefined
     } : null),
-    highScores: { daily: highScores.daily, allTime: highScores.allTime }
+    // Both leaderboards (Phase 12): "local" = one computer, "networked" =
+    // two or more. `mode` is the session's CURRENT classification, so the
+    // client can highlight the board this run would land on.
+    highScores: {
+      local: { daily: highScores.modes.local.daily, allTime: highScores.modes.local.allTime },
+      networked: { daily: highScores.modes.networked.daily, allTime: highScores.modes.networked.allTime }
+    },
+    mode: scoreMode()
   };
   // One-shot flags: true for exactly the one broadcast right after a
   // successful wormhole fire, a blue shell impact, or a powerup activation,

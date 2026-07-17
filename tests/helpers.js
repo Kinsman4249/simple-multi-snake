@@ -137,6 +137,13 @@ async function startServer(configOverrides, extraEnv) {
   // artifact and can never be accidentally committed.
   const name = ".test-config-" + crypto.randomUUID().slice(0, 8) + ".json";
   const destPath = repoRoot + name;
+  // Point every test server at its OWN temp highscores file (same
+  // recognizable gitignored .test-* prefix) unless the test explicitly set
+  // one -- tests used to auto-submit BOT scores into the repo's REAL
+  // highscores.json. Removed by stopServer alongside the temp config.
+  if (!merged.highscoresFile) {
+    merged.highscoresFile = ".test-highscores-" + crypto.randomUUID().slice(0, 8) + ".json";
+  }
   await Deno.writeTextFile(destPath, JSON.stringify(merged));
   const env = Object.assign({}, Deno.env.toObject(), { SNAKE_CONFIG: name }, extraEnv || {});
 
@@ -156,7 +163,7 @@ async function startServer(configOverrides, extraEnv) {
   }
   // Poll /api/config until the server is actually accepting connections.
   for (let i = 0; i < 50; i++) {
-    try { await fetch(BASE + "/api/config"); return { child, configPath: destPath }; }
+    try { await fetch(BASE + "/api/config"); return { child, configPath: destPath, highscoresPath: repoRoot + merged.highscoresFile }; }
     catch (_) { await sleep(100); }
   }
   throw new Error("server did not become ready");
@@ -165,6 +172,7 @@ async function stopServer(handle) {
   if (!handle) return;
   try { handle.child.kill(); } catch (_) {}
   try { await Deno.remove(handle.configPath); } catch (_) {}
+  if (handle.highscoresPath) { try { await Deno.remove(handle.highscoresPath); } catch (_) {} }
 }
 
 // Sugar for the server's test-only "testHook" message (requires the server

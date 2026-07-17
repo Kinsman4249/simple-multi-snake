@@ -62,7 +62,13 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
 - Killing another player (they run into your body) gives you a 10 point bonus
   and grows your snake by 3 segments. Head-on collisions kill both, no bonus.
 - Speed starts slow and ramps up over time to a configurable floor.
-- Daily and all-time top 5 high scores with arcade-style 3 letter initials.
+- Daily and all-time top 5 high scores with arcade-style 3 letter initials --
+  kept as TWO separate board pairs: "This machine" (one computer: solo or
+  couch co-op) and "Networked" (two or more computers), because those are
+  different skills. A run is classified at death time by how many computers
+  had players in the game, the hover panel shows both pairs with the current
+  mode highlighted, and an existing single-board highscores.json migrates
+  into the local pair automatically (the networked boards start fresh).
   On a shared keyboard, the initials prompt never interrupts a snake that is
   still alive: a qualifying score is held until every local seat on that
   keyboard is dead, then prompts are shown one at a time.
@@ -294,6 +300,11 @@ Keys:
   at spawnIntervalMs x intervalScale (default 0.5) and the spawn type roll
   weights blueShell at `typeWeight` (default 4) vs 1 for the others. Never
   overrides the two-player spawn gate.
+- highscoresFile: filename (relative to the app directory) of the score
+  store (default "highscores.json"). Mainly for tests, which point each
+  server at its own temp file. The file holds both board pairs
+  ({ version: 2, modes: { local, networked } }); a flat pre-split file is
+  migrated automatically.
 - enableDebug: master switch for the debug system (default true). When set
   to false, the server never builds or logs a debug line (a single null
   check at every call site) and the client never constructs the DEBUG

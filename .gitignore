@@ -2,6 +2,7 @@ node_modules/
 deno.lock
 highscores.json
 .test-config-*.json
+.test-highscores-*.json
 handoff.md
 public/js/render-wasm.js
 tools/bench/out/

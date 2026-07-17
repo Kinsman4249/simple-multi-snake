@@ -9,14 +9,14 @@ const {
   CFG, COLORS, MAX_LOCAL_PLAYERS, SPECTATOR_IDLE_MS, PLAYER_IDLE_MS,
   JOIN_OFFER_MS, INITIALS_TIMEOUT_MS, dlog
 } = require("./config");
-const { S, placeFood, spawnSnake, newPlayerSlot } = require("./state");
+const { S, placeFood, spawnSnake, newPlayerSlot, scoreMode } = require("./state");
 const { sendTo, broadcastState } = require("./net");
 const { qualifies } = require("./highscores");
 
 // Connection record. pendingInitials is the connection-scoped high-score
-// queue ([{ local, targets, score }]); activeInitials is the one prompt
-// currently on screen ({ local, targets, score, deadline }) or null. See
-// queueInitials() for the state machine.
+// queue ([{ local, targets, score, mode }]); activeInitials is the one
+// prompt currently on screen ({ local, targets, score, mode, deadline }) or
+// null. See queueInitials() for the state machine.
 function assignConnection(connId, ws) {
   S.connections.set(connId, { ws, locals: [], pendingInitials: [], activeInitials: null });
   admitLocal(connId, 0);
@@ -82,9 +82,12 @@ function removeLocalSeat(connId, localIdx) {
     const s = S.slots[entry.slotIndex];
     if (s && s.alive) {
       // Leaving mid-game: bank a qualifying score now; it prompts later,
-      // once no local seat on this connection is actively playing.
-      const targets = qualifies(s.score);
-      if (targets.length > 0) conn.pendingInitials.push({ local: localIdx, targets, score: s.score });
+      // once no local seat on this connection is actively playing. Mode is
+      // sampled BEFORE this seat is torn down -- the leaver still counts as
+      // present for their own run's classification.
+      const mode = scoreMode();
+      const targets = qualifies(s.score, mode);
+      if (targets.length > 0) conn.pendingInitials.push({ local: localIdx, targets, score: s.score, mode });
     }
     S.slots[entry.slotIndex] = null;
   }
@@ -259,9 +262,11 @@ function anyLocalAlive(conn) {
   });
 }
 // Bank a qualifying score for a local seat. Called from death and leave.
-function queueInitials(conn, localIdx, targets, score) {
-  conn.pendingInitials.push({ local: localIdx, targets, score });
-  dlog && dlog("initials queued", { local: localIdx, score, queued: conn.pendingInitials.length });
+// `mode` is the scoreMode() sampled at that moment; it rides along to
+// recordScore so the score lands on the right board (local vs networked).
+function queueInitials(conn, localIdx, targets, score, mode) {
+  conn.pendingInitials.push({ local: localIdx, targets, score, mode });
+  dlog && dlog("initials queued", { local: localIdx, score, mode, queued: conn.pendingInitials.length });
 }
 // PLAYING -> FLUSHING: begin showing prompts if nothing blocks them.
 function maybeStartInitialsFlush(connId) {
@@ -293,8 +298,9 @@ function handleDeath(slotIndex) {
   const conn = S.connections.get(s.connId);
   const localIdx = conn ? conn.locals.findIndex(l => l && l.role === "player" && l.slotIndex === slotIndex) : -1;
   if (conn && localIdx !== -1) {
-    const targets = qualifies(s.score);
-    if (targets.length > 0) queueInitials(conn, localIdx, targets, s.score);
+    const mode = scoreMode();
+    const targets = qualifies(s.score, mode);
+    if (targets.length > 0) queueInitials(conn, localIdx, targets, s.score, mode);
   }
   const connId = s.connId;
   setTimeout(() => {
