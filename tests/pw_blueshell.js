@@ -190,11 +190,89 @@ async function scenarioDeadRespawnNuke() {
   }
 }
 
+// --- Scenario E: equal-length fizzle (v3.6.0) ------------------------------
+// Two snakes the SAME length: a collected shell has no meaningful target, so
+// it must FIZZLE (act like food, +1) instead of launching. maxConcurrentFood
+// 0 removes food so the lengths never drift and the equal-length condition
+// holds deterministically through the collection.
+async function scenarioEqualLengthFizzle() {
+  const cfg = baseConfig({ cols: 60, rows: 30, cellSize: 20 });
+  cfg.maxConcurrentFood = 0;
+  const server = await startServer(cfg, {
+    SNAKE_TEST_HOOKS: "1",
+    SNAKE_TEST_SPAWNS: JSON.stringify([
+      { x: 6, y: 10, dir: "right", len: 8 },
+      { x: 6, y: 20, dir: "right", len: 8 }
+    ])
+  });
+  try {
+    const c1 = await connectClient();
+    await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
+    const c2 = await connectClient();
+    await c2.waitFor(s => myPlayer(s, 0) != null, 5000);
+    await c1.waitFor(s => s.players[0] && s.players[1] &&
+      s.players[0].body.length === s.players[1].body.length, 5000);
+    const len0 = c1.state.players[0].body.length;
+    const len1 = c1.state.players[1].body.length;
+    const head = c1.state.players[0].body[0];
+    testHook(c1, "spawnPickup", { ptype: "blueShell", x: head.x + 4, y: 10 });
+    await c1.waitFor(s => s.powerupPickups.length === 0 && s.players[0].body.length !== len0, 8000);
+    const after = c1.state;
+    assert(after.players[0].body.length === len0 + 1,
+      "equal-length shell fizzles into exactly +1 growth (acts like food), got +" + (after.players[0].body.length - len0));
+    assert(!after.blueShells || after.blueShells.length === 0, "no shell launched when all lengths equal");
+    assert(!after.players[0].heldPowerup, "blueShell never occupies the held slot (auto path)");
+    await sleep(800);
+    assert(!c1.state.explosions || c1.state.explosions.length === 0, "no explosion when all lengths equal");
+    assert(c1.state.players[1].body.length === len1, "the equal-length opponent must lose nothing");
+    console.log("PASS: blue shell fizzles to food when all players are equal length.");
+    c1.close(); c2.close();
+  } finally {
+    await stopServer(server);
+  }
+}
+
+// --- Scenario F: equal-length spawn gate (v3.6.0) --------------------------
+// With blueShell the ONLY enabled powerup and all snakes equal length, the
+// spawner's equal-length gate empties the pool -- nothing ever spawns.
+async function scenarioEqualLengthNoSpawn() {
+  const cfg = baseConfig({ cols: 60, rows: 30, cellSize: 20 }, {
+    spawnIntervalMs: 200,
+    wormhole: { enabled: false }, growthSpurt: { enabled: false },
+    iceTrail: { enabled: false }, poisonTrail: { enabled: false },
+    speedBoost: { enabled: false }, bananaTrail: { enabled: false }
+  });
+  cfg.maxConcurrentFood = 0;
+  const server = await startServer(cfg, {
+    SNAKE_TEST_SPAWNS: JSON.stringify([
+      { x: 6, y: 10, dir: "right", len: 8 },
+      { x: 6, y: 20, dir: "right", len: 8 }
+    ])
+  });
+  try {
+    const c1 = await connectClient();
+    await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
+    const c2 = await connectClient();
+    await c2.waitFor(s => myPlayer(s, 0) != null, 5000);
+    await c1.waitFor(s => s.players[0] && s.players[1] &&
+      s.players[0].body.length === s.players[1].body.length, 5000);
+    await sleep(2000); // many spawn attempts at 200ms cadence
+    assert(!c1.state.powerupPickups || c1.state.powerupPickups.length === 0,
+      "no blueShell should spawn while all players are equal length (saw " + (c1.state.powerupPickups || []).length + ")");
+    console.log("PASS: equal-length board never spawns a blue shell.");
+    c1.close(); c2.close();
+  } finally {
+    await stopServer(server);
+  }
+}
+
 async function main() {
   await scenarioInert();
   await scenarioSplash();
   await scenarioFizzle();
   await scenarioDeadRespawnNuke();
+  await scenarioEqualLengthFizzle();
+  await scenarioEqualLengthNoSpawn();
 }
 
 // Staging is deterministic now (forced spawns + hook-placed pickups); the

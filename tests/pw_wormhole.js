@@ -47,6 +47,53 @@ async function selfCollisionScenario(withBoost) {
   }
 }
 
+// v3.6.0 regression guard: a snake must stay alive through the ENTIRE
+// segment-by-segment drain of a self-body wormhole, not just the fire step.
+// The body is discontinuous during the transition (head at the landing, tail
+// still draining through the entry), which previously read as a false wall/
+// self collision partway through. Big empty board + no food + no boost so the
+// only way to die in the watch window is the regression.
+async function transitionSurvivalScenario() {
+  const LEN = 10;
+  const server = await startServer({
+    maxPlayers: 4,
+    grid: { cols: 120, rows: 120, cellSize: 20 },
+    move: { startIntervalMs: 120, minIntervalMs: 120 },
+    boost: { enabled: true, rampMs: 0, holdGraceMs: 0 },
+    minSnakeLength: 3,
+    enableDebug: false,
+    maxConcurrentFood: 0, // no food: length stays LEN, drain count deterministic
+    powerups: { spawnIntervalMs: 3600000, maxConcurrentPickups: 8 }
+  }, { SNAKE_TEST_HOOKS: "1", SNAKE_TEST_SPAWNS: JSON.stringify([{ x: 60, y: 60, dir: "right", len: LEN }]) });
+  try {
+    const c1 = await connectClient();
+    await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
+    testHook(c1, "grantPowerup", { slot: 0, ptype: "wormhole" });
+    await c1.waitFor(s => myPlayer(s, 0).wormholeCharge === true, 3000);
+    c1.send({ type: "dir", dir: "up", local: 0 });
+    c1.send({ type: "dir", dir: "left", local: 0 });
+    c1.send({ type: "dir", dir: "down", local: 0 }); // steps onto own body -> fires
+    const fired = await c1.waitFor(s => {
+      const p = myPlayer(s, 0);
+      return p && (p.teleport === true || p.wormholeCharge === false);
+    }, 8000);
+    assert(myPlayer(fired, 0).alive === true, "wormhole must rescue the self-collision");
+    // Alive must hold on EVERY broadcast until the body has fully threaded
+    // through (>= LEN + 2 movement steps past the fire).
+    const target = fired.seq + LEN + 2;
+    let last = fired;
+    while (last.seq < target) {
+      last = await c1.waitFor(s => s.seq > last.seq, 5000);
+      assert(myPlayer(last, 0).alive === true,
+        "snake must stay alive through the WHOLE wormhole transition (died at seq " + last.seq + ")");
+    }
+    console.log("PASS: snake threads fully through a self-body wormhole with no false collision.");
+    c1.close();
+  } finally {
+    await stopServer(server);
+  }
+}
+
 async function main() {
   const server = await startServer({
     grid: { cols: 12, rows: 12, cellSize: 20 },
@@ -104,6 +151,7 @@ async function main() {
 
   await selfCollisionScenario(false);
   await selfCollisionScenario(true);
+  await transitionSurvivalScenario();
 }
 
 runTest(main);

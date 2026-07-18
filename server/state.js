@@ -174,6 +174,7 @@ function spawnSnake(slotIndex) {
   s.iceStacks = 0;
   s.iceExpiresAtTick = 0;
   s.teleportedThisTick = false;
+  s.teleportDrain = 0;
   s.driftDir = null;
   s.driftUntilMs = 0;
   s.invertUntilTick = 0;
@@ -184,7 +185,7 @@ function newPlayerSlot(connId) {
     alive: true, score: 0, wallStalls: 0, lastAck: 0,
     boost: false, boostSince: null, rampProgress: 0, moveAccumMs: 0, lastInputAt: Date.now(),
     heldPowerup: null, wormholeCharge: false, activePowerup: null, activatedFx: null,
-    iceStacks: 0, iceExpiresAtTick: 0, teleportedThisTick: false,
+    iceStacks: 0, iceExpiresAtTick: 0, teleportedThisTick: false, teleportDrain: 0,
     driftDir: null, driftUntilMs: 0, invertUntilTick: 0
   };
 }
@@ -239,6 +240,23 @@ function playerSeatCount() {
     }
   }
   return n;
+}
+// Blue-shell equal-length gate (v3.6.0): true only when there are at least
+// TWO living snakes and they ALL share the same body length. A shell needs a
+// length spread to have a meaningful target, so an all-equal board neither
+// spawns one nor lets one fire (it fizzles to food instead). Deliberately
+// returns false with fewer than two living snakes so this never overrides the
+// separate lone-survivor self-nuke behavior (that is the presence gate's job,
+// which counts dead-awaiting-respawn seats).
+function allEqualLength() {
+  let first = null, count = 0;
+  for (const s of S.slots) {
+    if (!s || !s.alive) continue;
+    count++;
+    if (first === null) first = s.body.length;
+    else if (s.body.length !== first) return false;
+  }
+  return count >= 2;
 }
 // "How many computers" (Phase 12 leaderboard split): connections that own at
 // least one seat still in the game (role "player" -- alive or
@@ -310,6 +328,6 @@ module.exports = {
   S, cellFree, placeOneFood, ensureFoods, rerollFoods, targetFoodCount,
   pickupCap, boardPlayerCount, spawnSnake, newPlayerSlot, growSegment,
   removeSegments, currentLeaderIndex, currentTrailingIndex, playerSeatCount,
-  inBounds, hitsBody, currentMoveIntervalMs, targetMoveIntervalMs,
+  allEqualLength, inBounds, hitsBody, currentMoveIntervalMs, targetMoveIntervalMs,
   advanceGlobalSpeed, isInverted, scoreMode
 };

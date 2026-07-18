@@ -23,7 +23,7 @@
 //     debug button/panel/recording are never created at all -- the only
 //     residue is one boolean test at startup.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-18.1";
+(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-18.2";
 let CLIENT_FX = { inputFlash: true, inputFlashMs: 90, correctionGlide: true, correctionGlideMs: 90, boostTrail: true, slideDust: true, heldGlow: true, powerupFx: true };
 let CLIENT_RENDER = { interpolate: true, renderer: "auto" };
 let BOOST_CFG = { enabled: true, boostSpeed: 2.0, driftMs: 250, rampMs: 400, holdGraceMs: 120, decelMs: 250, driftThreshold: 0.3 };
@@ -356,6 +356,9 @@ function startGame(token, initials) {
       onBoost: on => { touchBoost = on; refreshBoost(); }
     });
     initSwipeSteering();
+    // Mobile: hide all overlay UI by default behind a small toggle so it never
+    // covers the board (swipe-to-steer keeps working while hidden).
+    UI.initMobileUiToggle();
   } else {
     UI.initCoOp(() => requestSeat(1));
   }

@@ -77,8 +77,9 @@ const MOVE = Object.assign(
 );
 // Hard ceiling on simultaneous food items (the per-player-count target,
 // ceil(players/2), is clamped to this). A test can pin it to 1 to force the
-// classic single-food board.
-const MAX_FOOD = Number.isInteger(CFG.maxConcurrentFood) && CFG.maxConcurrentFood > 0 ? CFG.maxConcurrentFood : 8;
+// classic single-food board, or 0 to disable food entirely (deterministic
+// snake lengths); a missing/invalid key defaults to 8.
+const MAX_FOOD = Number.isInteger(CFG.maxConcurrentFood) && CFG.maxConcurrentFood >= 0 ? CFG.maxConcurrentFood : 8;
 // Phase 3: dual local controls (couch co-op). A single WS connection may
 // control more than one local seat -- conn.locals is an array indexed by
 // local index (0 is "p1", arrow keys client-side; 1 is "p2", WASD). Each

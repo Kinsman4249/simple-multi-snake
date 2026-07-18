@@ -10,8 +10,8 @@ const {
 } = require("./config");
 const {
   S, cellFree, ensureFoods, pickupCap, advanceGlobalSpeed, growSegment,
-  removeSegments, currentLeaderIndex, playerSeatCount, inBounds, hitsBody,
-  currentMoveIntervalMs
+  removeSegments, currentLeaderIndex, playerSeatCount, allEqualLength,
+  inBounds, hitsBody, currentMoveIntervalMs
 } = require("./state");
 const { broadcastState } = require("./net");
 const { lifecycleSweep, handleDeath } = require("./lifecycle");
@@ -29,6 +29,12 @@ function maybeSpawnPowerupPickup(now) {
   // ORDER MATTERS: this gate runs BEFORE the rubberband shell pressure below,
   // so pressure can never re-introduce a blueShell the gate removed.
   if (playerSeatCount() < 2) enabledTypes = enabledTypes.filter(t => t !== "blueShell");
+  // Equal-length gate (v3.6.0): a shell needs a length spread to threaten
+  // anyone, so it never spawns when every living snake is the same length.
+  // Re-checked at fire time too (the pickup handler fizzles a shell collected
+  // once lengths have equalized), so this is continuously enforced, not a
+  // one-time spawn decision.
+  if (allEqualLength()) enabledTypes = enabledTypes.filter(t => t !== "blueShell");
   // Rubberband shell pressure: leader >= leadRatio x the second-longest
   // living snake -> shells spawn sooner (interval scaled down) and the type
   // roll is weighted toward blueShell. Needs a second living snake by
@@ -301,6 +307,16 @@ function tryWormholeOrDie(idx, killerIdxOrNull, died, stalled, newHeads) {
       s.body.pop();
       s.dir = result.dir;
       s.teleportedThisTick = true;
+      // Mark the whole body as in-transit: for the next (body.length - 1)
+      // movement steps the tail drains through the entry while the head leads
+      // from the landing, so the body is briefly DISCONTINUOUS. During that
+      // window the head's wall and self collisions are exempt (see
+      // resolveWallCollisions/resolveSelfCollisions) -- otherwise a landing
+      // on/near the snake's own still-present body, or a step past the
+      // wormhole's short verified-safe path, reads as a false death. The
+      // counter decrements one per drained (popped) segment in
+      // applyMovementAndFood and normal collision resumes at zero.
+      s.teleportDrain = s.body.length - 1;
       stalled.add(idx); // this step's normal movement/food/pickup logic is skipped for the teleported snake
       dlog && dlog("wormhole fired", { slot: idx, landing: result.landing });
       return;
@@ -314,6 +330,10 @@ function resolveWallCollisions(active, newHeads, died, stalled) {
     if (died.has(i)) continue;
     let h = newHeads.get(i);
     if (inBounds(h)) { s.wallStalls = 0; continue; }
+    // Wormhole threading: while the body is mid-drain its positions are
+    // transient, so never die at a wall during the transition -- hold the head
+    // in place this step (it stays on-board, alive) until the drain completes.
+    if (s.teleportDrain > 0) { stalled.add(i); newHeads.set(i, { x: s.body[0].x, y: s.body[0].y }); continue; }
     const saved = consumeInboundsTurn(s);
     if (saved) { s.dir = saved; h = { x: s.body[0].x + saved.x, y: s.body[0].y + saved.y }; newHeads.set(i, h); s.wallStalls = 0; continue; }
     // No wall grace while boosting (maintainer-specced with the drift
@@ -327,6 +347,10 @@ function resolveWallCollisions(active, newHeads, died, stalled) {
 function resolveSelfCollisions(active, newHeads, died, stalled) {
   for (const { s, i } of active) {
     if (died.has(i) || stalled.has(i)) continue;
+    // Wormhole threading: the head is passing through the snake's own
+    // still-draining body -- exempt from self-collision until the drain
+    // completes (see teleportDrain), so threading never reads as self-death.
+    if (s.teleportDrain > 0) continue;
     if (hitsBody(s.body, newHeads.get(i), true)) tryWormholeOrDie(i, null, died, stalled, newHeads);
   }
 }
@@ -435,6 +459,12 @@ function firePowerup(slot, slotIndex, type) {
   slot.activatedFx = type;
 }
 function applyMovementAndFood(active, newHeads, died, stalled) {
+  // Equal-length snapshot taken BEFORE any head is unshifted below: inside the
+  // loop a mover's body is transiently one longer (new head added, tail not
+  // yet popped), which would make the collector look longer than everyone
+  // else and wrongly let its blue shell fire. This settled-length snapshot is
+  // the correct "moment of fire evaluation" the equal-length rule means.
+  const equalLengths = allEqualLength();
   for (const { s, i } of active) {
     if (died.has(i) || stalled.has(i)) continue;
     const h = newHeads.get(i);
@@ -473,13 +503,18 @@ function applyMovementAndFood(active, newHeads, died, stalled) {
         if (!blocked) s.heldPowerup = type;
       } else {
         // Auto-fire. A timed self-buff of the SAME type already running is
-        // "wasted" (fallback +1). A blueShell collected with fewer than two
-        // people still in the game fizzles the same way (the spawner already
-        // gates this, but a shell can outlive the second player's DISCONNECT
-        // -- a merely-dead opponent still counts, so a lone survivor's pickup
-        // fires and self-nukes; maintainer-specced).
+        // "wasted" (fallback +1). A blueShell fizzles the same way -- acting
+        // like food (+1), not launching -- when there is nobody meaningful to
+        // aim it at: fewer than two people still in the game (a shell can
+        // outlive the second player's DISCONNECT -- a merely-dead opponent
+        // still counts, so a lone survivor's pickup fires and self-nukes,
+        // maintainer-specced), OR every living snake is the SAME length
+        // (v3.6.0 equal-length rule). This is evaluated HERE at fire time, so
+        // a shell picked up after lengths equalized fizzles even though it
+        // spawned when they differed; an already-launched projectile is
+        // unaffected.
         blocked = !!(s.activePowerup && s.activePowerup.type === type) ||
-                  (type === "blueShell" && playerSeatCount() < 2);
+                  (type === "blueShell" && (playerSeatCount() < 2 || equalLengths));
         if (!blocked) firePowerup(s, i, type);
       }
       // NOTE: growSegment WITHOUT grew=true -- the unshifted head still pops
@@ -490,6 +525,11 @@ function applyMovementAndFood(active, newHeads, died, stalled) {
       dlog && dlog("powerup collected", { slot: i, type, blocked, auto: type !== "wormhole" && !HELD_TYPES.has(type) });
     }
     if (!grew) s.body.pop();
+    // Wormhole threading: a real (non-growing) step popped one still-in-transit
+    // tail segment, so the body is one cell closer to contiguous again. When
+    // the last stale segment drains (counter hits 0) normal wall/self collision
+    // resumes on the next step.
+    if (s.teleportDrain > 0 && !grew) s.teleportDrain--;
     // Trail crossing: this mover's new head landed on a laid tile. The
     // laying snake is NOT immune to its own trail (confirmed override).
     const trail = S.trails.find(t => t.x === h.x && t.y === h.y);

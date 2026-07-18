@@ -46,7 +46,9 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
   point segment by segment, so the snake visibly snakes through the wormhole
   instead of snapping across the board. The set: Wormhole, Growth Spurt,
   Speed Boost, Ice Trail, Poison Trail, Blue Shell (a projectile that hunts
-  whoever is longest -- even the player who fired it), and Banana Trail (lays
+  whoever is longest -- even the player who fired it; it never spawns and
+  fizzles into food if collected when every snake is the same length, since
+  there is no meaningful leader to punish), and Banana Trail (lays
   pixel-art banana peels -- drawn as little bananas so they read distinctly on
   the board; any snake that slips on one, the layer included, has its
   controls REVERSED for a few seconds -- the status bar shows a "controls
@@ -66,6 +68,11 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
 - Rebindable activation keys and a WASD/Arrows swap, from a small panel in the
   bottom-left corner. Saved in the browser (localStorage); nothing is sent to
   the server but which seat activated.
+- Mobile: swipe on the board to steer, with on-screen PWR and BOOST buttons.
+  All on-screen UI (leaderboard, top bar, buttons, status) is HIDDEN by
+  default so it never covers the board -- a small round toggle button at the
+  bottom reveals or hides the full UI on tap; swipe-steering keeps working
+  while it is hidden. It starts hidden again on every reload.
 - Spectator queue past four players. A spectator takes over shortly after a
   player dies; if four or fewer are connected the dead player just respawns.
 - Killing another player (they run into your body) gives you a 10 point bonus
@@ -268,7 +275,7 @@ Keys:
 - maxConcurrentFood: hard ceiling on simultaneous food items (default 8). The
   live count scales with players -- ceil(players / 2), so 1-2 players get 1
   food, 3-4 get 2, 5-6 get 3, and so on -- clamped to this. Set to 1 for the
-  classic single-food board.
+  classic single-food board, or 0 to disable food entirely.
 - maxLocalPlayers: how many local players one browser tab (one WebSocket
   connection) may control at once via couch co-op. Default 2 (p1 on arrow
   keys, p2 on WASD). Every local seat is round-robin fair on its own: adding
@@ -330,8 +337,10 @@ Keys:
 - powerups.<type>.enabled: on/off per powerup type. Types: wormhole,
   growthSpurt, speedBoost, iceTrail, poisonTrail, blueShell, bananaTrail.
   All default on. Blue Shell additionally requires at least two people in
-  the game to spawn (a pickup collected while alone fizzles into +1 growth
-  instead). Each type has its own tuning keys alongside enabled -- for
+  the game AND a spread in snake lengths to spawn: a pickup collected while
+  alone, or once every snake is the same length, fizzles into +1 growth
+  (acts like food) instead of launching. Each type has its own tuning keys
+  alongside enabled -- for
   example growthSpurt.durationMs / foodMultiplier / killBonusGrowth,
   speedBoost.durationMs / speedMult, iceTrail.slowMultiplierPerStack /
   minSpeedMultiplier / tileDurationMs, wormhole.lookaheadDepth,
