@@ -23,7 +23,7 @@
 //     debug button/panel/recording are never created at all -- the only
 //     residue is one boolean test at startup.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-17.3";
+(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-18.1";
 let CLIENT_FX = { inputFlash: true, inputFlashMs: 90, correctionGlide: true, correctionGlideMs: 90, boostTrail: true, slideDust: true, heldGlow: true, powerupFx: true };
 let CLIENT_RENDER = { interpolate: true, renderer: "auto" };
 let BOOST_CFG = { enabled: true, boostSpeed: 2.0, driftMs: 250, rampMs: 400, holdGraceMs: 120, decelMs: 250, driftThreshold: 0.3 };
@@ -430,7 +430,7 @@ function handleState(curr, prev) {
       p.simBody = null; p.authBody = null;
       continue;
     }
-    p.reconcile(entry.slot, curr.players, curr.tickMs, curr.grid, curr.seq, entry.ack, curr.food);
+    p.reconcile(entry.slot, curr.players, curr.tickMs, curr.grid, curr.seq, entry.ack, curr.foods);
     p.retryUnacked();
     // Capture a fresh correction event for the glide effect (cosmetic only;
     // guarded by id so a still-active glide isn't restarted every frame).

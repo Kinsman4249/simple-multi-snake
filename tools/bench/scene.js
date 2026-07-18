@@ -75,9 +75,15 @@
       { x: Math.floor(cols / 3), y: Math.floor(rows / 3) },
       { x: Math.floor(cols / 1.5), y: Math.floor(rows / 1.5) }
     ];
-    const food = { x: Math.floor(cols / 2), y: Math.floor(rows / 2) };
+    // Multiple foods (v3.5.0): exercise the multi-food render path in both
+    // renderers. `food` kept as the compat first-food field.
+    const foods = [
+      { x: Math.floor(cols / 2), y: Math.floor(rows / 2) },
+      { x: Math.floor(cols / 3), y: Math.floor(rows / 4) },
+      { x: Math.floor(cols * 2 / 3), y: Math.floor(rows * 3 / 4) }
+    ];
     const curr = {
-      seq: 1000, tickMs: 100, grid, food, powerupPickups, trails, blueShells,
+      seq: 1000, tickMs: 100, grid, food: foods[0], foods, powerupPickups, trails, blueShells,
       players, recvTime: 0
     };
     const prev = Object.assign({}, curr, { seq: 999, players: prevPlayers });

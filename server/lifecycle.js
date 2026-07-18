@@ -16,7 +16,7 @@ const {
   CFG, COLORS, MAX_LOCAL_PLAYERS, SPECTATOR_IDLE_MS, PLAYER_IDLE_MS,
   JOIN_OFFER_MS, dlog
 } = require("./config");
-const { S, placeFood, spawnSnake, newPlayerSlot, scoreMode } = require("./state");
+const { S, ensureFoods, spawnSnake, newPlayerSlot, scoreMode } = require("./state");
 const { sendTo, broadcastState } = require("./net");
 const { qualifies, recordScore } = require("./highscores");
 
@@ -55,7 +55,7 @@ function admitLocal(connId, localIdx) {
     spawnSnake(freeIndex);
     conn.locals[localIdx] = { role: "player", slotIndex: freeIndex };
     if (S.sessionStart === null) S.sessionStart = Date.now();
-    if (!S.food) placeFood();
+    ensureFoods(); // new player joined: top food up to the new count immediately
   } else {
     S.spectatorQueue.push({ connId, local: localIdx, since: Date.now() });
     conn.locals[localIdx] = { role: "spectator", slotIndex: null };
@@ -128,7 +128,9 @@ function removeConnection(connId) {
   if (S.joinOffer && S.joinOffer.connId === connId) S.joinOffer = null;
   maybeOfferSlot();
   if (S.slots.every(s => s === null) && S.spectatorQueue.length === 0) {
-    S.sessionStart = null; S.food = null;
+    // Room emptied: clear food and reset the eased speed so the next session
+    // starts fresh at the slow base rather than inheriting a stale value.
+    S.sessionStart = null; S.foods = []; S.moveIntervalMs = null;
   }
 }
 function maybeOfferSlot() {
@@ -161,7 +163,7 @@ function acceptJoin(connId, localIdx) {
   spawnSnake(openIndex);
   conn.locals[localIdx] = { role: "player", slotIndex: openIndex };
   if (S.sessionStart === null) S.sessionStart = Date.now();
-  if (!S.food) placeFood();
+  ensureFoods();
 }
 function lifecycleSweep() {
   const now = Date.now();

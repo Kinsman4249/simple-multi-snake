@@ -47,7 +47,8 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
   instead of snapping across the board. The set: Wormhole, Growth Spurt,
   Speed Boost, Ice Trail, Poison Trail, Blue Shell (a projectile that hunts
   whoever is longest -- even the player who fired it), and Banana Trail (lays
-  banana peels; any snake that slips on one, the layer included, has its
+  pixel-art banana peels -- drawn as little bananas so they read distinctly on
+  the board; any snake that slips on one, the layer included, has its
   controls REVERSED for a few seconds -- the status bar shows a "controls
   reversed" notice while it lasts). Each type has its own config block and
   on/off switch. A "What do the powerups do?" button on the join screen
@@ -69,14 +70,23 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
   player dies; if four or fewer are connected the dead player just respawns.
 - Killing another player (they run into your body) gives you a 10 point bonus
   and grows your snake by 3 segments. Head-on collisions kill both, no bonus.
-- Speed starts slow and ramps up over time to a configurable floor.
+- Global speed scales with the AVERAGE snake length in the room (total length
+  / number of snakes), saturating at a configurable cap and eased smoothly so
+  growth or a join/leave never snaps the speed. One long snake alone runs as
+  fast as four long snakes; one long + one short matches two mediums.
+- Food and powerups scale with the number of players: food is ceil(players/2)
+  items at once (1-2 players: 1, 3-4: 2, 5-6: 3, ...) and powerups
+  max(1, ceil(players/4)) (1 up to four players, 2 at five to eight, ...),
+  recomputed live as players join and leave.
 - Daily and all-time top 5 high scores with arcade-style 3 letter initials --
-  kept as TWO separate board pairs: "This machine" (one computer: solo or
+  kept as TWO separate board pairs: "Single PC" (one computer: solo or
   couch co-op) and "Networked" (two or more computers), because those are
-  different skills. A run is classified at death time by how many computers
-  had players in the game, the hover panel shows both pairs with the current
-  mode highlighted, and an existing single-board highscores.json migrates
-  into the local pair automatically (the networked boards start fresh).
+  different skills. The "Single PC" board is the uncontested / same-computer
+  board; it is not tied to any specific machine, just distinct from networked
+  play. A run is classified at death time by how many computers had players
+  in the game, the hover panel shows both pairs with the current mode
+  highlighted, and an existing single-board highscores.json migrates into the
+  Single PC pair automatically (the networked boards start fresh).
   Initials are SESSION-BOUND: P1 enters them on the join screen (with the
   captcha) before playing, P2 at its first join, and a qualifying score is
   written to the boards automatically the moment the run ends -- there is no
@@ -238,11 +248,27 @@ Keys:
 - simHz: server simulation rate in Hz (default 60). Higher samples input more
   finely (lower input latency) but does NOT change snake speed.
 - grid.cols / grid.rows / grid.cellSize: board dimensions and pixel scale.
-- move.startIntervalMs: starting milliseconds per cell. Higher is a slower start.
-- move.minIntervalMs: fastest milliseconds per cell, the speed cap.
-- move.rampIntervalSec / move.rampStepMs: how often and by how much the
-  move interval shrinks over time. Set rampStepMs to 0 for a constant speed.
-- maxPlayers: number of active player slots before new joins go to spectate.
+- move.startIntervalMs: milliseconds per cell at the slow base (an empty room,
+  or snakes still at their spawn length). Higher is a slower start.
+- move.minIntervalMs: fastest milliseconds per cell, the speed floor.
+- move.lengthSaturation: the AVERAGE snake length at which the game reaches
+  the fast floor (default 40). The global speed is a function of the average
+  length across all living snakes (total length / number of snakes), NOT total
+  length and NOT player count: equal averages give equal speed, and the curve
+  saturates here so a very long average is no faster than a moderately long
+  one. Set startIntervalMs == minIntervalMs for a constant speed.
+- move.speedEaseMs: how long the actual speed takes to glide to a new target
+  when the average length changes -- growth, or a join/leave that shifts the
+  average (default 1000). Prevents a jarring speed jump on join/leave. 0
+  applies target changes instantly.
+- maxPlayers: number of active player slots before new joins go to spectate
+  (default 8). ~16 is the realistic ceiling on a Google Cloud e2-micro
+  free-tier instance (network fan-out and the 0.25 vCPU baseline bind before
+  RAM does). The installer prompts for this and offers the last value.
+- maxConcurrentFood: hard ceiling on simultaneous food items (default 8). The
+  live count scales with players -- ceil(players / 2), so 1-2 players get 1
+  food, 3-4 get 2, 5-6 get 3, and so on -- clamped to this. Set to 1 for the
+  classic single-food board.
 - maxLocalPlayers: how many local players one browser tab (one WebSocket
   connection) may control at once via couch co-op. Default 2 (p1 on arrow
   keys, p2 on WASD). Every local seat is round-robin fair on its own: adding
@@ -297,7 +323,10 @@ Keys:
   flash, the Speed Boost active jetstream, and the tail-drain duration timer.
   Cosmetic only; the activePct / activated fields it reads are server-computed.
 - powerups.spawnIntervalMs: how often a pickup spawn is attempted (default 8000).
-- powerups.maxConcurrentPickups: most pickups on the board at once (default 1).
+- powerups.maxConcurrentPickups: hard ceiling on pickups on the board at once
+  (default 4). Like food, the live cap scales with players -- max(1,
+  ceil(players / 4)), so 1-4 players get 1, 5-8 get 2, and so on -- clamped to
+  this. Set to 1 to keep a single pickup regardless of player count.
 - powerups.<type>.enabled: on/off per powerup type. Types: wormhole,
   growthSpurt, speedBoost, iceTrail, poisonTrail, blueShell, bananaTrail.
   All default on. Blue Shell additionally requires at least two people in

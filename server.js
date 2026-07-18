@@ -38,7 +38,7 @@ const {
   ENABLE_DEBUG, BOOST, boostRamp, POWERUPS, POWERUP_TYPES, POWERUP_INFO,
   INPUT_BUFFER, PERF, TEST_HOOKS
 } = require("./server/config");
-const { S, placeFood, isInverted } = require("./server/state");
+const { S, rerollFoods, isInverted } = require("./server/state");
 const { makeCaptcha, verifyCaptcha, issueJoinToken, consumeJoinToken } = require("./server/captcha");
 const { sendTo, broadcastState } = require("./server/net");
 const {
@@ -263,7 +263,13 @@ wss.on("connection", ws => {
           else firePowerup(s, msg.slot, msg.ptype);
         }
       } else if (msg.op === "placeFood") {
-        placeFood();
+        rerollFoods();
+      } else if (msg.op === "clearPickups") {
+        // Remove all board pickups so the spawner produces a fresh one next
+        // interval -- lets a test sample a STREAM of spawn types without
+        // relying on many pickups sitting on the board at once (the
+        // player-count pickup cap can be as low as 1). Test-only.
+        S.powerupPickups = [];
       }
       broadcastState();
     }

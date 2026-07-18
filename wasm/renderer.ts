@@ -77,6 +77,7 @@ const MAX_GLIDES: i32 = 8;
 const MAX_EXPLOSIONS: i32 = 16;
 const MAX_PFLASHES: i32 = 8;
 const MAX_DUST: i32 = 256;
+const MAX_FOODS: i32 = 32;
 const MAX_LOCALS: i32 = 4;
 const MAX_LOCAL_SEGS: i32 = 16384;
 const INSTANCE_CAP: i32 = 40960;
@@ -109,7 +110,12 @@ const FR_PFLASH: i32 = 736;    // stride 16: {slot i32, colorIdx i32, age f32, p
 const FR_NDUST: i32 = 864;     // 736 + MAX_PFLASHES(8) * 16
 const FR_DUST: i32 = 868;      // stride 12: {x i32, y i32, age f32}
 const FR_LOCAL_BODY: i32 = 3940; // 868 + MAX_DUST(256) * 12
-const FRAME_SIZE: i32 = FR_LOCAL_BODY + MAX_LOCAL_SEGS * 4;
+// Foods (v3.5.0) appended after the local body pool: count then {x,y} pairs.
+// Re-encoded per frame so predicted-eat hiding is per-frame (an eaten food is
+// simply omitted from the array).
+const FR_NFOODS: i32 = FR_LOCAL_BODY + MAX_LOCAL_SEGS * 4;
+const FR_FOODS: i32 = FR_NFOODS + 4;   // stride 8: {x i32, y i32}
+const FRAME_SIZE: i32 = FR_FOODS + MAX_FOODS * 8;
 
 const KIND_RECT: f32 = 0;
 const KIND_ELLIPSE: f32 = 1;
@@ -129,6 +135,8 @@ const COLOR_JETSTREAM: u32 = rgba(0x99, 0xdd, 0xff, 255);   // #9df
 const COLOR_DUST: u32 = rgba(0xcc, 0xcc, 0xcc, 255);        // #ccc
 const COLOR_WHITE: u32 = rgba(255, 255, 255, 255);
 const COLOR_BLACK: u32 = rgba(0, 0, 0, 255);
+const COLOR_BANANA_BODY: u32 = rgba(0xff, 0xdd, 0x44, 255); // #fd4
+const COLOR_BANANA_TIP: u32 = rgba(0xaa, 0x77, 0x00, 255);  // #a70
 
 // Pickup colors by type index (must match the facade's POWERUP_TYPE_INDEX
 // order): 0 wormhole #a3f, 1 growthSpurt #fd6, 2 iceTrail #9df,
@@ -196,6 +204,16 @@ function inst(x: f32, y: f32, w: f32, h: f32, color: u32, alphaMul: f32, kind: f
   instN++;
 }
 
+// Pixel-art banana bitmap (5x5), 0 empty / 1 body / 2 tip -- must match
+// render2d.js BANANA_ART exactly (same rows) so the two renderers agree.
+@inline
+function bananaVal(r: i32, c: i32): i32 {
+  if (r == 0) return c == 3 ? 1 : (c == 4 ? 2 : 0);
+  if (r == 1) return (c == 2 || c == 3) ? 1 : 0;
+  if (r == 2) return (c == 1 || c == 2) ? 1 : 0;
+  if (r == 3) return (c == 0 || c == 1) ? 1 : 0;
+  return c == 0 ? 2 : (c == 1 ? 1 : 0);
+}
 @inline
 function easeOutCubic(t: f32): f32 { const u: f32 = <f32>1 - t; return <f32>1 - u * u * u; }
 @inline
@@ -226,8 +244,9 @@ export function render(now: f64, which: i32): i32 {
   const interpolate = load<i32>(frameIn + FR_FLAGS) != 0;
   const boostTrail = load<i32>(frameIn + FR_FLAGS, 4) != 0;
   // (flags+8, the old slideDust toggle, is reserved: dust gating now happens
-  // client-side when main.js decides whether to fill the dust array at all.)
-  const foodHidden = load<i32>(frameIn + FR_FLAGS, 12) != 0;
+  // client-side when main.js decides whether to fill the dust array at all.
+  // flags+12, the old foodHidden flag, is also reserved: foods now carry their
+  // own per-frame hiding by simply being omitted from the foods array.)
   const heldGlow = load<i32>(frameIn + FR_HELDGLOW) != 0;
   const powerFx = load<i32>(frameIn + FR_POWERFX) != 0;
   const recvElapsed = load<f32>(frameIn + FR_RECV_ELAPSED);
@@ -238,14 +257,31 @@ export function render(now: f64, which: i32): i32 {
   const trailBase = curr + SNAP_TRAILS;
   for (let i = 0; i < nTrails; i++) {
     const o = trailBase + <usize>(i << 3);
-    const tx = <f32>load<i16>(o), ty = <f32>load<i16>(o, 2);
-    inst(tx * cs, ty * cs, cell, cell, trailColor(<i32>load<i16>(o, 4)), 1, KIND_RECT, 0, 0);
+    const tx = <i32>load<i16>(o), ty = <i32>load<i16>(o, 2);
+    const ttype = <i32>load<i16>(o, 4);
+    if (ttype == 6) {
+      // bananaTrail: pixel-art crescent (5x5), same edges as render2d.js.
+      const bx = <f32>tx * cs, by = <f32>ty * cs;
+      for (let r = 0; r < 5; r++) {
+        for (let c = 0; c < 5; c++) {
+          const v = bananaVal(r, c);
+          if (v == 0) continue;
+          const x0 = <f32>(<i32>Math.round(<f64>c * <f64>cell / 5.0));
+          const x1 = <f32>(<i32>Math.round(<f64>(c + 1) * <f64>cell / 5.0));
+          const y0 = <f32>(<i32>Math.round(<f64>r * <f64>cell / 5.0));
+          const y1 = <f32>(<i32>Math.round(<f64>(r + 1) * <f64>cell / 5.0));
+          inst(bx + x0, by + y0, x1 - x0, y1 - y0, v == 2 ? COLOR_BANANA_TIP : COLOR_BANANA_BODY, 1, KIND_RECT, 0, 0);
+        }
+      }
+    } else {
+      inst(<f32>tx * cs, <f32>ty * cs, cell, cell, trailColor(ttype), 1, KIND_RECT, 0, 0);
+    }
   }
-  // food
-  const foodX = load<i32>(curr, 8);
-  if (foodX >= 0 && !foodHidden) {
-    const foodY = load<i32>(curr, 12);
-    inst(<f32>foodX * cs, <f32>foodY * cs, cell, cell, COLOR_FOOD, 1, KIND_RECT, 0, 0);
+  // food (multi-food, from the frame region; eaten ones are omitted upstream)
+  const nFoods = min(load<i32>(frameIn + FR_NFOODS), MAX_FOODS);
+  for (let i = 0; i < nFoods; i++) {
+    const fo = frameIn + FR_FOODS + <usize>(i << 3);
+    inst(<f32>load<i32>(fo) * cs, <f32>load<i32>(fo, 4) * cs, cell, cell, COLOR_FOOD, 1, KIND_RECT, 0, 0);
   }
   // pickups (pulse)
   const nPickups = min(load<i32>(curr, 24), MAX_PICKUPS);

@@ -9,8 +9,9 @@ const {
   HELD_TYPES, TRAIL_TYPES, SPEED_MULT_TYPES, WALL_GRACE_TICKS, MIN_SNAKE_LENGTH, dlog, PERF, RUBBERBAND
 } = require("./config");
 const {
-  S, cellFree, placeFood, growSegment, removeSegments, currentLeaderIndex,
-  playerSeatCount, inBounds, hitsBody, currentMoveIntervalMs
+  S, cellFree, ensureFoods, pickupCap, advanceGlobalSpeed, growSegment,
+  removeSegments, currentLeaderIndex, playerSeatCount, inBounds, hitsBody,
+  currentMoveIntervalMs
 } = require("./state");
 const { broadcastState } = require("./net");
 const { lifecycleSweep, handleDeath } = require("./lifecycle");
@@ -46,7 +47,10 @@ function maybeSpawnPowerupPickup(now) {
   }
   const effectiveIntervalMs = POWERUPS.spawnIntervalMs * (pressure ? sp.intervalScale : 1);
   if (now - S.lastPowerupSpawnAt < effectiveIntervalMs) return;
-  if (S.powerupPickups.length >= POWERUPS.maxConcurrentPickups) return;
+  // Live cap scales with player count (pickupCap: max(1, ceil(players/4)) up
+  // to the configured ceiling), recomputed every attempt so a join/leave
+  // takes effect immediately.
+  if (S.powerupPickups.length >= pickupCap()) return;
   if (enabledTypes.length === 0) { S.lastPowerupSpawnAt = now; return; }
   let type;
   if (pressure) {
@@ -68,7 +72,7 @@ function maybeSpawnPowerupPickup(now) {
     attempts++;
   } while (
     attempts < 200 &&
-    (!cellFree(x, y) || (S.food && S.food.x === x && S.food.y === y) || S.powerupPickups.some(p => p.x === x && p.y === y))
+    (!cellFree(x, y) || S.foods.some(f => f.x === x && f.y === y) || S.powerupPickups.some(p => p.x === x && p.y === y))
   );
   if (attempts >= 200) { S.lastPowerupSpawnAt = now; return; } // board too crowded, try again next interval
   S.powerupPickups.push({ id: S.nextPowerupId++, type, x, y });
@@ -87,6 +91,11 @@ function simLoop() {
   const dt = S.lastSimAt == null ? SIM_MS : Math.min(now - S.lastSimAt, 250);
   S.lastSimAt = now;
   lifecycleSweep();
+  // Ease the global speed toward its average-length target, and keep the food
+  // count matched to the current player count -- both recomputed every tick so
+  // growth and join/leave are reflected continuously and smoothly.
+  advanceGlobalSpeed(dt);
+  ensureFoods();
   maybeSpawnPowerupPickup(now);
   const interval = currentMoveIntervalMs();
   // Per-snake movement accumulators. A boosting snake's accumulator fills
@@ -431,11 +440,15 @@ function applyMovementAndFood(active, newHeads, died, stalled) {
     const h = newHeads.get(i);
     s.body.unshift(h);
     let grew = false;
-    if (S.food && h.x === S.food.x && h.y === S.food.y) {
+    // Multi-food: the head may land on any active food cell. Remove that one
+    // and let ensureFoods (next sim tick) top the count back up to target.
+    const fi = S.foods.findIndex(f => f.x === h.x && f.y === h.y);
+    if (fi !== -1) {
       s.score += 1;
       const mult = POWERUP_MODULES.growthSpurt.foodGrowthMultiplier(s, POWERUPS);
       for (let n = 1; n < mult; n++) growSegment(s);
-      placeFood();
+      S.foods.splice(fi, 1);
+      ensureFoods();
       grew = true;
     }
     // Powerup pickup collection, mirroring the food check above (head lands

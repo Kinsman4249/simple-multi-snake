@@ -24,7 +24,7 @@
 //
 // Display scaling (fitCanvas) is CSS-only and identical for both paths.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-17.2 (wasm facade)";
+(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-18.1 (wasm facade)";
 const Render = (() => {
   const canvas = document.getElementById("game");
   const POWERUP_STYLE = Render2D.POWERUP_STYLE;
@@ -35,7 +35,11 @@ const Render = (() => {
   const PLAYER_STRIDE_B = PLAYER_STRIDE_I32 * 4;
   const SNAP_PLAYERS_I32 = 8;     // header is 32 bytes
   const MAX_PLAYERS = 8, MAX_SEGS = 16384, MAX_TRAILS = 8192, MAX_PICKUPS = 32, MAX_SHELLS = 16;
-  const MAX_FLASHES = 8, MAX_GLIDES = 8, MAX_EXPLOSIONS = 16, MAX_PFLASHES = 8, MAX_DUST = 256, MAX_LOCALS = 4, MAX_LOCAL_SEGS = 16384;
+  const MAX_FLASHES = 8, MAX_GLIDES = 8, MAX_EXPLOSIONS = 16, MAX_PFLASHES = 8, MAX_DUST = 256, MAX_LOCALS = 4, MAX_LOCAL_SEGS = 16384, MAX_FOODS = 32;
+  // Foods live in the frame-input region (re-encoded per frame so per-frame
+  // predicted-eat hiding is trivial), appended after the local body pool.
+  // Must match wasm/renderer.ts FR_NFOODS/FR_FOODS.
+  const FR_FOODS_OFF = 3940 + MAX_LOCAL_SEGS * 4; // bytes: nFoods i32, then MAX_FOODS x {x,y} i32
 
   let wasm = null;          // instantiated exports, or null
   let wasmFailed = false;   // permanent this-session failure -> 2D
@@ -204,9 +208,7 @@ const Render = (() => {
     i32[base] = opts && opts.interpolate ? 1 : 0;
     i32[base + 1] = opts && opts.boostTrail ? 1 : 0;
     i32[base + 2] = opts && opts.slideDust ? 1 : 0;
-    let foodHidden = 0;
-    if (currSnap.food && eatenKeys && eatenKeys.indexOf(currSnap.food.x + "," + currSnap.food.y) !== -1) foodHidden = 1;
-    i32[base + 3] = foodHidden;
+    i32[base + 3] = 0; // (was foodHidden; foods now carry their own hide via the foods array below)
     f32[base + 4] = now - (currSnap.recvTime || now);
     const flashes = (fx && fx.flashes) || [];
     const nF = Math.min(flashes.length, MAX_FLASHES);
@@ -279,6 +281,19 @@ const Render = (() => {
       });
     }
     i32[base + 168] = nL; // offset 672
+    // Foods (v3.5.0): re-encoded each frame from currSnap.foods, minus any the
+    // local predictor is provisionally treating as eaten (per-frame hiding).
+    const foods = currSnap.foods || (currSnap.food ? [currSnap.food] : []);
+    const nFoodBase = (fp + FR_FOODS_OFF) >>> 2;
+    let nFd = 0;
+    for (let i = 0; i < foods.length && nFd < MAX_FOODS; i++) {
+      const key = foods[i].x + "," + foods[i].y;
+      if (eatenKeys && eatenKeys.indexOf(key) !== -1) continue;
+      i32[nFoodBase + 1 + nFd * 2] = foods[i].x;
+      i32[nFoodBase + 1 + nFd * 2 + 1] = foods[i].y;
+      nFd++;
+    }
+    i32[nFoodBase] = nFd;
   }
 
   // Walk the wasm's instance buffer onto the 2D context. Kinds: 0 rect,

@@ -63,7 +63,22 @@ if (!Number.isInteger(CFG.grid.cols) || !Number.isInteger(CFG.grid.rows)) {
   CFG.grid.cols = preset.cols;
   CFG.grid.rows = preset.rows;
 }
-const MOVE = CFG.move || { startIntervalMs: 160, minIntervalMs: 70, rampIntervalSec: 30, rampStepMs: 10 };
+// Speed model (v3.5.0): the global movement interval is a function of the
+// AVERAGE living-snake length, eased toward its target -- see state.js
+// targetMoveIntervalMs/advanceGlobalSpeed. startIntervalMs is the slow base
+// (empty room or all-minimum-length snakes); minIntervalMs the fast floor,
+// reached once the average hits lengthSaturation; speedEaseMs is the smooth
+// transition window applied to EVERY target change (growth, join, leave).
+// (Replaces the old time-based ramp; a leftover rampIntervalSec/rampStepMs in
+// an old config.json is simply ignored.)
+const MOVE = Object.assign(
+  { startIntervalMs: 160, minIntervalMs: 70, lengthSaturation: 40, speedEaseMs: 1000 },
+  CFG.move || {}
+);
+// Hard ceiling on simultaneous food items (the per-player-count target,
+// ceil(players/2), is clamped to this). A test can pin it to 1 to force the
+// classic single-food board.
+const MAX_FOOD = Number.isInteger(CFG.maxConcurrentFood) && CFG.maxConcurrentFood > 0 ? CFG.maxConcurrentFood : 8;
 // Phase 3: dual local controls (couch co-op). A single WS connection may
 // control more than one local seat -- conn.locals is an array indexed by
 // local index (0 is "p1", arrow keys client-side; 1 is "p2", WASD). Each
@@ -145,7 +160,9 @@ const MIN_SNAKE_LENGTH = Number.isInteger(CFG.minSnakeLength) && CFG.minSnakeLen
 // Powerups. Each type is its own sub-config, shallow-merged over defaults
 // exactly like BOOST/CLIENT_FX above so an older config.json missing the
 // whole section (or missing one type) still works.
-const POWERUPS = Object.assign({ spawnIntervalMs: 8000, maxConcurrentPickups: 1 }, CFG.powerups || {});
+// maxConcurrentPickups is now the HARD CEILING; the live cap scales with
+// player count (max(1, ceil(players/4)), see state.js pickupCap) up to it.
+const POWERUPS = Object.assign({ spawnIntervalMs: 8000, maxConcurrentPickups: 4 }, CFG.powerups || {});
 POWERUPS.wormhole    = Object.assign({ enabled: true, lookaheadDepth: 3 }, POWERUPS.wormhole || {});
 POWERUPS.growthSpurt = Object.assign({ enabled: true, durationMs: 8000, foodMultiplier: 2, killBonusGrowth: 2 }, POWERUPS.growthSpurt || {});
 POWERUPS.iceTrail    = Object.assign({ enabled: true, durationMs: 8000, tileDurationMs: 10000, slowDurationMs: 4000, slowMultiplierPerStack: 0.15, minSpeedMultiplier: 0.4 }, POWERUPS.iceTrail || {});
@@ -254,7 +271,7 @@ const TEST_HOOKS = process.env.SNAKE_TEST_HOOKS === "1";
 
 module.exports = {
   ROOT, CFG, PKG, BUILD, PUBLIC_DIR, PORT,
-  SIM_HZ, SIM_MS, MOVE, MAX_LOCAL_PLAYERS, CLIENT_FX, CLIENT_RENDER,
+  SIM_HZ, SIM_MS, MOVE, MAX_FOOD, MAX_LOCAL_PLAYERS, CLIENT_FX, CLIENT_RENDER,
   WALL_GRACE_TICKS, SPECTATOR_IDLE_MS, PLAYER_IDLE_MS,
   JOIN_OFFER_MS, INPUT_BUFFER, BOOST, boostRamp, updateMomentum, MIN_SNAKE_LENGTH,
   POWERUPS, POWERUP_TYPES, POWERUP_INFO, HELD_TYPES, TRAIL_TYPES, SPEED_MULT_TYPES, POWERUP_MODULES,

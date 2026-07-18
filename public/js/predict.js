@@ -55,7 +55,7 @@
 // leader advance the one-cell predictor could reproduce. rebuild() therefore
 // still does not pre-play a boosted turn; the server's authoritative steps
 // (plus the correction glide, if enabled) show the skid.
-(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-16.1";
+(window.__BUILDS__ = window.__BUILDS__ || {}).predict = "predict 2026-07-18.1";
 const DIR_VECTORS = {
   up: { x: 0, y: -1 },
   down: { x: 0, y: 1 },
@@ -88,10 +88,18 @@ class LocalPlayerPredictor {
     this.lastCorrectionEvent = null;
     this.correctionEventSeq = 0;
     this.sendFn = null;
-    this.foodKey = null;
+    // Multi-food (v3.5.0): the board can hold several food cells at once.
+    // foodKeys is the set of "x,y" keys from the last snapshot; pendingEat
+    // names the ONE cell this snake is provisionally eating.
+    this.foodKeys = new Set();
     this.pendingEat = null;      // { key, atServerSeq }
     this.localGrow = 0;
     this.lastServerLen = null;
+  }
+  keySet(foods) {
+    const s = new Set();
+    if (foods) for (const f of foods) s.add(f.x + "," + f.y);
+    return s;
   }
   setSender(fn) { this.sendFn = fn; }
   setDebug(on) { this.debug = !!on; if (!on) this.corrections.length = 0; }
@@ -218,7 +226,7 @@ class LocalPlayerPredictor {
   // Food cell we are provisionally treating as eaten (for render to hide).
   eatenFoodKey() { return this.pendingEat ? this.pendingEat.key : null; }
 
-  reconcile(slot, players, tickMs, grid, seq, ack, food) {
+  reconcile(slot, players, tickMs, grid, seq, ack, foods) {
     if (grid) this.grid = grid;
     this.lastServerSeq = (seq == null ? this.lastServerSeq : seq);
     const p = players[slot];
@@ -241,33 +249,35 @@ class LocalPlayerPredictor {
       this.inputBuffer = [];
       this.pendingEat = null;
       this.localGrow = 0;
-      this.foodKey = food ? (food.x + "," + food.y) : null;
+      this.foodKeys = this.keySet(foods);
       this.lastServerLen = p.body.length;
       return;
     }
 
-    const foodKey = food ? (food.x + "," + food.y) : null;
+    const newKeys = this.keySet(foods);
     const serverLen = p.body.length;
     const grew = (this.lastServerLen != null) && (serverLen > this.lastServerLen);
-    const foodChanged = (this.foodKey != null) && (foodKey !== this.foodKey);
+    // The specific food we predicted eating is gone from the board now.
+    const ateGone = this.pendingEat != null && !newKeys.has(this.pendingEat.key);
 
-    // Predict our own eat when the predicted head lands on the food cell.
-    if (food && this.simBody && this.simBody.length) {
+    // Predict our own eat when the predicted head lands on ANY food cell.
+    if (foods && foods.length && this.simBody && this.simBody.length && !this.pendingEat) {
       const ph = this.simBody[0];
-      if (ph.x === food.x && ph.y === food.y && !this.pendingEat) {
-        this.pendingEat = { key: foodKey, atServerSeq: this.lastServerSeq };
+      const hit = foods.find(f => f.x === ph.x && f.y === ph.y);
+      if (hit) {
+        this.pendingEat = { key: hit.x + "," + hit.y, atServerSeq: this.lastServerSeq };
         this.localGrow = 1;
       }
     }
-    // Confirm: server food moved AND we grew -> eat is authoritative now.
-    if (this.pendingEat && foodChanged && grew) {
+    // Confirm: the eaten food disappeared AND we grew -> eat is authoritative.
+    if (this.pendingEat && ateGone && grew) {
       this.pendingEat = null;
       this.localGrow = 0;
     }
     // Roll back: server did not confirm in time -> drop provisional growth.
     if (this.pendingEat && this.lastServerSeq != null &&
         (this.lastServerSeq - this.pendingEat.atServerSeq) >= EAT_CONFIRM_TICKS &&
-        !(foodChanged && grew)) {
+        !(ateGone && grew)) {
       this.pendingEat = null;
       this.localGrow = 0;
     }
@@ -305,7 +315,7 @@ class LocalPlayerPredictor {
     }
 
     this.authBody = p.body.map(s => ({ x: s.x, y: s.y }));
-    this.foodKey = foodKey;
+    this.foodKeys = newKeys;
     this.lastServerLen = serverLen;
 
     if (ack != null) this.inputBuffer = this.inputBuffer.filter(inp => inp.seq > ack);

@@ -27,6 +27,11 @@ function baseConfig(grid, extraPowerups) {
     maxPlayers: 4,
     grid,
     move: { startIntervalMs: 150, minIntervalMs: 150, rampIntervalSec: 3600, rampStepMs: 0 },
+    // Pin the classic single-food board: this test's splash-geometry
+    // scenario runs 3 clients (v3.5.0 would otherwise put 2 foods out), and a
+    // stray food eaten by a parallel snake would shift the exact lengths the
+    // loss assertions check.
+    maxConcurrentFood: 1,
     minSnakeLength: 3,
     enableDebug: false, // keep the piped stdout quiet (pipe-stall gotcha)
     powerups: Object.assign({

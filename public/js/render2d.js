@@ -51,7 +51,7 @@
 // to "2d". The 2D context is acquired lazily on the first draw (NOT at load
 // time): a canvas can only ever hold one context type, so grabbing "2d"
 // eagerly would poison the facade's wasm path before it could decide.
-(window.__BUILDS__ = window.__BUILDS__ || {}).render2d = "render2d 2026-07-17.2";
+(window.__BUILDS__ = window.__BUILDS__ || {}).render2d = "render2d 2026-07-18.1";
 const Render2D = (() => {
   const canvas = document.getElementById("game");
   let ctx = null;
@@ -74,9 +74,23 @@ const Render2D = (() => {
   // especially after a fractional downscale.
   const TRAIL_STYLE = {
     iceTrail: "rgba(150,225,255,0.65)",
-    poisonTrail: "rgba(110,210,70,0.6)",
-    bananaTrail: "rgba(255,221,68,0.6)"
+    poisonTrail: "rgba(110,210,70,0.6)"
+    // bananaTrail is drawn as pixel-art bananas (drawBananaTile), not a flat
+    // tint -- see BANANA_ART below.
   };
+  // Pixel-art banana (5x5 sub-grid), 0 empty / 1 body / 2 tip -- a yellow
+  // crescent with brown tips, drawn grid-aligned so a banana tile reads as a
+  // tiny banana instead of a flat yellow square (v3.5.0). The wasm renderer
+  // draws the identical shape (bananaVal + the same round(i*cell/5) pixel
+  // edges) so parity stays exact.
+  const BANANA_ART = [
+    [0, 0, 0, 1, 2],
+    [0, 0, 1, 1, 0],
+    [0, 1, 1, 0, 0],
+    [1, 1, 0, 0, 0],
+    [2, 1, 0, 0, 0]
+  ];
+  const BANANA_BODY = "#fd4", BANANA_TIP = "#a70";
   // Gap between cells, in internal-resolution pixels. Scales with cell size
   // so it survives fractional CSS downscales (a fixed 1px gap lands between
   // destination pixels below scale 1 and vanishes).
@@ -131,13 +145,32 @@ const Render2D = (() => {
     ctx.fillRect(p.x * cs + offset, p.y * cs + offset, size, size);
     ctx.restore();
   }
-  // Laid trail tiles (ice/poison): flat, dim tint drawn UNDER snake bodies.
+  // Laid trail tiles (drawn UNDER snake bodies). Ice/poison are a flat dim
+  // tint; banana is pixel-art (drawBananaTile) so it reads distinctly.
   function drawTrails(trailList) {
     if (!trailList) return;
     const cs = grid.cellSize;
     for (const t of trailList) {
+      if (t.type === "bananaTrail") { drawBananaTile(t.x, t.y); continue; }
       ctx.fillStyle = TRAIL_STYLE[t.type] || "rgba(255,255,255,0.2)";
       ctx.fillRect(t.x * cs, t.y * cs, cs - cellGap, cs - cellGap);
+    }
+  }
+  // A single pixel-art banana on tile (cx,cy). Pixel edges are round(i*cell/5)
+  // so the 5 sub-columns/rows tile the cell gaplessly; the wasm path uses the
+  // exact same edges for parity.
+  function drawBananaTile(cx, cy) {
+    const cs = grid.cellSize, cell = cs - cellGap;
+    const ox = cx * cs, oy = cy * cs;
+    for (let r = 0; r < 5; r++) {
+      for (let c = 0; c < 5; c++) {
+        const v = BANANA_ART[r][c];
+        if (!v) continue;
+        const x0 = Math.round(c * cell / 5), x1 = Math.round((c + 1) * cell / 5);
+        const y0 = Math.round(r * cell / 5), y1 = Math.round((r + 1) * cell / 5);
+        ctx.fillStyle = v === 2 ? BANANA_TIP : BANANA_BODY;
+        ctx.fillRect(ox + x0, oy + y0, x1 - x0, y1 - y0);
+      }
     }
   }
   // Boost jetstream: a few semi-transparent squares trailing behind the head
@@ -287,9 +320,13 @@ const Render2D = (() => {
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     drawTrails(currSnap.trails);
-    if (currSnap.food) {
-      const key = currSnap.food.x + "," + currSnap.food.y;
-      if (!eatenKeys || eatenKeys.indexOf(key) === -1) drawCell(currSnap.food, "#e33");
+    // Multi-food (v3.5.0): draw every active food cell, hiding any the local
+    // predictor is provisionally treating as eaten. Falls back to the single
+    // `food` compat field if `foods` is absent (rolling deploy).
+    const foods = currSnap.foods || (currSnap.food ? [currSnap.food] : []);
+    for (const f of foods) {
+      const key = f.x + "," + f.y;
+      if (!eatenKeys || eatenKeys.indexOf(key) === -1) drawCell(f, "#e33");
     }
     if (currSnap.powerupPickups) currSnap.powerupPickups.forEach(p => drawPickup(p, now));
     if (currSnap.blueShells) currSnap.blueShells.forEach(sh => drawBlueShell(sh, now));

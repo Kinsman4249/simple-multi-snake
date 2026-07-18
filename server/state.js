@@ -5,13 +5,14 @@
 // writes THE SAME state -- reassignments like `S.trails = S.trails.filter`
 // stay visible everywhere, which plain destructured bindings would break.
 // ============================================================
-const { CFG, MOVE, MIN_SNAKE_LENGTH, DIR_VECTORS, TEST_SPAWNS, RUBBERBAND } = require("./config");
+const { CFG, MOVE, MAX_FOOD, POWERUPS, MIN_SNAKE_LENGTH, DIR_VECTORS, TEST_SPAWNS, RUBBERBAND } = require("./config");
 
 const S = {
   slots: new Array(CFG.maxPlayers).fill(null),
   spectatorQueue: [],
   connections: new Map(),
-  food: null,
+  foods: [],               // active food cells [{x,y}]; count scales with players
+  moveIntervalMs: null,    // eased global movement interval (ms/cell); null = uninitialized
   sessionStart: null,
   joinOffer: null,
   // Powerups: pickups on the board (like food, but multi-entity) and laid
@@ -37,7 +38,14 @@ function cellFree(x, y, ignoreSlotIndex = -1) {
   }
   return true;
 }
-// Food placement. Uniform rejection sampling over free cells -- except when
+// Cell already taken by food or a powerup pickup? (Snakes are handled by
+// cellFree.) Used so a new food never lands on an existing food/pickup.
+function cellHasEntity(x, y) {
+  if (S.foods.some(f => f.x === x && f.y === y)) return true;
+  if (S.powerupPickups.some(p => p.x === x && p.y === y)) return true;
+  return false;
+}
+// Place ONE food. Uniform rejection sampling over free cells -- except when
 // the rubberband food bias is active (>= 2 living snakes with a real length
 // gap): then a free candidate within `radius` (Chebyshev) of the TRAILING
 // snake's head is always accepted, while a farther one is only accepted with
@@ -45,9 +53,8 @@ function cellFree(x, y, ignoreSlotIndex = -1) {
 // The catch-up mechanic is silent by design (maintainer, 2026-07-16).
 // Bounded: hard 500-attempt cap with a first-free-cell fallback (bias is
 // abandoned past 300 attempts), plus a full-board scan if sampling never hit
-// a free cell -- the pre-split placeFood loop was uncapped and could
-// in principle spin on a pathologically full board.
-function placeFood() {
+// a free cell. Returns true if a food was placed, false if the board is full.
+function placeOneFood() {
   const fb = RUBBERBAND.foodBias;
   let target = null;
   if (fb.enabled) {
@@ -62,7 +69,7 @@ function placeFood() {
   for (let attempts = 0; attempts < 500; attempts++) {
     const x = Math.floor(Math.random() * CFG.grid.cols);
     const y = Math.floor(Math.random() * CFG.grid.rows);
-    if (!cellFree(x, y) || S.powerupPickups.some(p => p.x === x && p.y === y)) continue;
+    if (!cellFree(x, y) || cellHasEntity(x, y)) continue;
     if (!fallback) fallback = { x, y };
     if (!target || attempts >= 300) { chosen = { x, y }; break; }
     const d = Math.max(Math.abs(x - target.x), Math.abs(y - target.y));
@@ -73,12 +80,47 @@ function placeFood() {
     // Sampling never found a free cell: linear scan (near-full board).
     for (let y = 0; y < CFG.grid.rows && !chosen; y++) {
       for (let x = 0; x < CFG.grid.cols; x++) {
-        if (cellFree(x, y) && !S.powerupPickups.some(p => p.x === x && p.y === y)) { chosen = { x, y }; break; }
+        if (cellFree(x, y) && !cellHasEntity(x, y)) { chosen = { x, y }; break; }
       }
     }
   }
-  if (chosen) S.food = chosen;
+  if (chosen) { S.foods.push(chosen); return true; }
+  return false;
 }
+// How many players are currently ON THE BOARD (occupied slots, alive or in
+// the respawn window). This is "players in the room" for spawn scaling.
+function boardPlayerCount() {
+  let n = 0;
+  for (const s of S.slots) if (s) n++;
+  return n;
+}
+// Food/powerup spawn scaling by player count (v3.5.0):
+//   food:    ceil(players / 2)  -> 1-2:1, 3-4:2, 5-6:3, ...   (cap MAX_FOOD)
+//   pickups: max(1, ceil(players / 4)) -> 1-4:1, 5-8:2, ...   (cap maxConcurrentPickups)
+// Both clamp to their configured hard ceilings so an operator (or a test)
+// can pin them. An empty board scales to zero of each.
+function targetFoodCount() {
+  const n = boardPlayerCount();
+  return n <= 0 ? 0 : Math.min(Math.ceil(n / 2), MAX_FOOD);
+}
+function pickupCap() {
+  const n = boardPlayerCount();
+  return n <= 0 ? 0 : Math.min(Math.max(1, Math.ceil(n / 4)), POWERUPS.maxConcurrentPickups);
+}
+// Bring the active food count up to (or down to) the player-count target.
+// Called every sim tick and on join/leave, so a changing player count is
+// reflected immediately rather than leaving a stale count. Trims extras
+// (fungible) and tops up shortfalls one placement at a time.
+function ensureFoods() {
+  const target = targetFoodCount();
+  if (S.foods.length > target) S.foods.length = target;
+  while (S.foods.length < target) {
+    if (!placeOneFood()) break; // board full: stop trying this tick
+  }
+}
+// Clear and refill food to the current target (used by the placeFood test
+// hook to re-roll for the rubberband distribution sampler).
+function rerollFoods() { S.foods = []; ensureFoods(); }
 function spawnSnake(slotIndex) {
   let len = MIN_SNAKE_LENGTH;
   let x, y, dir = { x: 1, y: 0 };
@@ -225,16 +267,49 @@ function hitsBody(body, h, skipTail) {
   }
   return false;
 }
+// Global speed target (v3.5.0): a function of the AVERAGE living-snake length
+// (total combined length / number of living snakes), NOT total length and NOT
+// player count. Equal averages give equal speed (one long + one short == two
+// mediums), and the curve SATURATES at MOVE.lengthSaturation so a very long
+// average is no faster than a moderately long one (one long snake alone ==
+// four long snakes). Empty room / all-minimum-length snakes sit at the slow
+// startIntervalMs; the average reaching lengthSaturation hits the fast
+// minIntervalMs floor. Monotonic, with an ease-out shape (quick early gains,
+// flattening) between the two.
+function targetMoveIntervalMs() {
+  let total = 0, n = 0;
+  for (const s of S.slots) if (s && s.alive) { total += s.body.length; n++; }
+  if (n === 0) return MOVE.startIntervalMs;
+  const avg = total / n;
+  const lo = MIN_SNAKE_LENGTH;
+  const hi = Math.max(lo + 1, MOVE.lengthSaturation);
+  let t = (avg - lo) / (hi - lo);
+  t = t < 0 ? 0 : (t > 1 ? 1 : t);
+  const eased = 1 - (1 - t) * (1 - t); // easeOutQuad
+  return MOVE.startIntervalMs + (MOVE.minIntervalMs - MOVE.startIntervalMs) * eased;
+}
+// Ease the ACTUAL global interval toward the target by dt ms. Exponential
+// smoothing with time-constant MOVE.speedEaseMs, so any target change --
+// growth, join, or leave -- glides in over ~speedEaseMs instead of snapping
+// (a join/leave that jumps the average length must not jump the speed).
+// Called once per sim tick. speedEaseMs 0 restores instant application.
+function advanceGlobalSpeed(dt) {
+  const target = targetMoveIntervalMs();
+  if (S.moveIntervalMs == null || !(MOVE.speedEaseMs > 0) || dt <= 0) { S.moveIntervalMs = target; return; }
+  const a = Math.min(1, dt / MOVE.speedEaseMs);
+  S.moveIntervalMs += (target - S.moveIntervalMs) * a;
+}
+// The eased actual interval every consumer reads (movement cadence, broadcast
+// moveMs, powerup duration->ticks). Falls back to the instantaneous target
+// before the first advanceGlobalSpeed of a session.
 function currentMoveIntervalMs() {
-  if (S.sessionStart === null) return MOVE.startIntervalMs;
-  const elapsedSec = (Date.now() - S.sessionStart) / 1000;
-  const steps = Math.floor(elapsedSec / MOVE.rampIntervalSec);
-  const ms = MOVE.startIntervalMs - steps * MOVE.rampStepMs;
-  return Math.max(MOVE.minIntervalMs, ms);
+  return S.moveIntervalMs != null ? S.moveIntervalMs : targetMoveIntervalMs();
 }
 
 module.exports = {
-  S, cellFree, placeFood, spawnSnake, newPlayerSlot, growSegment,
+  S, cellFree, placeOneFood, ensureFoods, rerollFoods, targetFoodCount,
+  pickupCap, boardPlayerCount, spawnSnake, newPlayerSlot, growSegment,
   removeSegments, currentLeaderIndex, currentTrailingIndex, playerSeatCount,
-  inBounds, hitsBody, currentMoveIntervalMs, isInverted, scoreMode
+  inBounds, hitsBody, currentMoveIntervalMs, targetMoveIntervalMs,
+  advanceGlobalSpeed, isInverted, scoreMode
 };

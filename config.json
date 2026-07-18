@@ -1,5 +1,5 @@
 {
-  "maxPlayers": 4,
+  "maxPlayers": 8,
   "maxLocalPlayers": 2,
   "grid": {
     "preset": "1080p",
@@ -9,9 +9,10 @@
   "move": {
     "startIntervalMs": 160,
     "minIntervalMs": 70,
-    "rampIntervalSec": 30,
-    "rampStepMs": 10
+    "lengthSaturation": 40,
+    "speedEaseMs": 1000
   },
+  "maxConcurrentFood": 8,
   "boost": {
     "enabled": true,
     "boostSpeed": 2.0,
@@ -48,7 +49,7 @@
   },
   "powerups": {
     "spawnIntervalMs": 8000,
-    "maxConcurrentPickups": 1,
+    "maxConcurrentPickups": 4,
     "wormhole":    { "enabled": true, "lookaheadDepth": 3 },
     "growthSpurt": { "enabled": true, "durationMs": 8000, "foodMultiplier": 2, "killBonusGrowth": 2 },
     "iceTrail":    { "enabled": true, "durationMs": 8000, "tileDurationMs": 10000, "slowDurationMs": 4000, "slowMultiplierPerStack": 0.15, "minSpeedMultiplier": 0.4 },

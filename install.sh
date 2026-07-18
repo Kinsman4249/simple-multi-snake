@@ -54,6 +54,7 @@ STATE_FILE="${STATE_DIR}/last-domain"        # the hostname used on the last run
 PORT_FILE="${STATE_DIR}/last-port"           # the port used on the last run
 EMAIL_FILE="${STATE_DIR}/last-email"         # the Let's Encrypt notice email used on the last run
 SIMHZ_FILE="${STATE_DIR}/last-simhz"         # the sim rate (Hz) used on the last run
+MAXPLAYERS_FILE="${STATE_DIR}/last-maxplayers" # the max player count used last run
 PREFERRED_PORT="${PORT:-}"                   # optional explicit port override
 DEFAULT_PORT=8080                            # starting point for the free-port scan
 TEMPLATE_NAME="fillmeout.example.com.conf"   # placeholder vhost shipped in deploy/
@@ -64,6 +65,7 @@ CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"           # optional; blank registers without
 CF_API_TOKEN="${CF_API_TOKEN:-}"             # Cloudflare token, Zone:DNS:Edit scope
 CF_PROPAGATION="${CF_PROPAGATION:-30}"       # seconds to wait for DNS propagation
 DEFAULT_SIMHZ=60                             # default server simulation rate in Hz
+DEFAULT_MAXPLAYERS=8                         # default board capacity (~16 is the e2-micro ceiling)
 
 # ---------------------------------------------------------------------------
 # Must run as root: it writes to /opt, /etc/systemd, and /etc/apache2.
@@ -94,6 +96,10 @@ fi
 LAST_SIMHZ=""
 if [ -r "$SIMHZ_FILE" ]; then
   LAST_SIMHZ="$(cat "$SIMHZ_FILE" 2>/dev/null || true)"
+fi
+LAST_MAXPLAYERS=""
+if [ -r "$MAXPLAYERS_FILE" ]; then
+  LAST_MAXPLAYERS="$(cat "$MAXPLAYERS_FILE" 2>/dev/null || true)"
 fi
 
 valid_hostname() {
@@ -182,6 +188,44 @@ resolve_simhz() {
 }
 resolve_simhz
 echo "Using simHz: ${CHOSEN_SIMHZ}"
+
+# ---------------------------------------------------------------------------
+# Max player count resolution (board capacity). Same precedence as simHz:
+#   1. MAX_PLAYERS environment variable, if set (non-interactive path).
+#   2. Interactive prompt, defaulting to the last used value, else 8.
+#   3. No terminal: last saved value, else 8.
+# Validated (positive integer, 1..64). ~16 is the realistic ceiling on a
+# Google Cloud e2-micro free-tier instance -- above that, network fan-out
+# (each client receives state scaling with every player's segments) and the
+# 0.25 vCPU sustained baseline become the limit, not RAM. Patched into
+# config.json near the end so no application code needs editing.
+# ---------------------------------------------------------------------------
+resolve_maxplayers() {
+  local def="${MAX_PLAYERS:-${LAST_MAXPLAYERS:-$DEFAULT_MAXPLAYERS}}"
+  if [ -n "${MAX_PLAYERS:-}" ]; then
+    CHOSEN_MAXPLAYERS="$MAX_PLAYERS"
+  elif [ -r /dev/tty ]; then
+    printf "Max simultaneous players on the board [%s]: " "$def" > /dev/tty
+    local reply
+    read -r reply < /dev/tty || reply=""
+    [ -z "$reply" ] && reply="$def"
+    CHOSEN_MAXPLAYERS="$reply"
+  else
+    CHOSEN_MAXPLAYERS="$def"
+  fi
+  case "$CHOSEN_MAXPLAYERS" in
+    ''|*[!0-9]*)
+      echo "ERROR: maxPlayers must be a positive integer." >&2
+      exit 1
+      ;;
+  esac
+  if [ "$CHOSEN_MAXPLAYERS" -lt 1 ] || [ "$CHOSEN_MAXPLAYERS" -gt 64 ]; then
+    echo "ERROR: maxPlayers out of range (1-64; ~16 is the e2-micro free-tier ceiling)." >&2
+    exit 1
+  fi
+}
+resolve_maxplayers
+echo "Using maxPlayers: ${CHOSEN_MAXPLAYERS}"
 
 # ---------------------------------------------------------------------------
 # Old-install / alt-port-config check.
@@ -565,8 +609,8 @@ sed -i "s/const PORT = [0-9]\+;/const PORT = ${CHOSEN_PORT};/" "${APP_DIR}/serve
 # config.json ships with a default simHz; set it to the chosen sim rate using
 # the Node runtime this installer just ensured is present. Editing JSON with
 # Node keeps the file valid regardless of key order or formatting.
-node -e "const f='${APP_DIR}/config.json';const c=JSON.parse(require('fs').readFileSync(f));c.simHz=${CHOSEN_SIMHZ};require('fs').writeFileSync(f,JSON.stringify(c,null,2)+'\n');"
-echo "  Set simHz=${CHOSEN_SIMHZ} in ${APP_DIR}/config.json."
+node -e "const f='${APP_DIR}/config.json';const c=JSON.parse(require('fs').readFileSync(f));c.simHz=${CHOSEN_SIMHZ};c.maxPlayers=${CHOSEN_MAXPLAYERS};require('fs').writeFileSync(f,JSON.stringify(c,null,2)+'\n');"
+echo "  Set simHz=${CHOSEN_SIMHZ}, maxPlayers=${CHOSEN_MAXPLAYERS} in ${APP_DIR}/config.json."
 
 # ---------------------------------------------------------------------------
 # 5. Install production npm deps (ws) inside APP_DIR.
@@ -757,7 +801,8 @@ mkdir -p "${STATE_DIR}"
 printf "%s\n" "${CHOSEN_DOMAIN}" > "${STATE_FILE}"
 printf "%s\n" "${CHOSEN_PORT}" > "${PORT_FILE}"
 printf "%s\n" "${CHOSEN_SIMHZ}" > "${SIMHZ_FILE}"
-chmod 0644 "${STATE_FILE}" "${PORT_FILE}" "${SIMHZ_FILE}"
+printf "%s\n" "${CHOSEN_MAXPLAYERS}" > "${MAXPLAYERS_FILE}"
+chmod 0644 "${STATE_FILE}" "${PORT_FILE}" "${SIMHZ_FILE}" "${MAXPLAYERS_FILE}"
 if [ "$ENABLE_TLS" = "yes" ] && [ -n "$CERTBOT_EMAIL" ]; then
   umask 077
   printf "%s\n" "${CERTBOT_EMAIL}" > "${EMAIL_FILE}"

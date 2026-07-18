@@ -75,12 +75,18 @@ async function sampleSpawns(client, n, timeoutMs) {
   let total = 0;
   while (total < n && Date.now() < deadline) {
     const cur = client.state;
+    let sawNew = false;
     for (const p of (cur.powerupPickups || [])) {
       if (seen.has(p.id)) continue;
       seen.add(p.id);
       counts[p.type] = (counts[p.type] || 0) + 1;
       total++;
+      sawNew = true;
     }
+    // Drain the board so the spawner keeps producing a fresh pickup each
+    // interval under the v3.5.0 player-count pickup cap (as low as 1). We are
+    // sampling the per-spawn TYPE roll, not how many pickups can coexist.
+    if (sawNew && (cur.powerupPickups || []).length > 0) testHook(client, "clearPickups");
     if (total < n) await client.waitFor(s => s !== cur, 3000).catch(() => {});
   }
   assert(total >= n, "expected " + n + " pickup spawns, saw " + total);

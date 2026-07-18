@@ -15,7 +15,10 @@ function broadcastState() {
   const highScores = getHighScores();
   const state = {
     type: "state", build: BUILD, seq: S.moveSeq, serverTime: Date.now(),
-    tickMs: interval, simHz: SIM_HZ, grid: CFG.grid, food: S.food,
+    // foods: the active food cells (count scales with player count, v3.5.0).
+    // food: kept as a compat alias (first food or null) for any consumer that
+    // still reads a single food.
+    tickMs: interval, simHz: SIM_HZ, grid: CFG.grid, foods: S.foods, food: S.foods[0] || null,
     powerupPickups: S.powerupPickups, trails: S.trails, blueShells: S.blueShells, explosions: S.explosions,
     players: S.slots.map((s, i) => s ? {
       slot: i, alive: s.alive, score: s.score, color: s.color, dir: s.dir, body: s.body,
