@@ -36,7 +36,7 @@ function baseConfig(grid, extraPowerups) {
     enableDebug: false, // keep the piped stdout quiet (pipe-stall gotcha)
     powerups: Object.assign({
       spawnIntervalMs: 3600000, maxConcurrentPickups: 8,
-      blueShell: { enabled: true, segmentLossPercent: 0.5, explosionRadius: 3, splashLossPercent: 0.34, moveIntervalMs: 90 }
+      blueShell: { enabled: true, segmentLossPercent: 0.5, explosionRadius: 3, splashLossPercent: 0.34 }
     }, extraPowerups || {})
   };
 }
@@ -266,6 +266,104 @@ async function scenarioEqualLengthNoSpawn() {
   }
 }
 
+// --- Scenario G: phases through the body, detonates on the HEAD (v3.6.1) ----
+// A shorter snake fires; the shell homes on the LEADER and approaches from the
+// leader's tail side. It must phase through the body and detonate on the HEAD
+// cell, not the first (tail) segment it crosses -- so the impact lands on the
+// head side of the body, never the tail side.
+async function scenarioPassThroughHead() {
+  const cfg = baseConfig({ cols: 120, rows: 30, cellSize: 20 });
+  cfg.maxConcurrentFood = 0;
+  const server = await startServer(cfg, {
+    SNAKE_TEST_HOOKS: "1",
+    SNAKE_TEST_SPAWNS: JSON.stringify([
+      { x: 50, y: 10, dir: "right", len: 12 }, // slot 0 = leader; head x=50, tail x=39
+      { x: 20, y: 10, dir: "right", len: 5 }    // slot 1 = shorter firer, behind on the same row
+    ])
+  });
+  try {
+    const c1 = await connectClient();
+    await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
+    const c2 = await connectClient();
+    await c2.waitFor(s => myPlayer(s, 0) != null, 5000);
+    await c1.waitFor(s => s.players[0] && s.players[1] &&
+      s.players[0].body.length > s.players[1].body.length, 5000);
+    const aHead = c1.state.players[1].body[0];
+    testHook(c2, "spawnPickup", { ptype: "blueShell", x: aHead.x + 3, y: 10 });
+    const boom = await c1.waitFor(s => s.explosions && s.explosions.length > 0, 12000);
+    const ex = boom.explosions[0];
+    const B = boom.players[0];
+    const head = B.body[0], tail = B.body[B.body.length - 1];
+    assert(Math.abs(ex.x - head.x) < Math.abs(ex.x - tail.x),
+      "shell must detonate on the leader's HEAD side, not the body/tail it phased through (ex.x=" +
+      ex.x + " head.x=" + head.x + " tail.x=" + tail.x + ")");
+    assert(Math.abs(ex.x - head.x) <= 2 && Math.abs(ex.y - head.y) <= 1,
+      "impact must be at the leader's head cell (ex " + ex.x + "," + ex.y + " head " + head.x + "," + head.y + ")");
+    console.log("PASS: blue shell phases through the body and detonates on the head.");
+    c1.close(); c2.close();
+  } finally {
+    await stopServer(server);
+  }
+}
+
+// --- Scenario H: rarer while the leader is short (v3.6.1) -------------------
+// Samples the spawn-type stream (draining pickups so the player-count cap
+// doesn't stall it) with a SHORT leader (< shortLeaderLength) vs a TALL one;
+// shellPressure disabled so the shortLeaderFactor is isolated. The short-leader
+// blue-shell fraction must be clearly lower.
+async function shortLeaderShellFraction(leaderLen) {
+  const cfg = baseConfig({ cols: 120, rows: 30, cellSize: 20 }, {
+    spawnIntervalMs: 150,
+    wormhole: { enabled: false }, iceTrail: { enabled: false },
+    poisonTrail: { enabled: false }, speedBoost: { enabled: false },
+    bananaTrail: { enabled: false } // leaves blueShell + growthSpurt enabled
+  });
+  cfg.maxConcurrentFood = 0;
+  cfg.rubberband = { foodBias: { enabled: false }, shellPressure: { enabled: false } };
+  const server = await startServer(cfg, {
+    SNAKE_TEST_HOOKS: "1",
+    SNAKE_TEST_SPAWNS: JSON.stringify([
+      { x: 40, y: 8, dir: "right", len: leaderLen },
+      { x: 40, y: 22, dir: "right", len: 8 }
+    ])
+  });
+  try {
+    const c1 = await connectClient();
+    await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
+    const c2 = await connectClient();
+    await c2.waitFor(s => myPlayer(s, 0) != null, 5000);
+    await c1.waitFor(s => s.players[0] && s.players[1] &&
+      s.players[0].body.length > s.players[1].body.length, 5000);
+    const seen = new Set();
+    let shells = 0, total = 0;
+    const deadline = Date.now() + 20000;
+    while (total < 30 && Date.now() < deadline) {
+      const cur = c1.state;
+      let sawNew = false;
+      for (const p of (cur.powerupPickups || [])) {
+        if (seen.has(p.id)) continue;
+        seen.add(p.id); total++; if (p.type === "blueShell") shells++; sawNew = true;
+      }
+      if (sawNew && (cur.powerupPickups || []).length > 0) testHook(c1, "clearPickups");
+      if (total < 30) await c1.waitFor(s => s !== cur, 3000).catch(() => {});
+    }
+    assert(total >= 24, "expected a stream of spawns to sample, saw " + total);
+    c1.close(); c2.close();
+    return shells / total;
+  } finally {
+    await stopServer(server);
+  }
+}
+async function scenarioShortLeaderRarer() {
+  const shortFrac = await shortLeaderShellFraction(12); // leader < 15
+  const tallFrac = await shortLeaderShellFraction(20);  // leader >= 15
+  assert(shortFrac < tallFrac - 0.1,
+    "blue shell must be clearly rarer with a short leader (short " + shortFrac.toFixed(2) +
+    " vs tall " + tallFrac.toFixed(2) + ")");
+  console.log("PASS: blue shell is rarer while the leader is short (short " +
+    shortFrac.toFixed(2) + " vs tall " + tallFrac.toFixed(2) + ").");
+}
+
 async function main() {
   await scenarioInert();
   await scenarioSplash();
@@ -273,6 +371,8 @@ async function main() {
   await scenarioDeadRespawnNuke();
   await scenarioEqualLengthFizzle();
   await scenarioEqualLengthNoSpawn();
+  await scenarioPassThroughHead();
+  await scenarioShortLeaderRarer();
 }
 
 // Staging is deterministic now (forced spawns + hook-placed pickups); the

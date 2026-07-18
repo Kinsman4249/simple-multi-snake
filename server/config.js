@@ -169,16 +169,23 @@ POWERUPS.growthSpurt = Object.assign({ enabled: true, durationMs: 8000, foodMult
 POWERUPS.iceTrail    = Object.assign({ enabled: true, durationMs: 8000, tileDurationMs: 10000, slowDurationMs: 4000, slowMultiplierPerStack: 0.15, minSpeedMultiplier: 0.4 }, POWERUPS.iceTrail || {});
 POWERUPS.poisonTrail = Object.assign({ enabled: true, durationMs: 8000, tileDurationMs: 10000 }, POWERUPS.poisonTrail || {});
 POWERUPS.speedBoost  = Object.assign({ enabled: true, durationMs: 6000, speedMult: 1.6 }, POWERUPS.speedBoost || {});
-// Blue Shell: not a self-buff -- picking it up launches a seeking
-// projectile (see updateBlueShells). segmentLossPercent hits whoever is
-// CURRENTLY longest (re-targeted every tick, including the firer -- the
-// leader is meant to spend effort GUARDING the shell, not just racing food);
-// splashLossPercent hits every other living snake within explosionRadius
-// cells of the impact point. moveIntervalMs governs how often the
-// projectile itself steps (independent of any snake's speed). Never spawns
-// with fewer than two people in the game (see maybeSpawnPowerupPickup).
+// Blue Shell: not a self-buff -- picking it up launches a seeking projectile
+// (see updateBlueShells) that PHASES THROUGH bodies and detonates on the
+// CURRENT leader's HEAD (re-targeted every tick, including the firer).
+// segmentLossPercent is the direct-hit loss; splashLossPercent hits every
+// other living snake within explosionRadius cells of the impact point.
+//   speedRatio: the projectile's step cadence as a fraction of the current
+//     game move interval (0.45 -> ~2.2x a normal snake). < 0.5 means a
+//     hold-boost (2x) can't quite outrun it, but hold-boost + Speed Boost
+//     (3.2x) can -- "almost impossible to dodge, dodgeable at max speed".
+//   shortLeaderLength / shortLeaderFactor: while the LEADER is shorter than
+//     shortLeaderLength (15) the shell's spawn weight is multiplied by
+//     shortLeaderFactor (0.25), so shells are rare until someone is long.
+// Never spawns with fewer than two people, when all lengths are equal, or
+// (down-weighted) while the leader is short -- see maybeSpawnPowerupPickup.
 POWERUPS.blueShell = Object.assign(
-  { enabled: true, segmentLossPercent: 0.33, explosionRadius: 3, splashLossPercent: 1 / 6, moveIntervalMs: 90 },
+  { enabled: true, segmentLossPercent: 0.33, explosionRadius: 3, splashLossPercent: 1 / 6,
+    speedRatio: 0.45, shortLeaderLength: 15, shortLeaderFactor: 0.25 },
   POWERUPS.blueShell || {}
 );
 // Banana Trail (Phase 11): lays tiles like ice/poison; crossing one INVERTS

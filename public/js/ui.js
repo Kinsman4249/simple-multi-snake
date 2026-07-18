@@ -3,7 +3,7 @@
 // prompt with countdown, spectator overlay, explicit JOIN offer button,
 // and a DEBUG button/panel (recording enabled only while open).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-18.1";
+(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-18.2";
 const UI = (() => {
   const statusEl = document.getElementById("status");
   let captchaId = null;
@@ -620,15 +620,18 @@ const UI = (() => {
     };
   }
 
-  // ---- Mobile UI hide toggle (v3.6.0) ---------------------------------
-  // On touch devices every overlay is hidden by DEFAULT (main.js calls this
-  // only when IS_TOUCH) so it can't cover the board or eat touches; a small
-  // fixed button flips the body's .mobile-hidden class to reveal/hide the
-  // full UI. The class IS the state -- it lives only in the DOM, so a reload
-  // starts hidden again (session-scoped, resets on reload, as specified).
-  // Swipe-to-steer is on the board itself, not an overlay, so play continues
-  // while the UI is hidden. The toggle preventDefaults its touch so the tap
-  // neither steers the board nor double-fires as a synthesized click.
+  // ---- Mobile UI hide toggle (v3.6.0; scope fixed v3.6.1) -------------
+  // On touch devices the INFO overlays are hidden by DEFAULT (main.js calls
+  // this only when IS_TOUCH) so they can't cover the board or eat touches; a
+  // small fixed button flips the body's .mobile-hidden class to reveal/hide
+  // them. The PWR and BOOST touch buttons are PLAY controls, not info UI, so
+  // the .mobile-hidden CSS deliberately leaves them alone -- they stay on
+  // screen at all times (see index.html). The class IS the state -- it lives
+  // only in the DOM, so a reload starts hidden again (session-scoped, resets
+  // on reload, as specified). Swipe-to-steer is on the board itself, so play
+  // continues while the overlays are hidden. The toggle preventDefaults its
+  // touch so the tap neither steers the board nor double-fires as a
+  // synthesized click.
   function initMobileUiToggle() {
     if (document.getElementById("mobileUiToggle")) return;
     document.body.classList.add("mobile-hidden"); // default hidden on load

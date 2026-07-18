@@ -105,21 +105,21 @@
   #powerupInfoPopup .entry:last-child { margin-bottom: 0; }
   #powerupInfoPopup .entry .name { color: #c9f; font-weight: bold; }
   #powerupInfoPopup.open { display: block; }
-  /* Mobile UI hide toggle (v3.6.0): on touch devices ui.js adds .mobile-hidden
-     to <body> at startup so every overlay -- status line, leaderboard, the
-     fading top bar and its panels, and the touch PWR/BOOST buttons -- is
-     removed and cannot cover or capture the board. The small #mobileUiToggle
-     button (excluded below) stays put and flips this class; swipe-to-steer
-     still works while hidden. Class-based + !important so it wins over the
-     inline styles those elements set. Reset on reload (fresh load re-adds it). */
+  /* Mobile UI hide toggle (v3.6.0, scope fixed v3.6.1): on touch devices ui.js
+     adds .mobile-hidden to <body> at startup so the INFO overlays -- status
+     line, leaderboard, the fading top bar and its panels -- are removed and
+     cannot cover or capture the board. The PWR and BOOST touch buttons are
+     PLAY controls, not info UI, so they are deliberately NOT hidden -- they
+     stay on screen at all times. The small #mobileUiToggle button (excluded
+     below) flips this class; swipe-to-steer works throughout. Class-based +
+     !important so it wins over the inline styles those elements set. Reset on
+     reload (fresh load re-adds it). */
   body.mobile-hidden #status,
   body.mobile-hidden .panel,
   body.mobile-hidden #topBar,
   body.mobile-hidden #debugPanel,
   body.mobile-hidden #keymapPanel,
-  body.mobile-hidden #initialsPanel,
-  body.mobile-hidden #touchPwrBtn,
-  body.mobile-hidden #touchBoostBtn { display: none !important; }
+  body.mobile-hidden #initialsPanel { display: none !important; }
 </style>
 </head>
 <body>

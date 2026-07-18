@@ -45,10 +45,15 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
   head exits at the destination, with the body following through the entry
   point segment by segment, so the snake visibly snakes through the wormhole
   instead of snapping across the board. The set: Wormhole, Growth Spurt,
-  Speed Boost, Ice Trail, Poison Trail, Blue Shell (a projectile that hunts
-  whoever is longest -- even the player who fired it; it never spawns and
-  fizzles into food if collected when every snake is the same length, since
-  there is no meaningful leader to punish), and Banana Trail (lays
+  Speed Boost, Ice Trail, Poison Trail, Blue Shell (a fast projectile that
+  hunts whoever is longest -- even the player who fired it. It phases straight
+  through bodies and only detonates on the target's HEAD, so you cannot shield
+  with your tail; it is faster than a plain boost, so it is almost impossible
+  to dodge -- but a hold-boost stacked with the Speed Boost powerup can still
+  outrun it. It never spawns and fizzles into food if collected when every
+  snake is the same length, and it is much rarer while the leader is still
+  short, since there is no meaningful leader to punish yet), and Banana Trail
+  (lays
   pixel-art banana peels -- drawn as little bananas so they read distinctly on
   the board; any snake that slips on one, the layer included, has its
   controls REVERSED for a few seconds -- the status bar shows a "controls
@@ -68,11 +73,12 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
 - Rebindable activation keys and a WASD/Arrows swap, from a small panel in the
   bottom-left corner. Saved in the browser (localStorage); nothing is sent to
   the server but which seat activated.
-- Mobile: swipe on the board to steer, with on-screen PWR and BOOST buttons.
-  All on-screen UI (leaderboard, top bar, buttons, status) is HIDDEN by
-  default so it never covers the board -- a small round toggle button at the
-  bottom reveals or hides the full UI on tap; swipe-steering keeps working
-  while it is hidden. It starts hidden again on every reload.
+- Mobile: swipe on the board to steer, with on-screen PWR and BOOST buttons
+  that are always visible (they are play controls). The INFO overlays
+  (leaderboard, top bar and its panels, status line) are HIDDEN by default so
+  they never cover the board -- a small round toggle button at the bottom
+  reveals or hides them on tap; swipe-steering and the PWR/BOOST buttons keep
+  working throughout. The overlays start hidden again on every reload.
 - Spectator queue past four players. A spectator takes over shortly after a
   player dies; if four or fewer are connected the dead player just respawns.
 - Killing another player (they run into your body) gives you a 10 point bonus
@@ -344,9 +350,13 @@ Keys:
   example growthSpurt.durationMs / foodMultiplier / killBonusGrowth,
   speedBoost.durationMs / speedMult, iceTrail.slowMultiplierPerStack /
   minSpeedMultiplier / tileDurationMs, wormhole.lookaheadDepth,
-  blueShell.segmentLossPercent / explosionRadius / splashLossPercent, and
-  bananaTrail.invertDurationMs / tileDurationMs. See the powerups block in
-  config.json for the full set and defaults.
+  blueShell.segmentLossPercent / explosionRadius / splashLossPercent /
+  speedRatio (projectile cadence as a fraction of the game move interval;
+  lower = faster, 0.45 is ~2.2x a normal snake and dodgeable only with a
+  boost + Speed Boost) / shortLeaderLength / shortLeaderFactor (spawn weight
+  is multiplied by shortLeaderFactor while the leader is shorter than
+  shortLeaderLength), and bananaTrail.invertDurationMs / tileDurationMs. See
+  the powerups block in config.json for the full set and defaults.
 - rubberband.foodBias: bias food placement toward the shortest living snake
   (enabled default true). A free cell within `radius` (default 15, Chebyshev)
   of the trailing snake's head is always accepted; farther cells only with

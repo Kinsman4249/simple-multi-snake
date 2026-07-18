@@ -35,22 +35,20 @@ function maybeSpawnPowerupPickup(now) {
   // once lengths have equalized), so this is continuously enforced, not a
   // one-time spawn decision.
   if (allEqualLength()) enabledTypes = enabledTypes.filter(t => t !== "blueShell");
-  // Rubberband shell pressure: leader >= leadRatio x the second-longest
-  // living snake -> shells spawn sooner (interval scaled down) and the type
-  // roll is weighted toward blueShell. Needs a second living snake by
-  // construction (second > 0).
-  const sp = RUBBERBAND.shellPressure;
-  let pressure = false;
-  if (sp.enabled && enabledTypes.includes("blueShell")) {
-    let best = 0, second = 0;
-    for (const s of S.slots) {
-      if (!s || !s.alive) continue;
-      const len = s.body.length;
-      if (len > best) { second = best; best = len; }
-      else if (len > second) second = len;
-    }
-    pressure = second > 0 && best >= sp.leadRatio * second;
+  // Longest & second-longest living snake -- drives shell pressure and the
+  // blue-shell spawn weight below.
+  let best = 0, second = 0;
+  for (const s of S.slots) {
+    if (!s || !s.alive) continue;
+    const len = s.body.length;
+    if (len > best) { second = best; best = len; }
+    else if (len > second) second = len;
   }
+  // Rubberband shell pressure: leader >= leadRatio x the second-longest living
+  // snake -> shells spawn sooner (interval scaled down) and weigh heavier in
+  // the type roll. Needs a second living snake by construction (second > 0).
+  const sp = RUBBERBAND.shellPressure;
+  const pressure = sp.enabled && enabledTypes.includes("blueShell") && second > 0 && best >= sp.leadRatio * second;
   const effectiveIntervalMs = POWERUPS.spawnIntervalMs * (pressure ? sp.intervalScale : 1);
   if (now - S.lastPowerupSpawnAt < effectiveIntervalMs) return;
   // Live cap scales with player count (pickupCap: max(1, ceil(players/4)) up
@@ -58,18 +56,22 @@ function maybeSpawnPowerupPickup(now) {
   // takes effect immediately.
   if (S.powerupPickups.length >= pickupCap()) return;
   if (enabledTypes.length === 0) { S.lastPowerupSpawnAt = now; return; }
-  let type;
-  if (pressure) {
-    let totalW = 0;
-    for (const t of enabledTypes) totalW += t === "blueShell" ? sp.typeWeight : 1;
-    let roll = Math.random() * totalW;
-    type = enabledTypes[enabledTypes.length - 1];
-    for (const t of enabledTypes) {
-      roll -= t === "blueShell" ? sp.typeWeight : 1;
-      if (roll < 0) { type = t; break; }
-    }
-  } else {
-    type = enabledTypes[Math.floor(Math.random() * enabledTypes.length)];
+  // Weighted type pick. The blue shell's weight is 1 normally, x shellPressure
+  // typeWeight under pressure, and x blueShell.shortLeaderFactor while the
+  // LEADER is short (< blueShell.shortLeaderLength, default 15) so shells stay
+  // rare until someone is genuinely long -- a short leader barely threatens
+  // anyone. All other types keep weight 1.
+  const bs = POWERUPS.blueShell;
+  let shellWeight = 1;
+  if (pressure) shellWeight = sp.typeWeight;
+  if (best < bs.shortLeaderLength) shellWeight *= bs.shortLeaderFactor;
+  let totalW = 0;
+  for (const t of enabledTypes) totalW += (t === "blueShell" ? shellWeight : 1);
+  let roll = Math.random() * totalW;
+  let type = enabledTypes[enabledTypes.length - 1];
+  for (const t of enabledTypes) {
+    roll -= (t === "blueShell" ? shellWeight : 1);
+    if (roll < 0) { type = t; break; }
   }
   let x, y, attempts = 0;
   do {
@@ -602,18 +604,24 @@ function expirePowerupsAndTrails() {
   }
 }
 // Advances every in-flight Blue Shell one cell toward whoever is CURRENTLY
-// the longest living snake (re-targeted fresh every step, so a shell keeps
-// homing on a new leader if the lead changes mid-flight -- and will happily
-// hit its own launcher if they are or become the leader). Passes through
-// every other snake with no effect; only landing on the target's body
-// triggers impact. Returns true if any shell moved (so simLoop broadcasts
-// even on a tick where no snake itself advanced).
+// the longest living snake's HEAD (re-targeted fresh every step, so a shell
+// keeps homing on a new leader if the lead changes mid-flight -- and will
+// happily hit its own launcher if they are or become the leader). It PHASES
+// THROUGH every body (its own target's included) and only detonates on the
+// target's HEAD cell, so you cannot shield with your tail -- it must be
+// outrun, not blocked. Its step cadence is blueShell.speedRatio of the
+// current game move interval, so it is faster than a normal snake at every
+// game phase yet a fully-boosted snake (hold-boost x Speed Boost) can still
+// outrun it: almost impossible to dodge, but dodgeable at maximum speed.
+// Returns true if any shell moved (so simLoop broadcasts even on a tick where
+// no snake itself advanced).
 function updateBlueShells(dt) {
   let moved = false;
+  const shellInterval = currentMoveIntervalMs() * POWERUPS.blueShell.speedRatio;
   for (const shell of S.blueShells.slice()) {
     shell.moveAccumMs = (shell.moveAccumMs || 0) + dt;
-    if (shell.moveAccumMs < POWERUPS.blueShell.moveIntervalMs) continue;
-    shell.moveAccumMs -= POWERUPS.blueShell.moveIntervalMs;
+    if (shell.moveAccumMs < shellInterval) continue;
+    shell.moveAccumMs -= shellInterval;
     const targetIdx = currentLeaderIndex();
     if (targetIdx === null) { S.blueShells = S.blueShells.filter(b => b.id !== shell.id); continue; }
     const targetHead = S.slots[targetIdx].body[0];
@@ -621,8 +629,8 @@ function updateBlueShells(dt) {
     if (dx !== 0) shell.x += dx > 0 ? 1 : -1;
     else if (dy !== 0) shell.y += dy > 0 ? 1 : -1;
     moved = true;
-    const target = S.slots[targetIdx];
-    if (target.body.some(seg => seg.x === shell.x && seg.y === shell.y)) {
+    // Head only -- phases through the body, detonates on the head cell.
+    if (shell.x === targetHead.x && shell.y === targetHead.y) {
       triggerBlueShellImpact(shell, targetIdx);
       S.blueShells = S.blueShells.filter(b => b.id !== shell.id);
     }
