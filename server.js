@@ -43,10 +43,9 @@ const { makeCaptcha, verifyCaptcha, issueJoinToken, consumeJoinToken } = require
 const { sendTo, broadcastState } = require("./server/net");
 const {
   assignConnection, addLocalPlayer, removeLocalSeat, removeConnection,
-  acceptJoin, advanceInitialsFlush
+  acceptJoin
 } = require("./server/lifecycle");
 const { simLoop, firePowerup } = require("./server/sim");
-const { recordScore } = require("./server/highscores");
 
 // PERF summary printer (SNAKE_PERF only): one "[perf] {json}" line every 5s,
 // consumed by tests/perf_baseline.js. Lives here (not config.js) because it
@@ -183,12 +182,15 @@ wss.on("connection", ws => {
         if (cseq != null && cseq > slot.lastAck) slot.lastAck = cseq;
         return;
       }
-      // Drift: a turn made while boosting turns the head immediately but
-      // sets the body skidding in the old direction for BOOST.driftMs (see
-      // computeNewHeads/applyDriftSlides). Tagged at enqueue time so
-      // releasing boost right after the keypress doesn't cancel momentum
-      // already committed.
-      const drift = boostRamp(slot, Date.now());
+      // Drift: a turn made at SPEED turns the head immediately but sets the
+      // body skidding in the old direction for BOOST.driftMs * momentum (see
+      // computeNewHeads/applyDriftSlides). v3.4.0: eligibility follows the
+      // snake's current momentum (rampProgress), not the boost key -- a turn
+      // right after releasing boost still skids until the speed decays below
+      // BOOST.driftThreshold. Tagged at enqueue time so momentum committed
+      // at keypress is honored even if the queue drains later.
+      const sp = boostRamp(slot, Date.now());
+      const drift = sp >= BOOST.driftThreshold ? sp : 0;
       slot.inputQueue.push({ x: nd.x, y: nd.y, seq: cseq, drift });
     }
     if (msg.type === "boost") {
@@ -265,21 +267,17 @@ wss.on("connection", ws => {
       }
       broadcastState();
     }
-    if (msg.type === "initials") {
-      // Only the prompt the server itself put on screen can be answered,
-      // and the score/targets recorded are the SERVER-tracked ones from
-      // that prompt -- msg.score/msg.targets from the wire are ignored, so
-      // a client cannot submit a fabricated score to the boards.
+    if (msg.type === "setInitials") {
+      // Session-bound initials (v3.4.0): the client sends these up front
+      // (page-load gate for P1, first-join prompt for P2, or the Change
+      // Initials button any time) and they ride the whole session. Scores
+      // are recorded server-side at death/leave with whatever is stored
+      // here at that moment -- the client never submits a score, so a
+      // fabricated-score message remains impossible by construction.
       const localIdx = Number.isInteger(msg.local) ? msg.local : 0;
-      const active = conn.activeInitials;
-      if (!active || active.local !== localIdx) return;
-      const initials = String(msg.value || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 3).padEnd(3, "A");
-      // active.mode is the scoreMode() sampled at death/leave time -- the
-      // run's classification (local vs networked board), never re-derived
-      // here where the session shape may already have changed.
-      recordScore(active.targets, initials, active.score, active.mode);
-      advanceInitialsFlush(connId);
-      broadcastState();
+      if (localIdx < 0 || localIdx >= 8) return;
+      const initials = String(msg.value || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 3);
+      if (initials) conn.initials[localIdx] = initials;
     }
   });
   ws.on("close", () => { removeConnection(connId); broadcastState(); });

@@ -113,6 +113,14 @@
           { slot: 1, type: "speedBoost", age: 0.3 },
           { slot: 3, type: "poisonTrail", age: 0.6 }
         ];
+        // Drift dust (v3.4.0): a deterministic trail of slid-through cells
+        // behind the "sliding" slot-1 snake, at staggered fade ages, so the
+        // parity diff exercises the per-cell dust path in both renderers.
+        scene.fx.dust = [];
+        const dustBase = players[1].body[0];
+        for (let d = 0; d < 8; d++) {
+          scene.fx.dust.push({ x: dustBase.x - 1 - d, y: dustBase.y + 1, age: 0.1 + d * 0.1 });
+        }
       }
     };
     return scene;

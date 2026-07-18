@@ -1,25 +1,41 @@
 // ============================================================
 // Connection / seat lifecycle: admission and the spectator queue, couch
-// co-op seats, leave/disconnect teardown, join offers, the idle sweeps,
-// death handling, and the connection-scoped high-score initials state
-// machine. (Movement/collision live in sim.js; this module owns everything
-// about WHO is on the board.)
+// co-op seats, leave/disconnect teardown, join offers, the idle sweeps, and
+// death handling with instant high-score recording. (Movement/collision
+// live in sim.js; this module owns everything about WHO is on the board.)
+//
+// v3.4.0: the post-death initials prompt state machine (PLAYING/FLUSHING/
+// RESUMING, held seats, per-prompt timeouts) is GONE. Initials are
+// session-bound: the client sends them up front (setInitials, before or at
+// seat join), and a qualifying score is written to the boards the moment
+// the death/leave happens -- no prompt, no key-stealing overlay, no parked
+// seats. A seat that never sent initials (e.g. a bare test client) records
+// as "???".
 // ============================================================
 const {
   CFG, COLORS, MAX_LOCAL_PLAYERS, SPECTATOR_IDLE_MS, PLAYER_IDLE_MS,
-  JOIN_OFFER_MS, INITIALS_TIMEOUT_MS, dlog
+  JOIN_OFFER_MS, dlog
 } = require("./config");
 const { S, placeFood, spawnSnake, newPlayerSlot, scoreMode } = require("./state");
 const { sendTo, broadcastState } = require("./net");
-const { qualifies } = require("./highscores");
+const { qualifies, recordScore } = require("./highscores");
 
-// Connection record. pendingInitials is the connection-scoped high-score
-// queue ([{ local, targets, score, mode }]); activeInitials is the one
-// prompt currently on screen ({ local, targets, score, mode, deadline }) or
-// null. See queueInitials() for the state machine.
+// Connection record. `initials` is per LOCAL INDEX, set by the client's
+// setInitials message and bound for the whole session (overwritable any
+// time via the same message -- the Change Initials button).
 function assignConnection(connId, ws) {
-  S.connections.set(connId, { ws, locals: [], pendingInitials: [], activeInitials: null });
+  S.connections.set(connId, { ws, locals: [], initials: [] });
   admitLocal(connId, 0);
+}
+// Record a qualifying score for one local seat, immediately, using the
+// seat's session-bound initials. The mode (local vs networked board) is
+// sampled by the CALLER at the death/leave moment, before any teardown.
+function recordIfQualifies(conn, localIdx, score, mode) {
+  const targets = qualifies(score, mode);
+  if (targets.length === 0) return;
+  const initials = (conn && conn.initials[localIdx]) || "???";
+  recordScore(targets, initials, score, mode);
+  dlog && dlog("score recorded", { local: localIdx, initials, score, mode, targets });
 }
 // Seat a (new or re-requested) local player slot for connId at localIdx.
 // This is the single admission path used by a fresh connect (localIdx 0),
@@ -68,9 +84,10 @@ function addLocalPlayer(connId) {
 // (if playing) is freed, its queue entry (if spectating) is dropped, and the
 // local index becomes a null hole -- it is NOT pushed into the spectator
 // queue. Rejoining requires a fresh joinLocal (WASD key / Play button on the
-// client). If the leaving seat was mid-game with a qualifying score, that
-// score is queued for the initials flush (spec scenario A) and prompts once
-// nobody on this keyboard is still playing.
+// client). If the leaving seat was mid-game with a qualifying score, it is
+// recorded IMMEDIATELY with the seat's session initials. Mode is sampled
+// BEFORE this seat is torn down -- the leaver still counts as present for
+// their own run's classification.
 // Returns true if this was the connection's LAST seat, in which case the
 // caller should tear the whole connection down (solo leave = full exit).
 function removeLocalSeat(connId, localIdx) {
@@ -80,29 +97,15 @@ function removeLocalSeat(connId, localIdx) {
   if (entry === null || entry === undefined) return false;
   if (entry.role === "player" && entry.slotIndex != null) {
     const s = S.slots[entry.slotIndex];
-    if (s && s.alive) {
-      // Leaving mid-game: bank a qualifying score now; it prompts later,
-      // once no local seat on this connection is actively playing. Mode is
-      // sampled BEFORE this seat is torn down -- the leaver still counts as
-      // present for their own run's classification.
-      const mode = scoreMode();
-      const targets = qualifies(s.score, mode);
-      if (targets.length > 0) conn.pendingInitials.push({ local: localIdx, targets, score: s.score, mode });
-    }
+    if (s && s.alive) recordIfQualifies(conn, localIdx, s.score, scoreMode());
     S.slots[entry.slotIndex] = null;
   }
   S.spectatorQueue = S.spectatorQueue.filter(e => !(e.connId === connId && e.local === localIdx));
   if (S.joinOffer && S.joinOffer.connId === connId && S.joinOffer.local === localIdx) S.joinOffer = null;
-  // Leaving during your own live initials prompt counts as declining it.
-  const declinedOwnPrompt = conn.activeInitials && conn.activeInitials.local === localIdx;
   conn.locals[localIdx] = null;
   const anySeatLeft = conn.locals.some(l => l !== null && l !== undefined);
   if (!anySeatLeft) return true;
   maybeOfferSlot();
-  // If the leaver declined their own live prompt, the flush must ADVANCE
-  // (next queued prompt, or re-admit held seats), not merely stop.
-  if (declinedOwnPrompt) advanceInitialsFlush(connId);
-  else maybeStartInitialsFlush(connId);
   return false;
 }
 // After a death that does not need (or has finished) the initials prompt:
@@ -188,15 +191,6 @@ function lifecycleSweep() {
       }
     }
   }
-  // Initials prompt timeouts (connection-scoped -- see the state machine
-  // above handleDeath). A prompt that runs out its countdown is skipped and
-  // the flush advances to the next queued score / re-admits held seats.
-  for (const [connId, conn] of S.connections) {
-    if (conn.activeInitials && now >= conn.activeInitials.deadline) {
-      dlog && dlog("initials timeout", { connId, local: conn.activeInitials.local });
-      advanceInitialsFlush(connId);
-    }
-  }
   // Multiplayer inactivity timeout: if EVERY living snake has gone
   // PLAYER_IDLE_MS without a single input, the lobby is abandoned -- kick
   // the idle connections exactly like the spectator idle rule does. Any one
@@ -232,99 +226,30 @@ function movePlayerToSpectator(slotIndex) {
   }
   maybeOfferSlot();
 }
-// ---------------------------------------------------------------
-// High-score initials: connection-scoped state machine.
-//
-// States (per connection):
-//   PLAYING   -- at least one local seat has a LIVING snake. Initials
-//                prompts are NEVER shown here (shared-keyboard rule:
-//                a prompt would steal keys from whoever is still alive).
-//                Qualifying scores are banked in conn.pendingInitials.
-//   FLUSHING  -- no local seat is alive and pendingInitials is non-empty:
-//                prompts are shown ONE AT A TIME (conn.activeInitials),
-//                each with its own timeout that only starts when the
-//                prompt actually appears. Seats that died while a flush
-//                was owed are parked as role "held" (their board slot is
-//                freed for round-robin fairness) instead of respawning,
-//                so play cannot restart underneath the prompts.
-//   RESUMING  -- queue drained: every held seat is re-admitted through
-//                the normal admitLocal path (respawn immediately if the
-//                board is free, otherwise back of the spectator queue).
-//
-// Transitions are driven from exactly three events: a death, a leave, and
-// an initials resolution (submit / timeout / leaver-declined).
-// ---------------------------------------------------------------
-function anyLocalAlive(conn) {
-  return conn.locals.some(l => {
-    if (!l || l.role !== "player" || l.slotIndex == null) return false;
-    const s = S.slots[l.slotIndex];
-    return s && s.alive;
-  });
-}
-// Bank a qualifying score for a local seat. Called from death and leave.
-// `mode` is the scoreMode() sampled at that moment; it rides along to
-// recordScore so the score lands on the right board (local vs networked).
-function queueInitials(conn, localIdx, targets, score, mode) {
-  conn.pendingInitials.push({ local: localIdx, targets, score, mode });
-  dlog && dlog("initials queued", { local: localIdx, score, mode, queued: conn.pendingInitials.length });
-}
-// PLAYING -> FLUSHING: begin showing prompts if nothing blocks them.
-function maybeStartInitialsFlush(connId) {
-  const conn = S.connections.get(connId);
-  if (!conn || conn.activeInitials || conn.pendingInitials.length === 0) return;
-  if (anyLocalAlive(conn)) return; // someone on this keyboard is still playing
-  const next = conn.pendingInitials.shift();
-  conn.activeInitials = { ...next, deadline: Date.now() + INITIALS_TIMEOUT_MS };
-  sendTo(conn.ws, { type: "askInitials", targets: next.targets, score: next.score, deadlineMs: INITIALS_TIMEOUT_MS, local: next.local });
-}
-// One prompt resolved (submitted, timed out, or its seat left): show the
-// next queued one, or -- FLUSHING -> RESUMING -- re-admit every held seat.
-function advanceInitialsFlush(connId) {
-  const conn = S.connections.get(connId);
-  if (!conn) return;
-  conn.activeInitials = null;
-  if (conn.pendingInitials.length > 0) { maybeStartInitialsFlush(connId); return; }
-  for (let i = 0; i < conn.locals.length; i++) {
-    if (conn.locals[i] && conn.locals[i].role === "held") admitLocal(connId, i);
-  }
-}
 function handleDeath(slotIndex) {
   const s = S.slots[slotIndex];
   if (!s) return;
   s.alive = false;
   s.boost = false;
   s.boostSince = null;
+  s.rampProgress = 0; // death kills momentum; a respawn starts from base speed
   s.driftDir = null;
+  // Session-bound initials (v3.4.0): a qualifying score is written to the
+  // boards RIGHT NOW, with the mode sampled at this instant -- no prompt,
+  // no banking, no parked seats. The respawn timer below runs unchanged.
   const conn = S.connections.get(s.connId);
   const localIdx = conn ? conn.locals.findIndex(l => l && l.role === "player" && l.slotIndex === slotIndex) : -1;
-  if (conn && localIdx !== -1) {
-    const mode = scoreMode();
-    const targets = qualifies(s.score, mode);
-    if (targets.length > 0) queueInitials(conn, localIdx, targets, s.score, mode);
-  }
+  if (conn && localIdx !== -1) recordIfQualifies(conn, localIdx, s.score, scoreMode());
   const connId = s.connId;
   setTimeout(() => {
     if (!S.slots[slotIndex] || S.slots[slotIndex].connId !== connId) return;
-    const c = S.connections.get(connId);
-    if (c && (c.activeInitials || c.pendingInitials.length > 0)) {
-      // An initials flush is owed (or running) on this connection: park the
-      // seat as "held" instead of respawning, freeing the board slot for
-      // others. advanceInitialsFlush re-admits it once the queue drains.
-      S.slots[slotIndex] = null;
-      if (localIdx !== -1) c.locals[localIdx] = { role: "held", slotIndex: null };
-      maybeOfferSlot();
-      maybeStartInitialsFlush(connId);
-      broadcastState();
-      return;
-    }
     respawnOrSpectate(slotIndex);
+    broadcastState();
   }, CFG.spectatorPromoteDelayMs);
-  if (conn) maybeStartInitialsFlush(s.connId);
 }
 
 module.exports = {
   assignConnection, admitLocal, addLocalPlayer, removeLocalSeat,
   respawnOrSpectate, removeConnection, maybeOfferSlot, acceptJoin,
-  lifecycleSweep, movePlayerToSpectator, anyLocalAlive, queueInitials,
-  maybeStartInitialsFlush, advanceInitialsFlush, handleDeath
+  lifecycleSweep, movePlayerToSpectator, handleDeath
 };

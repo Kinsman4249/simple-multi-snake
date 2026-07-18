@@ -166,8 +166,14 @@
          player reads here is exactly what the board will draw. -->
     <div id="powerupLegend"></div>
     <div id="powerupInfoPopup"></div>
-    <div id="captchaQuestion">Loading...</div>
-    <div><input id="captchaAnswer" maxlength="2" autofocus></div>
+    <!-- Session initials (v3.4.0): entered ONCE here, bound to P1 for the
+         whole session, auto-written to the leaderboards on a qualifying
+         death -- there is no post-game prompt. P2 gets its own small prompt
+         at first join; the top-bar INITIALS button changes either any time. -->
+    <div>Your initials</div>
+    <div><input id="initialsEntry" maxlength="3" autofocus></div>
+    <div id="captchaQuestion" style="margin-top:12px;">Loading...</div>
+    <div><input id="captchaAnswer" maxlength="2"></div>
     <button id="captchaSubmit">Join</button>
     <div id="captchaError" class="err"></div>
   </div>

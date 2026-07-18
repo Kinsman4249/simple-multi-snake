@@ -3,10 +3,19 @@
 // prompt with countdown, spectator overlay, explicit JOIN offer button,
 // and a DEBUG button/panel (recording enabled only while open).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-17.2";
+(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-17.3";
 const UI = (() => {
   const statusEl = document.getElementById("status");
   let captchaId = null;
+  // Count of open text-entry surfaces (captcha/initials gate, P2 initials
+  // prompt, Change Initials panel). While > 0, main.js's game key handlers
+  // early-return -- the listener-isolation rule (v3.4.0): no keystroke typed
+  // into a text field may reach movement/boost/seat-request handling.
+  let textEntryCount = 0;
+  function isTextEntryActive() { return textEntryCount > 0; }
+  function sanitizeInitials(v) {
+    return String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 3);
+  }
 
   async function loadCaptcha() {
     const res = await fetch("/api/captcha");
@@ -74,11 +83,26 @@ const UI = (() => {
       (info[type].title || type) + "</span>"
     ).join("");
   }
+  // The gate overlay is one combined screen (v3.4.0): initials entry + the
+  // captcha, both required before the game connects. The whole overlay
+  // counts as an active text entry until it is dismissed, so no keystroke
+  // typed here can reach the game's key handlers.
   function initCaptchaGate(onSuccess) {
     loadCaptcha();
     initBoostTip();
     initPowerupInfo();
+    textEntryCount++;
+    const initialsEl = document.getElementById("initialsEntry");
+    // Prefill from the last session's choice (main.js persists it); entry is
+    // still required -- prefilled just means one less thing to retype.
+    try { if (initialsEl) initialsEl.value = localStorage.getItem("snake.initials.local0") || ""; } catch (_) {}
     document.getElementById("captchaSubmit").onclick = async () => {
+      const initials = sanitizeInitials(initialsEl ? initialsEl.value : "");
+      if (!initials) {
+        document.getElementById("captchaError").textContent = "Enter your initials first.";
+        if (initialsEl) initialsEl.focus();
+        return;
+      }
       const answer = document.getElementById("captchaAnswer").value;
       const res = await fetch("/api/verify", {
         method: "POST",
@@ -93,7 +117,8 @@ const UI = (() => {
       }
       const data = await res.json();
       document.getElementById("overlay").remove();
-      onSuccess(data.token);
+      textEntryCount = Math.max(0, textEntryCount - 1);
+      onSuccess(data.token, initials);
     };
   }
   function setConnectionStatus(text) { statusEl.textContent = text; }
@@ -112,7 +137,6 @@ const UI = (() => {
           (me ? me.score : 0) + (me && !me.alive ? " | waiting" : "") +
           (me && me.alive && me.inverted ? " | ⇄ CONTROLS REVERSED" : "");
       }
-      if (entry.role === "held") return label + "high score entry pending...";
       return label + "spectating (queue " + entry.queuePos + " of " + entry.queueLen + ")";
     }).filter(s => s);
     statusEl.textContent = parts.join("   ");
@@ -216,51 +240,92 @@ const UI = (() => {
     return box;
   }
 
-  function askInitials(targets, score, deadlineMs, local, isCoOp) {
-    local = local || 0;
-    // Distinct id per local index: in couch co-op, p1 and p2 can die and
-    // qualify for initials independently, and overlayBox() would otherwise
-    // clobber the first prompt when the second one appears.
-    const boxId = "initialsOverlay" + local;
+  // Session-initials prompt (v3.4.0): shown BEFORE a seat first joins (P2's
+  // WASD/add-player request), never after a death -- scores auto-record
+  // server-side with the bound initials. While open it counts as an active
+  // text entry, so typing "WAS" here can never steer or spawn anything; the
+  // caller (main.js requestSeat) proceeds with the join only on confirm.
+  function promptInitials(local, prefill, onDone) {
+    const boxId = "initialsPromptOverlay" + local;
+    if (document.getElementById(boxId)) return; // already prompting this seat
     const box = overlayBox(boxId);
-    const inputId = "initialsInput" + local;
-    const submitId = "initialsSubmit" + local;
-    const countdownId = "initCountdown" + local;
+    const inputId = "initialsPromptInput" + local;
+    const submitId = "initialsPromptSubmit" + local;
     const label = local === 0 ? "" : "P" + (local + 1) + " ";
-    if (isCoOp) {
-      // Non-blocking corner prompt: with round-robin seating either local
-      // seat can be the one asking while the OTHER seat on this connection
-      // is still actively playing, and a full block would wrongly cover
-      // its board.
-      box.style.cssText = "position:fixed;top:20px;" + (local === 0 ? "left:20px;" : "right:20px;") +
-        "background:transparent;z-index:9998;";
-    }
-    const end = Date.now() + (deadlineMs || 20000);
+    textEntryCount++;
     box.innerHTML =
-      "<div style=\"background:#1a1a1a;border:1px solid #444;padding:" + (isCoOp ? "20px" : "24px") + ";text-align:center;font-family:monospace;color:#eee;\">" +
-      "<div>" + label + "New high score: " + score + "</div>" +
-      "<div style=\"margin:8px 0;color:#fa6;\">Enter initials before <span id=\"" + countdownId + "\">20</span>s or you become a spectator</div>" +
+      "<div style=\"background:#1a1a1a;border:1px solid #444;padding:24px;text-align:center;font-family:monospace;color:#eee;\">" +
+      "<div>" + label + "Enter your initials</div>" +
+      "<div style=\"margin:6px 0;color:#999;font-size:12px;\">Used for the leaderboards, for this whole session.</div>" +
       "<div><input id=\"" + inputId + "\" maxlength=\"3\" style=\"background:#000;color:#6f6;border:1px solid #666;font-family:monospace;font-size:20px;text-align:center;width:4ch;\"></div>" +
-      "<div><button id=\"" + submitId + "\" style=\"background:#333;color:#eee;border:1px solid #666;padding:6px 14px;margin-top:10px;cursor:pointer;font-family:monospace;\">Submit</button></div>" +
+      "<div><button id=\"" + submitId + "\" style=\"background:#333;color:#eee;border:1px solid #666;padding:6px 14px;margin-top:10px;cursor:pointer;font-family:monospace;\">OK</button></div>" +
       "</div>";
     document.body.appendChild(box);
-    document.getElementById(inputId).focus();
+    const input = document.getElementById(inputId);
+    input.value = sanitizeInitials(prefill);
+    input.focus();
     let done = false;
     const submit = () => {
       if (done) return;
+      const value = sanitizeInitials(input.value);
+      if (!value) { input.focus(); return; } // initials are required to join
       done = true;
-      clearInterval(t);
-      const value = (document.getElementById(inputId).value || "AAA").toUpperCase();
-      Net.send({ type: "initials", value, score, targets, local });
       box.remove();
+      textEntryCount = Math.max(0, textEntryCount - 1);
+      onDone(value);
     };
     document.getElementById(submitId).onclick = submit;
-    const t = setInterval(() => {
-      const left = Math.max(0, Math.ceil((end - Date.now()) / 1000));
-      const el = document.getElementById(countdownId);
-      if (el) el.textContent = String(left);
-      if (left <= 0) submit();
-    }, 250);
+    input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); submit(); } });
+  }
+
+  // Change Initials (v3.4.0): a persistent top-bar button opening a small
+  // panel with one row per local seat -- retype and Save to overwrite the
+  // session-bound initials at any time, no refresh needed. getFn(idx)
+  // returns the current value; saveFn(idx, value) binds + persists it.
+  function initInitialsPanel(getFn, saveFn) {
+    if (document.getElementById("initialsBtn")) return;
+    const btn = document.createElement("button");
+    btn.id = "initialsBtn";
+    btn.textContent = "INITIALS";
+    btn.style.cssText = "background:#222;color:#9f9;border:1px solid #666;font-family:monospace;font-size:12px;padding:4px 8px;cursor:pointer;";
+    topBar().appendChild(btn);
+
+    const panel = document.createElement("div");
+    panel.id = "initialsPanel";
+    panel.style.cssText = "position:fixed;top:34px;left:150px;z-index:9999;display:none;width:220px;background:rgba(0,0,0,0.9);color:#ddd;border:1px solid #666;font-family:monospace;font-size:12px;padding:10px;";
+    document.body.appendChild(panel);
+
+    function renderPanel() {
+      panel.innerHTML = "";
+      for (let idx = 0; idx < 2; idx++) {
+        const row = document.createElement("div");
+        row.style.cssText = "margin-bottom:8px;display:flex;gap:6px;align-items:center;";
+        const label = document.createElement("span");
+        label.textContent = "P" + (idx + 1) + ":";
+        row.appendChild(label);
+        const input = document.createElement("input");
+        input.maxLength = 3;
+        input.value = sanitizeInitials(getFn(idx));
+        input.style.cssText = "background:#000;color:#6f6;border:1px solid #666;font-family:monospace;font-size:14px;text-align:center;width:4ch;";
+        row.appendChild(input);
+        const save = document.createElement("button");
+        save.textContent = "Save";
+        save.style.cssText = "background:#333;color:#eee;border:1px solid #666;padding:2px 8px;cursor:pointer;font-family:monospace;font-size:11px;";
+        save.onclick = () => {
+          const v = sanitizeInitials(input.value);
+          if (v) { saveFn(idx, v); input.value = v; }
+        };
+        row.appendChild(save);
+        panel.appendChild(row);
+      }
+    }
+    btn.onclick = () => {
+      const open = panel.style.display === "none";
+      panel.style.display = open ? "block" : "none";
+      topBarPin(open);
+      textEntryCount = Math.max(0, textEntryCount + (open ? 1 : -1));
+      if (open) renderPanel();
+    };
   }
 
   function showSpectator(msg, isCoOp) {
@@ -588,7 +653,8 @@ const UI = (() => {
   }
 
   return { initCaptchaGate, setConnectionStatus, updateStatus, updateLeaderboards,
-           askInitials, showSpectator, offerJoin, initDebug,
+           promptInitials, initInitialsPanel, isTextEntryActive,
+           showSpectator, offerJoin, initDebug,
            initCoOp, coOpJoined, coOpLeft, notifyJoinLocalDenied,
            initLeaveButtons, updateLeaveButtons, showRejoin, initKeymapPanel,
            setPowerupInfo, initTouchControls };

@@ -58,7 +58,9 @@
 //   728 powerupFx i32 (clientFx.powerupFx toggle)
 //   732 nPflash i32
 //   736 pflashes[MAX_PFLASHES] stride 16: {slot i32, colorIdx i32, age f32, pad}
-//   864 local body pool, MAX_LOCAL_SEGS x {x:i16, y:i16}
+//   864 nDust i32   (drift dust particles, v3.4.0 -- one per slid-through cell)
+//   868 dust[MAX_DUST] stride 12: {x i32, y i32, age f32}
+//   3940 local body pool, MAX_LOCAL_SEGS x {x:i16, y:i16}
 //
 // Instance buffer (output) stride 32:
 //   0 x f32, 4 y f32, 8 w f32, 12 h f32, 16 color u32 (ABGR: r low byte,
@@ -74,6 +76,7 @@ const MAX_FLASHES: i32 = 8;
 const MAX_GLIDES: i32 = 8;
 const MAX_EXPLOSIONS: i32 = 16;
 const MAX_PFLASHES: i32 = 8;
+const MAX_DUST: i32 = 256;
 const MAX_LOCALS: i32 = 4;
 const MAX_LOCAL_SEGS: i32 = 16384;
 const INSTANCE_CAP: i32 = 40960;
@@ -103,7 +106,9 @@ const FR_HELDGLOW: i32 = 724;
 const FR_POWERFX: i32 = 728;   // clientFx.powerupFx toggle
 const FR_NPFLASH: i32 = 732;   // powerup activation flashes
 const FR_PFLASH: i32 = 736;    // stride 16: {slot i32, colorIdx i32, age f32, pad}
-const FR_LOCAL_BODY: i32 = 864; // 736 + MAX_PFLASHES(8) * 16
+const FR_NDUST: i32 = 864;     // 736 + MAX_PFLASHES(8) * 16
+const FR_DUST: i32 = 868;      // stride 12: {x i32, y i32, age f32}
+const FR_LOCAL_BODY: i32 = 3940; // 868 + MAX_DUST(256) * 12
 const FRAME_SIZE: i32 = FR_LOCAL_BODY + MAX_LOCAL_SEGS * 4;
 
 const KIND_RECT: f32 = 0;
@@ -220,7 +225,8 @@ export function render(now: f64, which: i32): i32 {
 
   const interpolate = load<i32>(frameIn + FR_FLAGS) != 0;
   const boostTrail = load<i32>(frameIn + FR_FLAGS, 4) != 0;
-  const slideDust = load<i32>(frameIn + FR_FLAGS, 8) != 0;
+  // (flags+8, the old slideDust toggle, is reserved: dust gating now happens
+  // client-side when main.js decides whether to fill the dust array at all.)
   const foodHidden = load<i32>(frameIn + FR_FLAGS, 12) != 0;
   const heldGlow = load<i32>(frameIn + FR_HELDGLOW) != 0;
   const powerFx = load<i32>(frameIn + FR_POWERFX) != 0;
@@ -410,15 +416,6 @@ export function render(now: f64, which: i32): i32 {
         inst(headPx + cs / 2 - <f32>dirX * dist - cs * <f32>0.15, headPy + cs / 2 - <f32>dirY * dist - cs * <f32>0.15, cs * <f32>0.3, cs * <f32>0.3, speedColor, <f32>0.5 * (1 - phase), KIND_RECT, 0, 0);
       }
     }
-    // slide dust
-    if (alive && load<i32>(p, 32) != 0 && slideDust) {
-      for (let n = 0; n < 4; n++) {
-        const phase = <f32>(((now / 140.0) + <f64>n * 0.25) % 1.0);
-        const angle = <f64>n / 4.0 * Math.PI * 2;
-        const dist = phase * cs * <f32>0.6;
-        inst(headPx + cs / 2 + <f32>Math.cos(angle) * dist - cs * <f32>0.08, headPy + cs / 2 + <f32>Math.sin(angle) * dist - cs * <f32>0.08, cs * <f32>0.16, cs * <f32>0.16, COLOR_DUST, <f32>0.35 * (1 - phase), KIND_RECT, 0, 0);
-      }
-    }
     // input flash
     for (let f = 0; f < nFlashes; f++) {
       const fo = frameIn + FR_FLASHES + <usize>(f << 4);
@@ -450,6 +447,19 @@ export function render(now: f64, which: i32): i32 {
       }
       break;
     }
+  }
+  // Drift dust (v3.4.0): one fading square per cell a segment slid through,
+  // emitted AFTER the player loop -- must match render2d.js drawDust exactly
+  // (same alpha/size formula, same draw order) for parity.
+  const nDust = min(load<i32>(frameIn + FR_NDUST), MAX_DUST);
+  const dustSize = cs * <f32>0.4;
+  const dustOff = (cs - dustSize) / 2;
+  for (let i = 0; i < nDust; i++) {
+    const o = frameIn + FR_DUST + <usize>(i * 12);
+    const age = load<f32>(o, 8);
+    const alpha = <f32>0.35 * (<f32>1 - age);
+    if (alpha <= 0) continue;
+    inst(<f32>load<i32>(o) * cs + dustOff, <f32>load<i32>(o, 4) * cs + dustOff, dustSize, dustSize, COLOR_DUST, alpha, KIND_RECT, 0, 0);
   }
   return instN;
 }

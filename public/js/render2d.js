@@ -51,7 +51,7 @@
 // to "2d". The 2D context is acquired lazily on the first draw (NOT at load
 // time): a canvas can only ever hold one context type, so grabbing "2d"
 // eagerly would poison the facade's wasm path before it could decide.
-(window.__BUILDS__ = window.__BUILDS__ || {}).render2d = "render2d 2026-07-17.1";
+(window.__BUILDS__ = window.__BUILDS__ || {}).render2d = "render2d 2026-07-17.2";
 const Render2D = (() => {
   const canvas = document.getElementById("game");
   let ctx = null;
@@ -172,21 +172,23 @@ const Render2D = (() => {
     for (const seg of body) ctx.fillRect(seg.x * cs, seg.y * cs, cell, cell);
     ctx.restore();
   }
-  // Slide dust: a light particle scatter at the head while a queued turn is
-  // drifting (boost slide penalty). Visual only, gated by
-  // CLIENT_FX.slideDust (opts.slideDust).
-  function drawSlideDust(headPx, headPy, now) {
+  // Drift dust (v3.4.0, replaces the old fixed head scatter): one fading
+  // translucent square per grid cell a body segment slid through. main.js
+  // owns spawning/aging (fx.dust = [{x, y, age}], age 0..1); this just draws
+  // whatever it's given, deterministically -- wasm parity depends on the
+  // exact same alpha/size formula.
+  function drawDust(dustList) {
+    if (!dustList || !dustList.length) return;
     const cs = grid.cellSize;
+    const size = cs * 0.4;
+    const off = (cs - size) / 2;
     ctx.save();
-    for (let n = 0; n < 4; n++) {
-      const phase = (now / 140 + n * 0.25) % 1;
-      const angle = (n / 4) * Math.PI * 2;
-      const dist = phase * cs * 0.6;
-      ctx.globalAlpha = 0.35 * (1 - phase);
-      ctx.fillStyle = "#ccc";
-      const px = headPx + cs / 2 + Math.cos(angle) * dist - cs * 0.08;
-      const py = headPy + cs / 2 + Math.sin(angle) * dist - cs * 0.08;
-      ctx.fillRect(px, py, cs * 0.16, cs * 0.16);
+    ctx.fillStyle = "#ccc";
+    for (const d of dustList) {
+      const alpha = 0.35 * (1 - d.age);
+      if (alpha <= 0) continue;
+      ctx.globalAlpha = alpha;
+      ctx.fillRect(d.x * cs + off, d.y * cs + off, size, size);
     }
     ctx.restore();
   }
@@ -369,7 +371,6 @@ const Render2D = (() => {
       // Speed Boost ACTIVE: a persistent jetstream in the powerup color while
       // the buff runs, distinct from (and stacking with) the hold-boost one.
       if (p.alive && powerFx && p.activePowerup === "speedBoost" && p.dir) drawBoostTrail(headPx, headPy, p.dir, now, POWERUP_STYLE.speedBoost);
-      if (p.alive && p.sliding && opts && opts.slideDust) drawSlideDust(headPx, headPy, now);
       const flash = flashes.find(f => f.slot === i);
       if (flash) {
         const alpha = Math.max(0, 1 - (now - flash.t) / flash.durationMs);
@@ -378,6 +379,10 @@ const Render2D = (() => {
       const pflash = powerFlashes.find(f => f.slot === i);
       if (pflash) drawPowerFlash(body, POWERUP_STYLE[pflash.type] || "#fff", pflash.age);
     });
+    // Drift dust last (on top of bodies): the vacated cells sit under/behind
+    // the sliding snake, and the wasm path emits its dust instances after
+    // the player loop too -- draw order must match for parity.
+    drawDust((fx && fx.dust) || []);
   }
   // POWERUP_STYLE is exported (read-only by convention) so the facade
   // (render.js) can re-export it to ui.js's captcha-screen color legend --

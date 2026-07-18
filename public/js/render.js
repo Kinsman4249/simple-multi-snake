@@ -24,7 +24,7 @@
 //
 // Display scaling (fitCanvas) is CSS-only and identical for both paths.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-17.1 (wasm facade)";
+(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-17.2 (wasm facade)";
 const Render = (() => {
   const canvas = document.getElementById("game");
   const POWERUP_STYLE = Render2D.POWERUP_STYLE;
@@ -35,7 +35,7 @@ const Render = (() => {
   const PLAYER_STRIDE_B = PLAYER_STRIDE_I32 * 4;
   const SNAP_PLAYERS_I32 = 8;     // header is 32 bytes
   const MAX_PLAYERS = 8, MAX_SEGS = 16384, MAX_TRAILS = 8192, MAX_PICKUPS = 32, MAX_SHELLS = 16;
-  const MAX_FLASHES = 8, MAX_GLIDES = 8, MAX_EXPLOSIONS = 16, MAX_PFLASHES = 8, MAX_LOCALS = 4, MAX_LOCAL_SEGS = 16384;
+  const MAX_FLASHES = 8, MAX_GLIDES = 8, MAX_EXPLOSIONS = 16, MAX_PFLASHES = 8, MAX_DUST = 256, MAX_LOCALS = 4, MAX_LOCAL_SEGS = 16384;
 
   let wasm = null;          // instantiated exports, or null
   let wasmFailed = false;   // permanent this-session failure -> 2D
@@ -251,8 +251,19 @@ const Render = (() => {
       i32[o + 1] = pflashes[i].type in POWERUP_TYPE_INDEX ? POWERUP_TYPE_INDEX[pflashes[i].type] : -1;
       f32[o + 2] = pflashes[i].age;
     }
+    // Drift dust (offset 864 count, 868 entries stride 12: {x i32, y i32,
+    // age f32}) -- see wasm/renderer.ts FR_NDUST/FR_DUST.
+    const dust = (fx && fx.dust) || [];
+    const nD = Math.min(dust.length, MAX_DUST);
+    i32[base + 216] = nD; // offset 864
+    for (let i = 0; i < nD; i++) {
+      const o = base + 217 + i * 3; // offset 868, stride 12
+      i32[o] = dust[i].x;
+      i32[o + 1] = dust[i].y;
+      f32[o + 2] = dust[i].age;
+    }
     let nL = 0, segOff = 0;
-    const localBase16 = (fp + 864) >>> 1; // after the pflash array
+    const localBase16 = (fp + 3940) >>> 1; // after the dust array
     if (localBodies) {
       localBodies.forEach((body, slot) => {
         if (nL >= MAX_LOCALS || !body) return;

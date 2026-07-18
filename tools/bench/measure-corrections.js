@@ -61,6 +61,7 @@ try {
   await cdp("Runtime.enable", {}, sessionId);
   await sleep(1500);
   await evalIn(sessionId, `(function(){
+    const ie = document.getElementById("initialsEntry"); if (ie) ie.value = "BOT";
     const q = document.getElementById("captchaQuestion").textContent;
     const m = q.match(/(\\d+)\\s*\\+\\s*(\\d+)/);
     document.getElementById("captchaAnswer").value = String(Number(m[1]) + Number(m[2]));

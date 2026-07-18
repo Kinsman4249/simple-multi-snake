@@ -114,6 +114,7 @@ function spawnSnake(slotIndex) {
   s.lastAck = 0;
   s.boost = false;
   s.boostSince = null;
+  s.rampProgress = 0;
   s.moveAccumMs = 0;
   // NOTE: lastInputAt is deliberately NOT reset here. spawnSnake also runs
   // on automatic respawns, and an AFK player who keeps dying and respawning
@@ -139,7 +140,7 @@ function newPlayerSlot(connId) {
   return {
     connId, color: null, body: [], dir: { x: 1, y: 0 }, inputQueue: [],
     alive: true, score: 0, wallStalls: 0, lastAck: 0,
-    boost: false, boostSince: null, moveAccumMs: 0, lastInputAt: Date.now(),
+    boost: false, boostSince: null, rampProgress: 0, moveAccumMs: 0, lastInputAt: Date.now(),
     heldPowerup: null, wormholeCharge: false, activePowerup: null, activatedFx: null,
     iceStacks: 0, iceExpiresAtTick: 0, teleportedThisTick: false,
     driftDir: null, driftUntilMs: 0, invertUntilTick: 0
@@ -180,35 +181,35 @@ function currentTrailingIndex() {
 }
 // How many connected PEOPLE are still in the game: seats in role "player"
 // (alive OR dead awaiting respawn -- the seat persists through the
-// spectatorPromoteDelayMs window) plus seats parked as "held" during an
-// initials flush. Spectators do not count. This is the blue-shell presence
-// gate (maintainer, 2026-07-16): a lone survivor whose opponent is merely
-// dead still self-nukes on pickup; only a genuine disconnect makes the
-// shell fizzle. Note this counts SEATS, not connections -- two couch seats
-// on one computer are two players for shell purposes.
+// spectatorPromoteDelayMs window). Spectators do not count. This is the
+// blue-shell presence gate (maintainer, 2026-07-16): a lone survivor whose
+// opponent is merely dead still self-nukes on pickup; only a genuine
+// disconnect makes the shell fizzle. Note this counts SEATS, not
+// connections -- two couch seats on one computer are two players for shell
+// purposes. (The "held" role this used to also count was removed with the
+// v3.4.0 session-initials rework -- scores now record instantly at death,
+// so no seat is ever parked waiting on an initials prompt.)
 function playerSeatCount() {
   let n = 0;
   for (const [, conn] of S.connections) {
     for (const l of conn.locals) {
-      if (l && (l.role === "player" || l.role === "held")) n++;
+      if (l && l.role === "player") n++;
     }
   }
   return n;
 }
 // "How many computers" (Phase 12 leaderboard split): connections that own at
 // least one seat still in the game (role "player" -- alive or
-// dead-awaiting-respawn -- or "held" during an initials flush). 1 => "local"
-// (solo or couch co-op on one machine); 2+ => "networked". Spectator-only
-// connections don't count -- a watcher isn't a competitor. Sampled at
-// DEATH/LEAVE time and stored with the pending score (lifecycle.js
-// queueInitials), so a session changing shape later can't reclassify a
-// finished run. Distinct from playerSeatCount above, which counts SEATS
-// (two couch seats = two players for the blue shell) -- this counts
-// MACHINES.
+// dead-awaiting-respawn). 1 => "local" (solo or couch co-op on one machine);
+// 2+ => "networked". Spectator-only connections don't count -- a watcher
+// isn't a competitor. Sampled at DEATH/LEAVE time, the instant the score is
+// recorded, so a session changing shape later can't reclassify a finished
+// run. Distinct from playerSeatCount above, which counts SEATS (two couch
+// seats = two players for the blue shell) -- this counts MACHINES.
 function scoreMode() {
   let n = 0;
   for (const [, conn] of S.connections) {
-    if (conn.locals.some(l => l && (l.role === "player" || l.role === "held"))) n++;
+    if (conn.locals.some(l => l && l.role === "player")) n++;
   }
   return n >= 2 ? "networked" : "local";
 }

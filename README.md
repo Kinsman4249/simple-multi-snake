@@ -14,17 +14,22 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
   queued as a spectator); rejoin any time by pressing that seat's own keys or
   the Play/Add button. Leaving your last seat closes the connection and shows
   a rejoin screen instead of leaving a dead board on screen.
-- Boost & drift: hold the key of the direction you're already moving to speed
-  up. Boost doesn't kick in instantly: a short tap does nothing at all (a
-  hold-grace, so taps can't accidentally tag a queued turn with a drift), and
-  once engaged the speed RAMPS up to full over a moment rather than snapping.
-  Turning while boosting turns your head immediately, but your body keeps
-  skidding sideways in the old direction -- and the skid length scales with
-  how close to top speed you actually were when you turned (a barely-boosting
-  snake barely drifts). The skidding body clamps against walls and other
-  snakes rather than dying, and there is no wall-grace tick while boost is
-  engaged. A brief tip explaining this is shown on the join screen while the
-  captcha is being solved. Configurable, and can be turned off entirely.
+- Boost & momentum drift: hold the key of the direction you're already moving
+  to speed up. Boost doesn't kick in instantly: a short tap does nothing at
+  all (a hold-grace, so taps can't accidentally tag a queued turn with a
+  drift), and once engaged the speed RAMPS up to full over a moment rather
+  than snapping. Speed is real momentum: releasing the key does not stop you
+  dead -- the snake decelerates over a moment (faster than it accelerated,
+  but spanning multiple frames), and while it is still fast a turn skids
+  exactly like a boosted one. Turning at speed turns your head immediately,
+  but your body keeps skidding sideways in the old direction -- and the skid
+  length scales with how fast you actually were when you turned (a
+  barely-moving snake barely drifts). Rapid alternating turns chain skids.
+  The skidding body clamps against walls and other snakes rather than dying,
+  lays a trail of fading dust on every cell it slides through, and there is
+  no wall-grace tick while you carry speed. A brief tip explaining this is
+  shown on the join screen while the captcha is being solved. Configurable,
+  and can be turned off entirely.
 - Held-powerup glow: a snake carrying a powerup (or an armed wormhole charge)
   glows in that powerup's color -- visible to EVERYONE, not just the holder,
   so opponents can see what's coming and play around it. When a snake has
@@ -36,7 +41,10 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
   activation key (default Right Shift for the arrows seat, Space for the WASD
   seat). Wormhole is also held, as an independent charge, and auto-fires the
   instant a move would otherwise kill you (a wall, another snake, or your own
-  body), teleporting you somewhere safe. The set: Wormhole, Growth Spurt,
+  body), teleporting you somewhere safe -- and the teleport THREADS: only the
+  head exits at the destination, with the body following through the entry
+  point segment by segment, so the snake visibly snakes through the wormhole
+  instead of snapping across the board. The set: Wormhole, Growth Spurt,
   Speed Boost, Ice Trail, Poison Trail, Blue Shell (a projectile that hunts
   whoever is longest -- even the player who fired it), and Banana Trail (lays
   banana peels; any snake that slips on one, the layer included, has its
@@ -69,9 +77,14 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
   had players in the game, the hover panel shows both pairs with the current
   mode highlighted, and an existing single-board highscores.json migrates
   into the local pair automatically (the networked boards start fresh).
-  On a shared keyboard, the initials prompt never interrupts a snake that is
-  still alive: a qualifying score is held until every local seat on that
-  keyboard is dead, then prompts are shown one at a time.
+  Initials are SESSION-BOUND: P1 enters them on the join screen (with the
+  captcha) before playing, P2 at its first join, and a qualifying score is
+  written to the boards automatically the moment the run ends -- there is no
+  post-game prompt to interrupt anyone. A persistent INITIALS button in the
+  top bar changes either seat's initials any time, no refresh needed. While
+  any initials entry is on screen, game keys are fully suspended (typing
+  "WAS" into a text box can never steer a snake or spawn P2), and a short
+  grace after confirming absorbs trailing keypresses.
 - Simple math captcha on join, intended to sit behind a Cloudflare filter.
 - Client-side prediction with server reconciliation: local movement is
   responsive while the server stays authoritative for collisions, food, and
@@ -246,8 +259,6 @@ Keys:
   WebSocket must be opened.
 - wallGraceTicks: ticks a snake may stall against a wall waiting for a late but
   valid turn before the wall wins. 0 disables the grace.
-- initialsTimeoutMs: time to enter initials on a qualifying death before the
-  player becomes a spectator.
 - spectatorIdleMs: global spectator idle disconnect time.
 - playerIdleMs: inactivity timeout for ACTIVE play (default 120000). If every
   currently-living snake on the board goes this long without any input, the
@@ -269,8 +280,16 @@ Keys:
   makes a queued turn drift. 0 restores instant engagement.
 - boost.rampMs: once engaged, how long the speed multiplier takes to climb
   from 1x to boostSpeed (default 400). 0 restores an instant jump to full.
+- boost.decelMs: how long a released boost takes to wind back down to base
+  speed (default 250 -- faster than the ramp-up, but real momentum: the
+  snake stays fast, and turns still skid, while it decays). 0 restores an
+  instant stop on release.
+- boost.driftThreshold: the momentum fraction (0..1 of the ramp) above which
+  a turn starts a body skid (default 0.3). Speed-based, not key-based: a
+  turn just after releasing boost still skids until the decay crosses this.
 - clientFx.boostTrail / clientFx.slideDust: purely-cosmetic client visuals for
-  a boosting head and a sliding drift (both default true). No gameplay effect.
+  a boosting head and the drift dust (one fading particle per cell a sliding
+  body slides through; both default true). No gameplay effect.
 - clientFx.heldGlow: the everyone-can-see-it glow around a snake holding a
   powerup or wormhole charge (default true). Cosmetic only -- the underlying
   heldPowerup/wormholeCharge fields were always in the shared broadcast.

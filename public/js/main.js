@@ -23,10 +23,10 @@
 //     debug button/panel/recording are never created at all -- the only
 //     residue is one boolean test at startup.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-17.2";
+(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-17.3";
 let CLIENT_FX = { inputFlash: true, inputFlashMs: 90, correctionGlide: true, correctionGlideMs: 90, boostTrail: true, slideDust: true, heldGlow: true, powerupFx: true };
 let CLIENT_RENDER = { interpolate: true, renderer: "auto" };
-let BOOST_CFG = { enabled: true, boostSpeed: 2.0, driftMs: 250, rampMs: 400, holdGraceMs: 120 };
+let BOOST_CFG = { enabled: true, boostSpeed: 2.0, driftMs: 250, rampMs: 400, holdGraceMs: 120, decelMs: 250, driftThreshold: 0.3 };
 let POWERUPS_CFG = {};
 fetch("/api/config").then(r => r.json()).then(cfg => {
   if (cfg && cfg.clientFx) CLIENT_FX = Object.assign({}, CLIENT_FX, cfg.clientFx);
@@ -95,9 +95,32 @@ const KEY_MAPS = loadKeyMaps();
 const DIR_TO_VEC = { up: { x: 0, y: -1 }, down: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 } };
 
 const myPlayers = new Map();
+// Session-bound initials per local seat (v3.4.0): P1's are entered on the
+// captcha gate before play; P2's on its first join. Sent to the server via
+// setInitials and used there to auto-record qualifying scores at death --
+// there is no post-game prompt anymore. localStorage only PREFILLS the
+// entry fields on the next page load; the prompt itself always runs.
+const INITIALS_STORAGE_PREFIX = "snake.initials.local";
+const sessionInitials = [null, null];
+function storeInitials(localIdx, value) {
+  sessionInitials[localIdx] = value;
+  try { localStorage.setItem(INITIALS_STORAGE_PREFIX + localIdx, value); } catch (_) {}
+  Net.send({ type: "setInitials", local: localIdx, value });
+}
+function storedInitials(localIdx) {
+  try { return localStorage.getItem(INITIALS_STORAGE_PREFIX + localIdx) || ""; } catch (_) { return ""; }
+}
+// Post-initials-entry input grace (v3.4.0 listener-isolation fix): for a
+// short window after ANY initials entry is confirmed, movement keys cannot
+// REQUEST A SEAT -- residual/trailing keypresses from typing initials (WASD
+// letters!) must not spawn P2. Movement of already-playing seats is
+// unaffected.
+const SEAT_REQUEST_GRACE_MS = 1800;
+let seatRequestGraceUntil = 0;
+function armSeatRequestGrace() { seatRequestGraceUntil = performance.now() + SEAT_REQUEST_GRACE_MS; }
 // curr.you.locals: array of
 //   { local, role:"player", slot, ack } | { local, role:"spectator", ... } |
-//   { local, role:"held" } (parked during the high-score flush) | null (left).
+//   null (left).
 let myLocals = null;
 // Guards against sending duplicate joinLocal requests while one is in flight.
 const seatPending = [false, false];
@@ -111,12 +134,29 @@ const heldKeys = new Set();
 const boostOn = [false, false];
 // When each seat's boost was last reported ON. Mirrors the server's
 // hold-grace (BOOST_CFG.holdGraceMs): until the hold survives the grace the
-// server treats the snake as NOT boosting, so turns typed in that window
-// are plain turns the predictor can pre-play (no drift flag).
+// server treats the snake as NOT boosting.
 const boostOnSince = [0, 0];
-function boostEngaged(localIdx) {
-  return boostOn[localIdx] &&
-    (performance.now() - boostOnSince[localIdx]) > (BOOST_CFG.holdGraceMs || 0);
+// Client-side mirror of the server's per-snake momentum (v3.4.0): speed is
+// state, not key state -- it ramps up while the hold is engaged and decays
+// over decelMs after release. Updated lazily on every read (refreshBoost
+// runs on every state broadcast, keeping it fresh). The server tags a turn
+// as drifting whenever its momentum >= driftThreshold, so the predictor
+// must skip pre-playing turns under the same condition -- including turns
+// typed shortly AFTER the boost key was released.
+const speedEst = [{ p: 0, t: 0 }, { p: 0, t: 0 }];
+function seatSpeed(localIdx) {
+  const st = speedEst[localIdx];
+  const now = performance.now();
+  const dt = st.t ? now - st.t : 0;
+  st.t = now;
+  const engaged = boostOn[localIdx] &&
+    (now - boostOnSince[localIdx]) > (BOOST_CFG.holdGraceMs || 0);
+  if (engaged) st.p = BOOST_CFG.rampMs > 0 ? Math.min(1, st.p + dt / BOOST_CFG.rampMs) : 1;
+  else st.p = BOOST_CFG.decelMs > 0 ? Math.max(0, st.p - dt / BOOST_CFG.decelMs) : 0;
+  return st.p;
+}
+function driftyTurn(localIdx) {
+  return seatSpeed(localIdx) >= (BOOST_CFG.driftThreshold || 0.3);
 }
 // Banana-trail inversion (server-authoritative): while this seat's player is
 // flagged `inverted`, the server flips every dir it receives, so the one-cell
@@ -142,6 +182,32 @@ let activeExplosions = [];
 // brief bright pop in the powerup's color on that snake, visible to everyone.
 const POWERUP_FLASH_MS = 380;
 let activePowerFlashes = []; // [{ slot, type, startTime }]
+// Drift dust (v3.4.0): one transparent particle per grid cell a body
+// segment slides through while its snake is drifting (`sliding` broadcast).
+// Cells are found by diffing consecutive snapshots -- each segment's
+// previous-snapshot cell is the cell it just vacated. Fast fade, hard cap,
+// deduped per spawn so overlapping segments don't stack particles.
+const DUST_MS = 300;
+const DUST_CAP = 400;
+let activeDust = []; // [{ x, y, startTime }]
+function spawnDriftDust(curr, prev) {
+  if (!CLIENT_FX.slideDust || !prev || !prev.players) return;
+  const now = performance.now();
+  const seen = new Set();
+  curr.players.forEach((p, i) => {
+    if (!p || !p.alive || !p.sliding) return;
+    const pb = prev.players[i] && prev.players[i].body;
+    if (!pb) return;
+    for (let si = 0; si < p.body.length && si < pb.length; si++) {
+      const a = pb[si], b = p.body[si];
+      if (a.x === b.x && a.y === b.y) continue; // segment didn't move
+      const key = a.x + "," + a.y;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (activeDust.length < DUST_CAP) activeDust.push({ x: a.x, y: a.y, startTime: now });
+    }
+  });
+}
 // Phase 6 -- mobile/touch (single seat only: seat 0). Coarse-pointer
 // detection gates ALL touch surfaces; desktop behavior is untouched. A
 // touchscreen laptop matches too and simply gets both input surfaces --
@@ -160,9 +226,26 @@ function wireLocalPlayer(localIdx) {
 // Request (or re-request after a Leave) a seat for this local index. The
 // server admits it round-robin fair like any fresh join: instant slot if the
 // board is free and nobody waits, otherwise back of the spectator queue.
+// v3.4.0: a seat with no session initials yet (P2's first join) prompts for
+// them FIRST -- the join proceeds on confirm. While that prompt is open all
+// game key handling is suspended (see the keydown gate), and confirming it
+// arms the seat-request grace so trailing keypresses can't double-join.
 function requestSeat(localIdx) {
   if (seatPending[localIdx]) return;
   if (myLocals && myLocals[localIdx]) return; // seat already exists in some role
+  if (!sessionInitials[localIdx]) {
+    UI.promptInitials(localIdx, storedInitials(localIdx), value => {
+      storeInitials(localIdx, value);
+      armSeatRequestGrace();
+      doRequestSeat(localIdx);
+    });
+    return;
+  }
+  doRequestSeat(localIdx);
+}
+function doRequestSeat(localIdx) {
+  if (seatPending[localIdx]) return;
+  if (myLocals && myLocals[localIdx]) return;
   seatPending[localIdx] = true;
   if (!myPlayers.has(localIdx)) {
     myPlayers.set(localIdx, new LocalPlayerPredictor(localIdx === 0 ? "p1" : "p2"));
@@ -209,6 +292,7 @@ function keyForDir(localIdx, dirName) {
 function refreshBoost() {
   if (!BOOST_CFG.enabled || !myLocals) return;
   for (let localIdx = 0; localIdx < KEY_MAPS.length; localIdx++) {
+    seatSpeed(localIdx); // keep the lazy momentum clock fresh (runs every broadcast)
     const entry = myLocals[localIdx];
     const p = myPlayers.get(localIdx);
     const playing = entry && entry.role === "player" && p;
@@ -233,12 +317,22 @@ function refreshBoost() {
   }
 }
 
-function startGame(token) {
+function startGame(token, initials) {
   if (!myPlayers.has(0)) myPlayers.set(0, new LocalPlayerPredictor("p1"));
   wireLocalPlayer(0);
+  // P1's initials came from the captcha gate; bind them for the session and
+  // arm the grace so residual keypresses from typing them can't spawn P2.
+  // (The setInitials send inside storeInitials is dropped -- no socket yet --
+  // and onOpen below re-sends every bound seat's initials once connected.)
+  if (initials) storeInitials(0, initials);
+  armSeatRequestGrace();
   UI.setConnectionStatus("connecting...");
   Net.connect(token, {
-    onOpen: () => UI.setConnectionStatus("connected"),
+    onOpen: () => {
+      UI.setConnectionStatus("connected");
+      // The socket is up now: (re)send every seat's session initials.
+      sessionInitials.forEach((v, idx) => { if (v) Net.send({ type: "setInitials", local: idx, value: v }); });
+    },
     onClose: () => {
       // Connection is gone (we left, were idle-kicked, or the server went
       // away). Never idle on a dead board: show the menu/rejoin screen.
@@ -246,7 +340,6 @@ function startGame(token) {
       UI.showRejoin();
     },
     onState: handleState,
-    onInitials: msg => UI.askInitials(msg.targets, msg.score, msg.deadlineMs, msg.local, myPlayers.size > 1),
     onSpectator: msg => UI.showSpectator(msg, myPlayers.size > 1),
     onOfferJoin: msg => UI.offerJoin(msg, () => Net.send({ type: "acceptJoin", local: msg.local }), myPlayers.size > 1),
     onJoinLocalDenied: () => { seatPending[1] = false; UI.notifyJoinLocalDenied({ reason: "max local players reached" }); }
@@ -268,6 +361,12 @@ function startGame(token) {
   }
   UI.initLeaveButtons(leaveSeat);
   UI.initKeymapPanel(() => KEY_MAPS, saveKeyMap, swapKeyMaps);
+  // Persistent "Change Initials" (v3.4.0): overwrite either seat's session
+  // initials any time, no refresh needed. Saving re-arms the grace window.
+  UI.initInitialsPanel(
+    idx => sessionInitials[idx] || storedInitials(idx),
+    (idx, value) => { storeInitials(idx, value); armSeatRequestGrace(); }
+  );
 }
 // Swipe-to-turn (Phase 6): dominant axis of the drag, one turn per swipe
 // (the start point is consumed once the threshold trips; a new turn needs a
@@ -285,7 +384,7 @@ function steerTouch(dir) {
   if (entry.role !== "player") return;
   const p = myPlayers.get(0);
   if (!p) return;
-  const accepted = p.queueInput(dir, boostEngaged(0) || seatInverted(0));
+  const accepted = p.queueInput(dir, driftyTurn(0) || seatInverted(0));
   if (accepted && CLIENT_FX.inputFlash) lastInputFlash[0] = { dir, t: performance.now() };
 }
 function initSwipeSteering() {
@@ -305,8 +404,9 @@ function initSwipeSteering() {
   }, { passive: true });
   board.addEventListener("touchend", () => { start = null; });
 }
-function handleState(curr) {
+function handleState(curr, prev) {
   myLocals = curr.you.locals;
+  spawnDriftDust(curr, prev);
   if (myPlayers.has(1) && myLocals[1] && myLocals[1].role === "player") UI.coOpJoined();
   for (let idx = 0; idx < KEY_MAPS.length; idx++) {
     const entry = myLocals[idx];
@@ -393,7 +493,9 @@ function frame() {
     const powerFlashes = CLIENT_FX.powerupFx
       ? activePowerFlashes.map(f => ({ slot: f.slot, type: f.type, age: (now2 - f.startTime) / POWERUP_FLASH_MS }))
       : [];
-    Render.draw(prev, curr, localBodies, eatenKeys, { flashes, glides, explosions, powerFlashes }, {
+    activeDust = activeDust.filter(d => now2 - d.startTime < DUST_MS);
+    const dust = activeDust.map(d => ({ x: d.x, y: d.y, age: (now2 - d.startTime) / DUST_MS }));
+    Render.draw(prev, curr, localBodies, eatenKeys, { flashes, glides, explosions, powerFlashes, dust }, {
       interpolate: CLIENT_RENDER.interpolate,
       renderer: CLIENT_RENDER.renderer,
       boostTrail: CLIENT_FX.boostTrail,
@@ -405,6 +507,13 @@ function frame() {
   requestAnimationFrame(frame);
 }
 document.addEventListener("keydown", e => {
+  // Listener isolation (v3.4.0): while any text entry is active -- the
+  // captcha/initials gate, a P2 initials prompt, the Change Initials panel,
+  // or focus sitting in ANY input -- the game must not see keys at all. No
+  // movement, no boost, no seat requests; nothing leaks from typing "WAS"
+  // into a WASD listener. This is a gate on WHEN the listener acts, not a
+  // remap of any key.
+  if (UI.isTextEntryActive() || (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA"))) return;
   if (!myLocals) return;
   // Powerup activation: a distinct action from movement, looked up against
   // e.code (not e.key) so left/right Shift can be told apart. This is its
@@ -431,8 +540,11 @@ document.addEventListener("keydown", e => {
   // Rejoin rule: pressing a seat's own movement keys when that seat does not
   // currently exist (never joined, or left via the Leave button) re-requests
   // it. The keypress itself is the join request and moves nothing yet.
+  // Suppressed during the post-initials grace window: trailing keypresses
+  // from an initials entry must not count as a join request.
   for (let localIdx = 0; localIdx < KEY_MAPS.length; localIdx++) {
     if (KEY_MAPS[localIdx][key] !== undefined && !myLocals[localIdx] && !seatPending[localIdx]) {
+      if (performance.now() < seatRequestGraceUntil) return;
       requestSeat(localIdx);
       return;
     }
@@ -445,11 +557,12 @@ document.addEventListener("keydown", e => {
     const entry = myLocals[localIdx];
     if (!myPlayers.has(localIdx) || !entry || entry.role !== "player") break;
     if (!wasHeld) {
-      // A turn typed while boost is ENGAGED (past the hold grace) drifts the
-      // body server-side; tell the predictor not to pre-play it (see
-      // predict.js). Inside the grace it's a plain, predictable turn. A turn
-      // typed while banana-INVERTED is flipped server-side -- same rule.
-      const accepted = myPlayers.get(localIdx).queueInput(dir, boostEngaged(localIdx) || seatInverted(localIdx));
+      // A turn typed at SPEED (momentum >= driftThreshold, whether or not
+      // the boost key is still held) drifts the body server-side; tell the
+      // predictor not to pre-play it (see predict.js). Below the threshold
+      // it's a plain, predictable turn. A turn typed while banana-INVERTED
+      // is flipped server-side -- same rule.
+      const accepted = myPlayers.get(localIdx).queueInput(dir, driftyTurn(localIdx) || seatInverted(localIdx));
       if (accepted && CLIENT_FX.inputFlash) lastInputFlash[localIdx] = { dir, t: performance.now() };
     }
     if (key.startsWith("arrow")) e.preventDefault();

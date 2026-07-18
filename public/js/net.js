@@ -2,7 +2,7 @@
 // Networking: owns the WebSocket connection and keeps the last two
 // authoritative "state" snapshots, each stamped with browser receive time.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).net = "net 2026-07-12.9";
+(window.__BUILDS__ = window.__BUILDS__ || {}).net = "net 2026-07-17.1";
 const Net = (() => {
   let ws = null;
   let handlers = {};
@@ -22,8 +22,6 @@ const Net = (() => {
       prevSnap = currSnap;
       currSnap = Object.assign({ recvTime: performance.now() }, msg);
       handlers.onState && handlers.onState(currSnap, prevSnap);
-    } else if (msg.type === "askInitials") {
-      handlers.onInitials && handlers.onInitials(msg);
     } else if (msg.type === "spectator") {
       handlers.onSpectator && handlers.onSpectator(msg);
     } else if (msg.type === "offerJoin") {

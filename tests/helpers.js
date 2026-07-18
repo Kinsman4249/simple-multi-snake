@@ -42,7 +42,14 @@ function connectClient() {
       },
       close() { try { ws.close(); } catch (_) {} }
     };
-    ws.onopen = () => resolve(client);
+    ws.onopen = () => {
+      // Session-bound initials (v3.4.0): sent up front like the real client
+      // does; the server records qualifying scores with these at death.
+      // Both local seats get them so couch-co-op tests are covered too.
+      client.send({ type: "setInitials", local: 0, value: "BOT" });
+      client.send({ type: "setInitials", local: 1, value: "BOT" });
+      resolve(client);
+    };
     ws.onerror = e => reject(e);
     ws.onmessage = ev => {
       const msg = JSON.parse(ev.data);
@@ -52,13 +59,6 @@ function connectClient() {
           if (w.pred(msg)) { w.res(msg); return false; }
           return true;
         });
-      }
-      // Auto-resolve high-score initials prompts immediately: a real
-      // highscores.json may have fewer than 5 entries, which makes even a
-      // tiny test score "qualify" and would otherwise block respawn behind
-      // a prompt this test harness never answers.
-      if (msg.type === "askInitials") {
-        client.send({ type: "initials", value: "BOT", score: msg.score, targets: msg.targets, local: msg.local });
       }
     };
   }));

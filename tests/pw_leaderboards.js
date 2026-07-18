@@ -49,7 +49,7 @@ async function scenarioLocal() {
     assert(c1.state.mode === "local", "one connection must classify as local (got " + c1.state.mode + ")");
     await eatOnce(c1, 0);
     assert(myPlayer(c1.state, 0).score > 0, "score must be positive before dying");
-    await dieOnWall(c1, 0); // harness auto-submits initials "BOT"
+    await dieOnWall(c1, 0); // harness pre-bound initials "BOT"; score records instantly at death
     const st = await c1.waitFor(s => s.highScores.local.daily.length > 0, 10000);
     assert(st.highScores.local.daily[0].initials === "BOT", "local daily should hold the BOT score");
     assert(st.highScores.local.allTime.length > 0, "local allTime should hold the score too");
@@ -119,10 +119,34 @@ async function scenarioMigration() {
   }
 }
 
+// Session-bound initials (v3.4.0): setInitials overwrites the bound value
+// any time before the death (the Change Initials button path); the score
+// then records instantly at death with the LATEST value -- no prompt.
+async function scenarioChangeInitials() {
+  const server = await startServer(baseConfig(), {
+    SNAKE_TEST_SPAWNS: JSON.stringify([{ x: 20, y: 15, dir: "right" }])
+  });
+  try {
+    const c1 = await connectClient(); // helpers bind "BOT" at connect
+    await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
+    c1.send({ type: "setInitials", local: 0, value: "zz9" }); // lowercase: server sanitizes
+    await eatOnce(c1, 0);
+    await dieOnWall(c1, 0);
+    const st = await c1.waitFor(s => s.highScores.local.daily.length > 0, 10000);
+    assert(st.highScores.local.daily[0].initials === "ZZ9",
+      "score must record with the OVERWRITTEN session initials (got " + st.highScores.local.daily[0].initials + ")");
+    console.log("PASS: setInitials overwrites the session-bound initials before death.");
+    c1.close();
+  } finally {
+    await stopServer(server);
+  }
+}
+
 async function main() {
   await scenarioLocal();
   await scenarioNetworked();
   await scenarioMigration();
+  await scenarioChangeInitials();
 }
 
 runTest(main, { attempts: 3, watchdogMs: 220000 });

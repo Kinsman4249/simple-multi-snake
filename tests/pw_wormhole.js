@@ -79,7 +79,15 @@ async function main() {
     assert(after.alive === true, "snake should survive via wormhole, not die at the wall");
     assert(after.teleport === true, "state should carry a one-shot teleport flag");
     assert(after.wormholeCharge === false, "charge must be consumed on fire");
-    console.log("PASS: wormhole fired, snake survived, charge consumed.");
+    // Per-segment threading (v3.4.0): ONLY the head exits at the landing;
+    // the body drains through the entry afterwards. The old whole-body
+    // relocation rebuilt body[n] = landing - dir*n exactly -- with threading
+    // body[1] is the snake's OLD head (still on the entry side), never the
+    // cell directly behind the landing along the exit direction.
+    const head = after.body[0], neck = after.body[1], d = after.dir;
+    assert(!(neck.x === head.x - d.x && neck.y === head.y - d.y),
+      "body must thread through the wormhole (old head trailing), not relocate wholesale behind the landing");
+    console.log("PASS: wormhole fired, snake survived, charge consumed, body threads per-segment.");
 
     // The teleport flag must be one-shot: the NEXT broadcast should not
     // still carry it.

@@ -86,7 +86,6 @@ const CLIENT_FX = Object.assign(
   CFG.clientFx || {}
 );
 const WALL_GRACE_TICKS = Number.isInteger(CFG.wallGraceTicks) ? CFG.wallGraceTicks : 1;
-const INITIALS_TIMEOUT_MS = Number.isInteger(CFG.initialsTimeoutMs) ? CFG.initialsTimeoutMs : 20000;
 const SPECTATOR_IDLE_MS = Number.isInteger(CFG.spectatorIdleMs) ? CFG.spectatorIdleMs : 300000;
 // Inactivity timeout for ACTIVE players (multiplayer expansion of the old
 // single-seat spectator idle rule): when EVERY living snake on the board has
@@ -112,15 +111,32 @@ const INPUT_BUFFER = Number.isInteger(CFG.inputBuffer) ? CFG.inputBuffer : 3;
 // over rampMs. Drift length scales with how far up the ramp the snake was
 // when the turn was pressed (driftMs * ramp), so a barely-boosting snake
 // barely skids. rampMs/holdGraceMs of 0 restore the old instant behavior.
-const BOOST = Object.assign({ enabled: true, boostSpeed: 1.5, driftMs: 250, rampMs: 400, holdGraceMs: 120 }, CFG.boost || {});
-// Ramp progress 0..1 for a snake's current boost hold. 0 = not engaged
-// (off, or still inside the hold grace); 1 = full boostSpeed.
-function boostRamp(s, now) {
-  if (!BOOST.enabled || !s.boost || !s.boostSince) return 0;
-  const held = now - s.boostSince - BOOST.holdGraceMs;
-  if (held <= 0) return 0;
-  if (!(BOOST.rampMs > 0)) return 1;
-  return Math.min(1, held / BOOST.rampMs);
+// v3.4.0 momentum model: speed is a PER-SNAKE state (s.rampProgress, 0..1),
+// not a function of the boost key. While the hold is engaged (past
+// holdGraceMs) the progress climbs over rampMs; when the key is released the
+// snake KEEPS its speed and decelerates over decelMs -- faster than the
+// ramp-up (decel rate > accel rate) but spanning multiple sim frames, so a
+// released boost still carries real momentum. Drift eligibility follows the
+// SPEED, not the key: any turn made while rampProgress >= driftThreshold
+// starts a body skid (scaled by the progress at keypress), including turns
+// made after the key was already released. rampMs/decelMs of 0 restore
+// instant transitions.
+const BOOST = Object.assign({ enabled: true, boostSpeed: 1.5, driftMs: 250, rampMs: 400, holdGraceMs: 120, decelMs: 250, driftThreshold: 0.3 }, CFG.boost || {});
+// Current momentum 0..1 for a snake (0 = base speed, 1 = full boostSpeed).
+// Reads the per-snake state updated by updateMomentum below; the `now`
+// parameter is kept for call-site compatibility but no longer used.
+function boostRamp(s, _now) {
+  return s.rampProgress || 0;
+}
+// Advance one snake's momentum by dt ms. Called once per sim tick per living
+// snake (sim.js), BEFORE the movement-accumulator math that consumes it.
+function updateMomentum(s, now, dt) {
+  const engaged = BOOST.enabled && s.boost && s.boostSince != null &&
+    (now - s.boostSince) > BOOST.holdGraceMs;
+  let p = s.rampProgress || 0;
+  if (engaged) p = BOOST.rampMs > 0 ? Math.min(1, p + dt / BOOST.rampMs) : 1;
+  else p = BOOST.decelMs > 0 ? Math.max(0, p - dt / BOOST.decelMs) : 0;
+  s.rampProgress = p;
 }
 // Global floor on snake length. Drives both the initial spawn length
 // (spawnSnake) and the poison-trail damage floor -- one source of truth so
@@ -239,8 +255,8 @@ const TEST_HOOKS = process.env.SNAKE_TEST_HOOKS === "1";
 module.exports = {
   ROOT, CFG, PKG, BUILD, PUBLIC_DIR, PORT,
   SIM_HZ, SIM_MS, MOVE, MAX_LOCAL_PLAYERS, CLIENT_FX, CLIENT_RENDER,
-  WALL_GRACE_TICKS, INITIALS_TIMEOUT_MS, SPECTATOR_IDLE_MS, PLAYER_IDLE_MS,
-  JOIN_OFFER_MS, INPUT_BUFFER, BOOST, boostRamp, MIN_SNAKE_LENGTH,
+  WALL_GRACE_TICKS, SPECTATOR_IDLE_MS, PLAYER_IDLE_MS,
+  JOIN_OFFER_MS, INPUT_BUFFER, BOOST, boostRamp, updateMomentum, MIN_SNAKE_LENGTH,
   POWERUPS, POWERUP_TYPES, POWERUP_INFO, HELD_TYPES, TRAIL_TYPES, SPEED_MULT_TYPES, POWERUP_MODULES,
   ENABLE_DEBUG, dlog, PERF, COLORS, DIR_VECTORS, TEST_SPAWNS, TEST_HOOKS,
   RUBBERBAND

@@ -17,7 +17,9 @@
     "boostSpeed": 2.0,
     "driftMs": 250,
     "rampMs": 400,
-    "holdGraceMs": 120
+    "holdGraceMs": 120,
+    "decelMs": 250,
+    "driftThreshold": 0.3
   },
   "enableDebug": true,
   "killBonusScore": 5,
@@ -26,7 +28,6 @@
   "spectatorPromoteDelayMs": 1500,
   "captchaTokenTtlMs": 60000,
   "wallGraceTicks": 1,
-  "initialsTimeoutMs": 20000,
   "spectatorIdleMs": 300000,
   "playerIdleMs": 120000,
   "joinOfferMs": 10000,

@@ -5,7 +5,7 @@
 // projectiles, and the powerup pickup spawner.
 // ============================================================
 const {
-  CFG, SIM_MS, BOOST, boostRamp, POWERUPS, POWERUP_TYPES, POWERUP_MODULES,
+  CFG, SIM_MS, BOOST, boostRamp, updateMomentum, POWERUPS, POWERUP_TYPES, POWERUP_MODULES,
   HELD_TYPES, TRAIL_TYPES, SPEED_MULT_TYPES, WALL_GRACE_TICKS, MIN_SNAKE_LENGTH, dlog, PERF, RUBBERBAND
 } = require("./config");
 const {
@@ -105,6 +105,11 @@ function simLoop() {
       const s = S.slots[i];
       if (!s || !s.alive) continue;
       if (guard === 0) {
+        // Momentum first (v3.4.0): rampProgress climbs while the hold is
+        // engaged and DECAYS over decelMs after release, so speed is a
+        // per-snake state, not a key state -- a released boost still moves
+        // (and drifts) fast until it winds down.
+        updateMomentum(s, now, dt);
         let mult = 1;
         mult *= 1 + (BOOST.boostSpeed - 1) * boostRamp(s, now);
         // Every speedMultiplier hook stacks multiplicatively (speedBoost,
@@ -264,19 +269,27 @@ function tryWormholeOrDie(idx, killerIdxOrNull, died, stalled, newHeads) {
     // it has no newHeads entry, and its fatal contact point is simply its own
     // (stationary) head cell.
     const fatalHead = newHeads.get(idx) || s.body[0];
+    // The landing scan still IGNORES the snake's own body (idx): the classic
+    // wall rescue steps back through the snake's own head cell, and blocking
+    // that would fizzle every tight-quarters rescue. With threading (below)
+    // a landing on/near the own body means a brief self-overlap while the
+    // tail drains through the entry -- transient and harmless (a cell is
+    // solid to OTHERS regardless, and the head only dies if it re-enters a
+    // body cell on a later step).
     const result = POWERUP_MODULES.wormhole.attemptWormhole(idx, s, fatalHead, S.slots, CFG.grid, POWERUPS.wormhole.lookaheadDepth);
     s.wormholeCharge = false;
     if (result) {
-      // Regrow the whole body trailing behind the landing cell along the
-      // winning phase direction, preserving length -- an instant relocation,
-      // not a glide (predict.js's teleport flag skips the correction-glide
-      // path entirely for this).
-      const len = s.body.length;
-      const newBody = [];
-      for (let n = 0; n < len; n++) {
-        newBody.push({ x: result.landing.x - result.dir.x * n, y: result.landing.y - result.dir.y * n });
-      }
-      s.body = newBody;
+      // Per-segment threading (v3.4.0, replaces the whole-body instant
+      // relocation): ONLY the head exits at the landing cell this step; the
+      // body is untouched. Because movement is head-unshift/tail-pop, every
+      // trailing segment then drains through the entry point one per step,
+      // following the same entry->exit path individually -- the chain stays
+      // continuous through the transition (self-body wormholes included)
+      // instead of the whole snake snapping across the board at once.
+      // predict.js's teleport flag still suppresses the correction glide for
+      // the head's jump.
+      s.body.unshift({ x: result.landing.x, y: result.landing.y });
+      s.body.pop();
       s.dir = result.dir;
       s.teleportedThisTick = true;
       stalled.add(idx); // this step's normal movement/food/pickup logic is skipped for the teleported snake

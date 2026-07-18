@@ -88,11 +88,6 @@ function broadcastState() {
           const s = S.slots[entry.slotIndex];
           return { local: localIdx, role: "player", slot: entry.slotIndex, ack: s ? s.lastAck : 0 };
         }
-        if (entry.role === "held") {
-          // Waiting out this connection's high-score flush (see the
-          // initials state machine): not playing, not in the queue yet.
-          return { local: localIdx, role: "held" };
-        }
         return {
           local: localIdx, role: "spectator",
           queuePos: queuePos.get(connId + ":" + localIdx) || 0, queueLen: S.spectatorQueue.length
