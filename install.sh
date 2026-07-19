@@ -55,6 +55,7 @@ PORT_FILE="${STATE_DIR}/last-port"           # the port used on the last run
 EMAIL_FILE="${STATE_DIR}/last-email"         # the Let's Encrypt notice email used on the last run
 SIMHZ_FILE="${STATE_DIR}/last-simhz"         # the sim rate (Hz) used on the last run
 MAXPLAYERS_FILE="${STATE_DIR}/last-maxplayers" # the max player count used last run
+DEBUG_FILE="${STATE_DIR}/last-debug"         # the enableDebug choice (yes/no) used last run
 PREFERRED_PORT="${PORT:-}"                   # optional explicit port override
 DEFAULT_PORT=8080                            # starting point for the free-port scan
 TEMPLATE_NAME="fillmeout.example.com.conf"   # placeholder vhost shipped in deploy/
@@ -66,6 +67,7 @@ CF_API_TOKEN="${CF_API_TOKEN:-}"             # Cloudflare token, Zone:DNS:Edit s
 CF_PROPAGATION="${CF_PROPAGATION:-30}"       # seconds to wait for DNS propagation
 DEFAULT_SIMHZ=60                             # default server simulation rate in Hz
 DEFAULT_MAXPLAYERS=8                         # default board capacity (~16 is the e2-micro ceiling)
+DEFAULT_DEBUG=yes                            # ship with the debug panel + on-page version stamp on
 
 # ---------------------------------------------------------------------------
 # Must run as root: it writes to /opt, /etc/systemd, and /etc/apache2.
@@ -100,6 +102,10 @@ fi
 LAST_MAXPLAYERS=""
 if [ -r "$MAXPLAYERS_FILE" ]; then
   LAST_MAXPLAYERS="$(cat "$MAXPLAYERS_FILE" 2>/dev/null || true)"
+fi
+LAST_DEBUG=""
+if [ -r "$DEBUG_FILE" ]; then
+  LAST_DEBUG="$(cat "$DEBUG_FILE" 2>/dev/null || true)"
 fi
 
 valid_hostname() {
@@ -226,6 +232,44 @@ resolve_maxplayers() {
 }
 resolve_maxplayers
 echo "Using maxPlayers: ${CHOSEN_MAXPLAYERS}"
+
+# ---------------------------------------------------------------------------
+# Debug switch resolution (config.json "enableDebug"). Same precedence as the
+# others:
+#   1. ENABLE_DEBUG environment variable (yes/no/true/false/1/0), if set.
+#   2. Interactive prompt, defaulting to the last used value, else yes.
+#   3. No terminal: last saved value, else yes.
+# When on, the client renders the DEBUG panel and an on-page build/version
+# stamp (bottom-right) so an operator can confirm which build a browser has
+# actually loaded -- invaluable for spotting a stale cached deploy. When off,
+# none of that is constructed (zero-resource gate, see server/config.js) and
+# players never see it. Patched into config.json alongside simHz/maxPlayers.
+# ---------------------------------------------------------------------------
+resolve_debug() {
+  local def="${ENABLE_DEBUG:-${LAST_DEBUG:-$DEFAULT_DEBUG}}"
+  local raw
+  if [ -n "${ENABLE_DEBUG:-}" ]; then
+    raw="$ENABLE_DEBUG"
+  elif [ -r /dev/tty ]; then
+    printf "Enable the debug panel + on-page version stamp? (yes/no) [%s]: " "$def" > /dev/tty
+    local reply
+    read -r reply < /dev/tty || reply=""
+    [ -z "$reply" ] && reply="$def"
+    raw="$reply"
+  else
+    raw="$def"
+  fi
+  case "$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')" in
+    y|yes|true|1|on)  CHOSEN_DEBUG=true ;;
+    n|no|false|0|off) CHOSEN_DEBUG=false ;;
+    *)
+      echo "ERROR: enableDebug must be yes/no (got '${raw}')." >&2
+      exit 1
+      ;;
+  esac
+}
+resolve_debug
+echo "Using enableDebug: ${CHOSEN_DEBUG}"
 
 # ---------------------------------------------------------------------------
 # Old-install / alt-port-config check.
@@ -609,8 +653,8 @@ sed -i "s/const PORT = [0-9]\+;/const PORT = ${CHOSEN_PORT};/" "${APP_DIR}/serve
 # config.json ships with a default simHz; set it to the chosen sim rate using
 # the Node runtime this installer just ensured is present. Editing JSON with
 # Node keeps the file valid regardless of key order or formatting.
-node -e "const f='${APP_DIR}/config.json';const c=JSON.parse(require('fs').readFileSync(f));c.simHz=${CHOSEN_SIMHZ};c.maxPlayers=${CHOSEN_MAXPLAYERS};require('fs').writeFileSync(f,JSON.stringify(c,null,2)+'\n');"
-echo "  Set simHz=${CHOSEN_SIMHZ}, maxPlayers=${CHOSEN_MAXPLAYERS} in ${APP_DIR}/config.json."
+node -e "const f='${APP_DIR}/config.json';const c=JSON.parse(require('fs').readFileSync(f));c.simHz=${CHOSEN_SIMHZ};c.maxPlayers=${CHOSEN_MAXPLAYERS};c.enableDebug=${CHOSEN_DEBUG};require('fs').writeFileSync(f,JSON.stringify(c,null,2)+'\n');"
+echo "  Set simHz=${CHOSEN_SIMHZ}, maxPlayers=${CHOSEN_MAXPLAYERS}, enableDebug=${CHOSEN_DEBUG} in ${APP_DIR}/config.json."
 
 # ---------------------------------------------------------------------------
 # 5. Install production npm deps (ws) inside APP_DIR.
@@ -802,7 +846,8 @@ printf "%s\n" "${CHOSEN_DOMAIN}" > "${STATE_FILE}"
 printf "%s\n" "${CHOSEN_PORT}" > "${PORT_FILE}"
 printf "%s\n" "${CHOSEN_SIMHZ}" > "${SIMHZ_FILE}"
 printf "%s\n" "${CHOSEN_MAXPLAYERS}" > "${MAXPLAYERS_FILE}"
-chmod 0644 "${STATE_FILE}" "${PORT_FILE}" "${SIMHZ_FILE}" "${MAXPLAYERS_FILE}"
+printf "%s\n" "${CHOSEN_DEBUG}" > "${DEBUG_FILE}"
+chmod 0644 "${STATE_FILE}" "${PORT_FILE}" "${SIMHZ_FILE}" "${MAXPLAYERS_FILE}" "${DEBUG_FILE}"
 if [ "$ENABLE_TLS" = "yes" ] && [ -n "$CERTBOT_EMAIL" ]; then
   umask 077
   printf "%s\n" "${CERTBOT_EMAIL}" > "${EMAIL_FILE}"

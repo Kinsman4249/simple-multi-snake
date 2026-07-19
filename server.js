@@ -80,7 +80,7 @@ const httpServer = http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     res.end(JSON.stringify({
       clientFx: CLIENT_FX, clientRender: CLIENT_RENDER, enableDebug: ENABLE_DEBUG,
-      boost: BOOST, powerups: POWERUPS, powerupInfo: POWERUP_INFO
+      build: BUILD, boost: BOOST, powerups: POWERUPS, powerupInfo: POWERUP_INFO
     }));
     return;
   }

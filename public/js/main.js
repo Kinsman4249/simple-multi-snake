@@ -46,9 +46,11 @@ fetch("/api/config").then(r => r.json()).then(cfg => {
   // hooks, no per-frame branches beyond this single startup check.
   if (!cfg || cfg.enableDebug !== false) {
     UI.initDebug(window.__DEBUG_SOURCE__, on => myPlayers.forEach(p => p.setDebug(on)));
+    UI.showVersionStamp(true, cfg && cfg.build);
   }
 }).catch(() => {
   UI.initDebug(window.__DEBUG_SOURCE__, on => myPlayers.forEach(p => p.setDebug(on)));
+  UI.showVersionStamp(true, null);
 });
 
 // Keybind remap (Phase 4): 100% client-side, localStorage-persisted, never

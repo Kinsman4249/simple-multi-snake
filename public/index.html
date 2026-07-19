@@ -196,6 +196,14 @@
   </div>
 </div>
 
+<!-- Version stamp: filled + revealed by ui.js only when the server reports
+     enableDebug !== false, so an operator can confirm exactly which build the
+     browser is running (cache-bust check) without shipping it to players. -->
+<div id="versionStamp" style="display:none;position:fixed;right:6px;bottom:5px;z-index:9999;font-family:monospace;font-size:10px;color:#666;pointer-events:none;white-space:pre;"></div>
+<!-- index.html build stamp (mirrors the per-file __BUILDS__ stamps the JS
+     modules self-register); bump on any change to this file. -->
+<script>(window.__BUILDS__ = window.__BUILDS__ || {}).index = "index 2026-07-19.1";</script>
+
 <!-- Load order matters: main.js references everything before it. -->
 <script src="js/net.js"></script>
 <script src="js/predict.js"></script>

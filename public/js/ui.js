@@ -3,7 +3,7 @@
 // prompt with countdown, spectator overlay, explicit JOIN offer button,
 // and a DEBUG button/panel (recording enabled only while open).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-18.2";
+(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-19.1";
 const UI = (() => {
   const statusEl = document.getElementById("status");
   let captchaId = null;
@@ -68,11 +68,16 @@ const UI = (() => {
       for (let c = 0; c < 5; c++) {
         const v = art[r][c];
         if (v === 0) continue;
-        rects += "<rect x='" + c + "' y='" + r + "' width='1' height='1' fill='" + col[v] + "'/>";
+        rects += "<rect x=\"" + c + "\" y=\"" + r + "\" width=\"1\" height=\"1\" fill=\"" + col[v] + "\"/>";
       }
     }
-    const svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 5 5' " +
-      "shape-rendering='crispEdges'>" + rects + "</svg>";
+    // Double-quoted attributes: encodeURIComponent escapes " (to %22) but NOT
+    // ' -- quoting with " keeps the encoded URI entirely quote-free, so the
+    // url('...') single-quote wrapper in the swatch style can't be broken by a
+    // stray literal quote. width/height give the SVG an intrinsic size so
+    // background-size:contain has a ratio to work from in every browser.
+    const svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\" " +
+      "viewBox=\"0 0 5 5\" shape-rendering=\"crispEdges\">" + rects + "</svg>";
     _bananaUri = "data:image/svg+xml," + encodeURIComponent(svg);
     return _bananaUri;
   }
@@ -112,8 +117,11 @@ const UI = (() => {
       // (not a flat square), so its legend swatch must be that exact sprite too
       // (v3.6.2) -- a plain/spotted square would mis-teach the icon. The SVG
       // mirrors render2d.js BANANA_ART cell-for-cell (5x5, 1=body 2=tip 3=spot).
+      // NB: the data-URI is wrapped in SINGLE quotes -- the swatch is emitted
+      // into an HTML style="..." attribute (double-quoted), so double quotes
+      // around url() would terminate the attribute early and blank the icon.
       const sw = type === "bananaTrail"
-        ? "background:transparent;background-image:url(\"" + bananaSwatchUri() + "\");" +
+        ? "background:transparent;background-image:url('" + bananaSwatchUri() + "');" +
           "background-size:contain;background-repeat:no-repeat;background-position:center"
         : "background:" + col;
       return "<span><span class=\"sw\" style=\"" + sw + "\"></span>" +
@@ -728,9 +736,26 @@ const UI = (() => {
     document.body.appendChild(boost);
   }
 
+  // On-page build stamp for cache-bust confirmation. Only revealed when the
+  // server reports debug is on (main.js passes cfg.enableDebug); it lists the
+  // server build plus the self-registered per-file client stamps, so a stale
+  // ui.js or index.html shows up immediately after a deploy/refresh.
+  function showVersionStamp(enableDebug, serverBuild) {
+    const el = document.getElementById("versionStamp");
+    if (!el) return;
+    if (enableDebug === false) { el.style.display = "none"; return; }
+    const b = window.__BUILDS__ || {};
+    el.textContent = [
+      serverBuild || "server ?",
+      b.index || "index ?",
+      b.ui || "ui ?"
+    ].join("  ·  ");
+    el.style.display = "block";
+  }
+
   return { initCaptchaGate, setConnectionStatus, updateStatus, updateLeaderboards,
            promptInitials, initInitialsPanel, isTextEntryActive,
-           showSpectator, offerJoin, initDebug,
+           showSpectator, offerJoin, initDebug, showVersionStamp,
            initCoOp, coOpJoined, coOpLeft, notifyJoinLocalDenied,
            initLeaveButtons, updateLeaveButtons, showRejoin, initKeymapPanel,
            setPowerupInfo, initTouchControls, initMobileUiToggle };
