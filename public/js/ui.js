@@ -78,10 +78,20 @@ const UI = (() => {
     legend.innerHTML = Object.keys(info || {}).filter(type => {
       const pc = powerupsCfg && powerupsCfg[type];
       return !(pc && pc.enabled === false);
-    }).map(type =>
-      "<span><span class=\"sw\" style=\"background:" + (style[type] || "#fff") + "\"></span>" +
-      (info[type].title || type) + "</span>"
-    ).join("");
+    }).map(type => {
+      const col = style[type] || "#fff";
+      // The banana pickup is drawn on-board as a spotted pixel-art banana, not
+      // a flat square (v3.6.2); give its legend swatch matching brown ripeness
+      // spots so the key doesn't teach a plain yellow that looks like the
+      // growthSpurt swatch next to it.
+      const sw = type === "bananaTrail"
+        ? "background:" + col + ";background-image:radial-gradient(circle,#630 30%,transparent 32%)," +
+          "radial-gradient(circle,#630 30%,transparent 32%);background-size:45% 45%;" +
+          "background-position:22% 26%,70% 68%;background-repeat:no-repeat"
+        : "background:" + col;
+      return "<span><span class=\"sw\" style=\"" + sw + "\"></span>" +
+        (info[type].title || type) + "</span>";
+    }).join("");
   }
   // The gate overlay is one combined screen (v3.4.0): initials entry + the
   // captcha, both required before the game connects. The whole overlay
