@@ -48,6 +48,34 @@ const UI = (() => {
     if (!btn || !popup) return;
     btn.onclick = () => popup.classList.toggle("open");
   }
+  // Pixel-art banana as an SVG data-URI for the captcha legend swatch, so the
+  // key shows the SAME crescent the pickup draws on-board (not a flat square).
+  // The grid mirrors render2d.js BANANA_ART exactly: 1=body #fd4, 2=tip #a70,
+  // 3=ripeness spot #630, 0=transparent. Built once and cached.
+  let _bananaUri = null;
+  function bananaSwatchUri() {
+    if (_bananaUri) return _bananaUri;
+    const art = [
+      [0, 0, 0, 1, 2],
+      [0, 0, 1, 3, 0],
+      [0, 1, 1, 0, 0],
+      [3, 1, 0, 0, 0],
+      [2, 1, 0, 0, 0]
+    ];
+    const col = { 1: "#fd4", 2: "#a70", 3: "#630" };
+    let rects = "";
+    for (let r = 0; r < 5; r++) {
+      for (let c = 0; c < 5; c++) {
+        const v = art[r][c];
+        if (v === 0) continue;
+        rects += "<rect x='" + c + "' y='" + r + "' width='1' height='1' fill='" + col[v] + "'/>";
+      }
+    }
+    const svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 5 5' " +
+      "shape-rendering='crispEdges'>" + rects + "</svg>";
+    _bananaUri = "data:image/svg+xml," + encodeURIComponent(svg);
+    return _bananaUri;
+  }
   // Builds the popup's content from { type: {title, description} } and
   // sizes the popup to the number of entries -- a couple of powerups gets a
   // small, tight box; many get a taller one, capped and scrollable (see the
@@ -80,14 +108,13 @@ const UI = (() => {
       return !(pc && pc.enabled === false);
     }).map(type => {
       const col = style[type] || "#fff";
-      // The banana pickup is drawn on-board as a spotted pixel-art banana, not
-      // a flat square (v3.6.2); give its legend swatch matching brown ripeness
-      // spots so the key doesn't teach a plain yellow that looks like the
-      // growthSpurt swatch next to it.
+      // The banana pickup is drawn on-board as the pixel-art banana crescent
+      // (not a flat square), so its legend swatch must be that exact sprite too
+      // (v3.6.2) -- a plain/spotted square would mis-teach the icon. The SVG
+      // mirrors render2d.js BANANA_ART cell-for-cell (5x5, 1=body 2=tip 3=spot).
       const sw = type === "bananaTrail"
-        ? "background:" + col + ";background-image:radial-gradient(circle,#630 30%,transparent 32%)," +
-          "radial-gradient(circle,#630 30%,transparent 32%);background-size:45% 45%;" +
-          "background-position:22% 26%,70% 68%;background-repeat:no-repeat"
+        ? "background:transparent;background-image:url(\"" + bananaSwatchUri() + "\");" +
+          "background-size:contain;background-repeat:no-repeat;background-position:center"
         : "background:" + col;
       return "<span><span class=\"sw\" style=\"" + sw + "\"></span>" +
         (info[type].title || type) + "</span>";
