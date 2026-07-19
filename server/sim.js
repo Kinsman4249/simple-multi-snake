@@ -528,6 +528,11 @@ function applyMovementAndFood(active, newHeads, died, stalled) {
       S.powerupPickups = S.powerupPickups.filter(p => p.id !== pk.id);
       dlog && dlog("powerup collected", { slot: i, type, blocked, auto: type !== "wormhole" && !HELD_TYPES.has(type) });
     }
+    // Tail-emitted trails: capture the cell this step's tail vacates BEFORE
+    // the pop, so a laid trail streams out from behind the snake (its TAIL
+    // end) rather than from just behind the head. When the snake grew this
+    // step nothing is vacated, so this stays the current tail cell.
+    const vacatedTail = s.body[s.body.length - 1];
     if (!grew) s.body.pop();
     // Wormhole threading: a real (non-growing) step popped one still-in-transit
     // tail segment, so the body is one cell closer to contiguous again. When
@@ -557,12 +562,13 @@ function applyMovementAndFood(active, newHeads, died, stalled) {
       }
     }
     // Trail laying: one tile per movement step while this mover's
-    // activePowerup is a trail type, laid at the vacated (previous) cell so
-    // the trail sits behind the snake rather than under its new head. One
-    // entry per (x,y) -- a later lay on an occupied cell replaces it.
+    // activePowerup is a trail type, laid at the cell the TAIL just vacated so
+    // the trail streams out from behind the snake (from its tail end) rather
+    // than from just behind the head. One entry per (x,y) -- a later lay on an
+    // occupied cell replaces it.
     if (s.activePowerup && TRAIL_TYPES.has(s.activePowerup.type)) {
       const type = s.activePowerup.type;
-      const layCell = s.body[1] || h;
+      const layCell = vacatedTail || h;
       S.trails = S.trails.filter(t => !(t.x === layCell.x && t.y === layCell.y));
       S.trails.push({
         id: S.nextPowerupId++, type, x: layCell.x, y: layCell.y, ownerSlot: i,

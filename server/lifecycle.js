@@ -36,11 +36,16 @@ function assignConnection(connId, ws) {
 // shell has shrunk it all the way back to the default starting length
 // (MIN_SNAKE_LENGTH), the run counts as wiped out -- we skip the save
 // entirely, no matter what the raw score number says.
-function recordIfQualifies(conn, localIdx, score, mode, slot) {
+function recordIfQualifies(conn, localIdx, mode, slot) {
+  // Score IS the snake's current length at death, NOT the running food tally
+  // (that's the planned speed-run mode -- see handoff.md). The earned-length
+  // gate below then means: nothing to record once you're back at the starting
+  // length, since the score you'd write would just be MIN_SNAKE_LENGTH.
   if (slot && slot.body.length <= MIN_SNAKE_LENGTH) {
-    dlog && dlog("score save skipped: snake at starting length", { local: localIdx, score, len: slot.body.length });
+    dlog && dlog("score save skipped: snake at starting length", { local: localIdx, len: slot.body.length });
     return;
   }
+  const score = slot.body.length;
   const targets = qualifies(score, mode);
   if (targets.length === 0) return;
   const initials = (conn && conn.initials[localIdx]) || "???";
@@ -107,7 +112,7 @@ function removeLocalSeat(connId, localIdx) {
   if (entry === null || entry === undefined) return false;
   if (entry.role === "player" && entry.slotIndex != null) {
     const s = S.slots[entry.slotIndex];
-    if (s && s.alive) recordIfQualifies(conn, localIdx, s.score, scoreMode(), s);
+    if (s && s.alive) recordIfQualifies(conn, localIdx, scoreMode(), s);
     S.slots[entry.slotIndex] = null;
   }
   S.spectatorQueue = S.spectatorQueue.filter(e => !(e.connId === connId && e.local === localIdx));
@@ -251,7 +256,7 @@ function handleDeath(slotIndex) {
   // no banking, no parked seats. The respawn timer below runs unchanged.
   const conn = S.connections.get(s.connId);
   const localIdx = conn ? conn.locals.findIndex(l => l && l.role === "player" && l.slotIndex === slotIndex) : -1;
-  if (conn && localIdx !== -1) recordIfQualifies(conn, localIdx, s.score, scoreMode(), s);
+  if (conn && localIdx !== -1) recordIfQualifies(conn, localIdx, scoreMode(), s);
   const connId = s.connId;
   setTimeout(() => {
     if (!S.slots[slotIndex] || S.slots[slotIndex].connId !== connId) return;

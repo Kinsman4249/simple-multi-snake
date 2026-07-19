@@ -21,7 +21,12 @@ function broadcastState() {
     tickMs: interval, simHz: SIM_HZ, grid: CFG.grid, foods: S.foods, food: S.foods[0] || null,
     powerupPickups: S.powerupPickups, trails: S.trails, blueShells: S.blueShells, explosions: S.explosions,
     players: S.slots.map((s, i) => s ? {
-      slot: i, alive: s.alive, score: s.score, color: s.color, dir: s.dir, body: s.body,
+      // Score IS the snake's current length (v3.6.x): classic-snake scoring,
+      // and what the leaderboard records at death. Poison / a blue shell that
+      // shrinks you lowers your score in real time, so risky play is a real
+      // gamble. (Total food picked up is a SEPARATE, planned speed-run mode --
+      // see handoff.md; s.score still tallies food but is no longer surfaced.)
+      slot: i, alive: s.alive, score: s.body.length, color: s.color, dir: s.dir, body: s.body,
       // Effective per-player movement rate (ms per cell), boost + speed
       // powerup + ice slow all included. Purely informational for
       // CLIENT-SIDE render smoothing: the client interpolates each snake's
