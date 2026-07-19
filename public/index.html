@@ -100,6 +100,25 @@
     display: inline-block; width: 10px; height: 10px; margin-right: 5px;
     vertical-align: baseline;
   }
+  /* In-game powerup reference (v3.6.5): a second hover-to-reveal overlay
+     (reuses .panel's opacity/hover + mobile-hidden behavior) pinned top-LEFT
+     so it doesn't collide with the leaderboard on the right. Filled by ui.js
+     setPowerupInfo from the same POWERUP_INFO the gate legend uses. */
+  #powerupRef {
+    right: auto; left: 8px; width: 240px; max-height: 80vh; overflow-y: auto;
+  }
+  #powerupRef h3 {
+    margin: 0 0 6px 0; font-size: 14px; border-bottom: 1px solid #444;
+    padding-bottom: 4px; color: #c9f;
+  }
+  #powerupRef .pr-entry { margin-bottom: 8px; font-size: 12px; line-height: 1.4; }
+  #powerupRef .pr-entry:last-child { margin-bottom: 0; }
+  #powerupRef .sw {
+    display: inline-block; width: 10px; height: 10px; margin-right: 6px;
+    vertical-align: baseline;
+  }
+  #powerupRef .pr-name { color: #c9f; font-weight: bold; }
+  #powerupRef .pr-desc { color: #bbb; margin-top: 2px; }
   #powerupInfoPopup h4 { margin: 0 0 6px 0; font-size: 13px; color: #c9f; }
   #powerupInfoPopup .entry { margin-bottom: 10px; }
   #powerupInfoPopup .entry:last-child { margin-bottom: 0; }
@@ -153,6 +172,13 @@
   </div>
 </div>
 
+<!-- In-game powerup reference (v3.6.5): the same swatch legend + descriptions
+     the gate shows, kept available DURING play so a player can check what a
+     pickup does without quitting back to the captcha/gate screen. Reuses the
+     .panel hover-to-reveal + mobile-hidden behavior (desktop: hover; mobile:
+     UI-unhide toggle); filled by ui.js setPowerupInfo from /api/config. -->
+<div id="powerupRef" class="panel"></div>
+
 <!-- Captcha / gate overlay, shown before a WebSocket connection is attempted -->
 <div id="overlay">
   <div class="box">
@@ -202,7 +228,7 @@
 <div id="versionStamp" style="display:none;position:fixed;right:6px;bottom:5px;z-index:9999;font-family:monospace;font-size:10px;color:#666;pointer-events:none;white-space:pre;"></div>
 <!-- index.html build stamp (mirrors the per-file __BUILDS__ stamps the JS
      modules self-register); bump on any change to this file. -->
-<script>(window.__BUILDS__ = window.__BUILDS__ || {}).index = "index 2026-07-19.1";</script>
+<script>(window.__BUILDS__ = window.__BUILDS__ || {}).index = "index 2026-07-19.2";</script>
 
 <!-- Load order matters: main.js references everything before it. -->
 <script src="js/net.js"></script>

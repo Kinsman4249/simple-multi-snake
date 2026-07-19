@@ -3,7 +3,7 @@
 // prompt with countdown, spectator overlay, explicit JOIN offer button,
 // and a DEBUG button/panel (recording enabled only while open).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-19.2";
+(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-19.3";
 const UI = (() => {
   const statusEl = document.getElementById("status");
   let captchaId = null;
@@ -98,40 +98,61 @@ const UI = (() => {
       return !(pc && pc.enabled === false);
     };
     const infoTypes = Object.keys(info || {}).filter(isEnabled);
-    if (infoTypes.length === 0) { popup.innerHTML = "<h4>Powerups</h4>No powerups are enabled."; return; }
-    popup.innerHTML = "<h4>Powerups</h4>" + infoTypes.map(type =>
-      "<div class=\"entry\"><span class=\"name\">" + info[type].title + ":</span> " + info[type].description + "</div>"
-    ).join("");
-    // Scale the popup's height with entry count (small list = tight box,
-    // large list = taller box up to the CSS max-height/scroll fallback).
-    popup.style.minHeight = Math.min(400, 40 + infoTypes.length * 55) + "px";
-    // Captcha-screen color legend (index.html #powerupLegend): swatch +
-    // name per powerup so a new player knows what each pickup color means
-    // before their snake ever moves. Colors come from render.js's own
-    // POWERUP_STYLE (the exact draw colors); types the operator disabled
-    // (powerupsCfg[type].enabled === false) are skipped -- never teach a
-    // color that can't appear on this server's board.
-    const legend = document.getElementById("powerupLegend");
-    if (!legend) return;
-    // Render is a top-level const (script load order: render.js before
-    // ui.js), so it's a global binding but NOT a window property.
+    // Render is a top-level const (script load order: render.js before ui.js),
+    // so it's a global binding but NOT a window property. POWERUP_STYLE holds
+    // the exact on-board draw colors -- the single source for every swatch.
     const style = (typeof Render !== "undefined" && Render.POWERUP_STYLE) || {};
-    legend.innerHTML = infoTypes.map(type => {
-      const col = style[type] || "#fff";
-      // The banana pickup is drawn on-board as the pixel-art banana crescent
-      // (not a flat square), so its legend swatch must be that exact sprite too
-      // (v3.6.2) -- a plain/spotted square would mis-teach the icon. The SVG
-      // mirrors render2d.js BANANA_ART cell-for-cell (5x5, 1=body 2=tip 3=spot).
-      // NB: the data-URI is wrapped in SINGLE quotes -- the swatch is emitted
-      // into an HTML style="..." attribute (double-quoted), so double quotes
-      // around url() would terminate the attribute early and blank the icon.
-      const sw = type === "bananaTrail"
-        ? "background:transparent;background-image:url('" + bananaSwatchUri() + "');" +
-          "background-size:contain;background-repeat:no-repeat;background-position:center"
-        : "background:" + col;
-      return "<span><span class=\"sw\" style=\"" + sw + "\"></span>" +
-        (info[type].title || type) + "</span>";
-    }).join("");
+    // The banana pickup is drawn on-board as the pixel-art banana crescent (not
+    // a flat square), so its swatch must be that exact sprite too (v3.6.2) -- a
+    // plain/spotted square would mis-teach the icon. The SVG mirrors render2d.js
+    // BANANA_ART cell-for-cell (5x5, 1=body 2=tip 3=spot). NB: the data-URI is
+    // wrapped in SINGLE quotes -- the swatch is emitted into an HTML style="..."
+    // attribute (double-quoted), so double quotes around url() would terminate
+    // the attribute early and blank the icon. One helper drives the captcha
+    // legend AND the in-game reference panel so they can never diverge.
+    const swatchStyle = type => type === "bananaTrail"
+      ? "background:transparent;background-image:url('" + bananaSwatchUri() + "');" +
+        "background-size:contain;background-repeat:no-repeat;background-position:center"
+      : "background:" + (style[type] || "#fff");
+
+    if (infoTypes.length === 0) {
+      popup.innerHTML = "<h4>Powerups</h4>No powerups are enabled.";
+    } else {
+      popup.innerHTML = "<h4>Powerups</h4>" + infoTypes.map(type =>
+        "<div class=\"entry\"><span class=\"name\">" + info[type].title + ":</span> " + info[type].description + "</div>"
+      ).join("");
+      // Scale the popup's height with entry count (small list = tight box,
+      // large list = taller box up to the CSS max-height/scroll fallback).
+      popup.style.minHeight = Math.min(400, 40 + infoTypes.length * 55) + "px";
+    }
+
+    // Captcha-screen color legend (index.html #powerupLegend): swatch + name
+    // per powerup so a new player knows what each pickup color means before
+    // their snake ever moves. Types the operator disabled (isEnabled filter)
+    // are skipped -- never teach a color that can't appear on this board.
+    const legend = document.getElementById("powerupLegend");
+    if (legend) {
+      legend.innerHTML = infoTypes.map(type =>
+        "<span><span class=\"sw\" style=\"" + swatchStyle(type) + "\"></span>" +
+        (info[type].title || type) + "</span>").join("");
+    }
+
+    // In-game reference panel (v3.6.5, index.html #powerupRef): the SAME
+    // legend + descriptions the gate shows, kept available DURING play so a
+    // player can check what a pickup does without quitting back to the gate.
+    // Desktop reveals it on hover (the .panel behavior, like the leaderboard);
+    // mobile reveals it via the UI-unhide toggle (body.mobile-hidden .panel).
+    // Reuses the same POWERUP_INFO copy, isEnabled filter, and swatchStyle --
+    // no duplicated data.
+    const ref = document.getElementById("powerupRef");
+    if (ref) {
+      ref.innerHTML = infoTypes.length === 0
+        ? "<h3>Powerups</h3><div class=\"pr-desc\">No powerups are enabled.</div>"
+        : "<h3>Powerups</h3>" + infoTypes.map(type =>
+            "<div class=\"pr-entry\"><span class=\"sw\" style=\"" + swatchStyle(type) + "\"></span>" +
+            "<span class=\"pr-name\">" + (info[type].title || type) + "</span>" +
+            "<div class=\"pr-desc\">" + info[type].description + "</div></div>").join("");
+    }
   }
   // The gate overlay is one combined screen (v3.4.0): initials entry + the
   // captcha, both required before the game connects. The whole overlay
