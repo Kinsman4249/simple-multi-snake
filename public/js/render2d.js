@@ -51,12 +51,16 @@
 // to "2d". The 2D context is acquired lazily on the first draw (NOT at load
 // time): a canvas can only ever hold one context type, so grabbing "2d"
 // eagerly would poison the facade's wasm path before it could decide.
-(window.__BUILDS__ = window.__BUILDS__ || {}).render2d = "render2d 2026-07-18.1";
+(window.__BUILDS__ = window.__BUILDS__ || {}).render2d = "render2d 2026-07-19.1";
 const Render2D = (() => {
   const canvas = document.getElementById("game");
   let ctx = null;
   let grid = null;
   const FLASH_DIR_VECTORS = { up: { x: 0, y: -1 }, down: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 } };
+  // Piñata candy burst (v3.6.6): a fixed spray of festive pixel bits. Count +
+  // palette MUST mirror wasm/renderer.ts CANDY_N / candyColor for parity.
+  const CANDY_N = 14;
+  const CANDY_COLORS = ["#ffcc00", "#ff4499", "#44ccff", "#77ee44"]; // gold / pink / cyan / lime
   // Powerup pickup + trail styling. Purely cosmetic lookups, no gameplay
   // meaning -- see server.js POWERUPS for the actual config/behavior.
   const POWERUP_STYLE = {
@@ -274,6 +278,27 @@ const Render2D = (() => {
   function drawExplosion(x, y, radiusCells, age) {
     const cs = grid.cellSize;
     const cx = x * cs + cs / 2, cy = y * cs + cs / 2;
+    // Piñata candy burst (v3.6.6): a NEGATIVE radius flags this as a candy
+    // pop (server encodes -spread) rather than a blue-shell ring. Draw a
+    // fixed spray of festive pixel bits flung outward, fading with age. The
+    // math is fully deterministic (no RNG, no wall-clock) so it stays pixel-
+    // parity with the wasm core -- see wasm/renderer.ts CANDY_* mirror.
+    if (radiusCells < 0) {
+      const dist = -radiusCells * cs * age;
+      const phase = ((x + y) % 7) * 0.897;
+      const sz = cs * 0.30 * (1 - 0.4 * age);
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, 1 - age);
+      for (let i = 0; i < CANDY_N; i++) {
+        const ang = i * 2.399963 + phase;
+        const px = cx + Math.cos(ang) * dist;
+        const py = cy + Math.sin(ang) * dist;
+        ctx.fillStyle = CANDY_COLORS[i & 3];
+        ctx.fillRect(px - sz / 2, py - sz / 2, sz, sz);
+      }
+      ctx.restore();
+      return;
+    }
     const maxR = radiusCells * cs;
     ctx.save();
     ctx.globalAlpha = Math.max(0, 1 - age);
@@ -347,7 +372,9 @@ const Render2D = (() => {
     const foods = currSnap.foods || (currSnap.food ? [currSnap.food] : []);
     for (const f of foods) {
       const key = f.x + "," + f.y;
-      if (!eatenKeys || eatenKeys.indexOf(key) === -1) drawCell(f, "#e33");
+      // Piñata bounty food draws GOLD (#fc0) vs normal red (#e33) so the
+      // fast-decaying feeding frenzy from a big corpse reads at a glance.
+      if (!eatenKeys || eatenKeys.indexOf(key) === -1) drawCell(f, f.bounty ? "#fc0" : "#e33");
     }
     if (currSnap.powerupPickups) currSnap.powerupPickups.forEach(p => drawPickup(p, now));
     if (currSnap.blueShells) currSnap.blueShells.forEach(sh => drawBlueShell(sh, now));

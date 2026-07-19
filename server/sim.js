@@ -602,6 +602,15 @@ function expirePowerupsAndTrails() {
       break;
     }
   }
+  // Piñata bounty food expires on its own short TTL (expiresAtTick); same
+  // reallocate-only-when-due pattern as trails. Normal food has no
+  // expiresAtTick and is untouched here.
+  for (let i = 0; i < S.foods.length; i++) {
+    if (S.foods[i].bounty && S.moveSeq >= S.foods[i].expiresAtTick) {
+      S.foods = S.foods.filter(f => !(f.bounty && S.moveSeq >= f.expiresAtTick));
+      break;
+    }
+  }
   for (const s of S.slots) {
     if (!s) continue;
     if (s.activePowerup && S.moveSeq >= s.activePowerup.expiresAtTick) {

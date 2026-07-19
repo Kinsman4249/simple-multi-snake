@@ -111,7 +111,10 @@
         }];
         scene.fx.explosions = [
           { x: Math.floor(cols / 4), y: Math.floor(rows / 4), radius: 3, age: 0.5 },
-          { x: Math.floor(cols / 4) * 3, y: Math.floor(rows / 4), radius: 3, age: 0.25 }
+          { x: Math.floor(cols / 4) * 3, y: Math.floor(rows / 4), radius: 3, age: 0.25 },
+          // Piñata candy burst (v3.6.6): NEGATIVE radius flags the pixel-spray
+          // variant; mid-fade so the deterministic candy math is diffed.
+          { x: Math.floor(cols / 2), y: Math.floor(rows / 3), radius: -6, age: 0.4 }
         ];
         // Powerup activation flashes: mid-fade on two seats (one alive, one
         // the dead slot 3) so the overlay is exercised in both states.

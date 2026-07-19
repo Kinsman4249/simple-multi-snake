@@ -260,6 +260,27 @@ const RUBBERBAND = Object.assign({}, CFG.rubberband || {});
 RUBBERBAND.foodBias = Object.assign({ enabled: true, radius: 15, strength: 3 }, RUBBERBAND.foodBias || {});
 RUBBERBAND.shellPressure = Object.assign({ enabled: true, leadRatio: 1.3, typeWeight: 4, intervalScale: 0.5 }, RUBBERBAND.shellPressure || {});
 
+// "Piñata" bounties (v3.6.6): when a snake at/over minLength dies, it POPS
+// like a piñata -- a pixelated candy burst scatters fast-decaying "bounty"
+// food over a wide area around where it fell (NOT its exact body cells).
+//   minLength: LARGE by default (twice blueShell's shortLeaderLength, so only
+//     genuinely big snakes pop).
+//   percent:  fraction of the popped snake's length that becomes candy
+//     (0.30 = 30%), so a bigger corpse drops more -- capped by maxFood.
+//   maxFood:  hard cap on candy count regardless of length (so a monster
+//     corpse can't dump an instant runaway lead).
+//   ttlMs:    short lifetime after which each candy expires (you can't hoard).
+//   spread:   scatter radius in cells around the burst origin.
+//   bias:     0..1 probability each candy is pulled toward the SHORTEST living
+//     snake (rubberband: a catch-up player gets first crack).
+// Bounty food rides S.foods with a `bounty:true` flag + `expiresAtTick`; it
+// does NOT count toward the player-scaled food target (ensureFoods ignores it).
+const PINATA = Object.assign(
+  { enabled: true, minLength: POWERUPS.blueShell.shortLeaderLength * 2, percent: 0.30,
+    maxFood: 12, ttlMs: 6000, spread: 6, bias: 0.6 },
+  CFG.pinata || {}
+);
+
 const COLORS = [
   { head: "#6f6", body: "#3a3" },
   { head: "#6cf", body: "#38a" },
@@ -284,5 +305,5 @@ module.exports = {
   JOIN_OFFER_MS, INPUT_BUFFER, BOOST, boostRamp, updateMomentum, MIN_SNAKE_LENGTH,
   POWERUPS, POWERUP_TYPES, POWERUP_INFO, HELD_TYPES, TRAIL_TYPES, SPEED_MULT_TYPES, POWERUP_MODULES,
   ENABLE_DEBUG, dlog, PERF, COLORS, DIR_VECTORS, TEST_SPAWNS, TEST_HOOKS,
-  RUBBERBAND
+  RUBBERBAND, PINATA
 };

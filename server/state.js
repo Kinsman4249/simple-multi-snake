@@ -5,13 +5,15 @@
 // writes THE SAME state -- reassignments like `S.trails = S.trails.filter`
 // stay visible everywhere, which plain destructured bindings would break.
 // ============================================================
-const { CFG, MOVE, MAX_FOOD, POWERUPS, MIN_SNAKE_LENGTH, DIR_VECTORS, TEST_SPAWNS, RUBBERBAND } = require("./config");
+const { CFG, MOVE, MAX_FOOD, POWERUPS, MIN_SNAKE_LENGTH, DIR_VECTORS, TEST_SPAWNS, RUBBERBAND, PINATA } = require("./config");
 
 const S = {
   slots: new Array(CFG.maxPlayers).fill(null),
   spectatorQueue: [],
   connections: new Map(),
-  foods: [],               // active food cells [{x,y}]; count scales with players
+  foods: [],               // active food cells [{x,y}]; count scales with players.
+                           // Piñata "bounty" food rides here too: {x,y,bounty:true,
+                           // expiresAtTick} -- excluded from the player-scaled count.
   moveIntervalMs: null,    // eased global movement interval (ms/cell); null = uninitialized
   sessionStart: null,
   joinOffer: null,
@@ -113,10 +115,77 @@ function pickupCap() {
 // (fungible) and tops up shortfalls one placement at a time.
 function ensureFoods() {
   const target = targetFoodCount();
-  if (S.foods.length > target) S.foods.length = target;
-  while (S.foods.length < target) {
-    if (!placeOneFood()) break; // board full: stop trying this tick
+  // Only NORMAL (non-bounty) food is managed toward the player-scaled target;
+  // piñata bounty food is transient and lives/dies on its own TTL, so it is
+  // never counted here and never trimmed by this top-up (it would otherwise be
+  // dropped the instant it pushed the array over target).
+  let normal = 0;
+  for (const f of S.foods) if (!f.bounty) normal++;
+  if (normal > target) {
+    let remove = normal - target;
+    S.foods = S.foods.filter(f => f.bounty || remove-- <= 0);
+    normal = target;
   }
+  while (normal < target) {
+    if (!placeOneFood()) break; // board full: stop trying this tick
+    normal++;
+  }
+}
+// "Piñata" bounties (v3.6.6): a snake dying at/over PINATA.minLength POPS like
+// a piñata. It does NOT convert its exact body cells to food; instead a candy
+// burst SCATTERS food over a wide area (PINATA.spread cells) around the
+// corpse's midpoint. Candy count is PINATA.percent of the popped length,
+// capped at PINATA.maxFood (so a monster corpse can't hand out an instant
+// runaway lead). Each candy gets a short expiresAtTick (PINATA.ttlMs) -- grab
+// it fast. The scatter is biased (PINATA.bias) toward the SHORTEST living
+// snake, so a catch-up player gets first crack (rubberband). A one-shot
+// explosion entity (radius encoded NEGATIVE to flag it "candy" vs a blue-shell
+// ring -- see the renderers) drives the client pixel-burst visual.
+function dropPinataFood(s) {
+  if (!PINATA.enabled || !s || !s.body || s.body.length < PINATA.minLength) return;
+  // Piñatas shine in multiplayer -- a lone player popping their own corpse for
+  // gold is just free score, so skip it unless there are at least two player
+  // seats present (a merely-dead opponent still counts, matching the blue
+  // shell's lone-survivor rule).
+  if (playerSeatCount() < 2) return;
+  const body = s.body;
+  const count = Math.min(PINATA.maxFood, Math.max(1, Math.round(body.length * PINATA.percent)));
+  const spread = PINATA.spread;
+  const ttlTicks = Math.max(1, Math.ceil(PINATA.ttlMs / currentMoveIntervalMs()));
+  const expiresAtTick = S.moveSeq + ttlTicks;
+  const mid = body[Math.floor(body.length / 2)];
+  const cols = CFG.grid.cols, rows = CFG.grid.rows;
+  const clamp = (v, hi) => (v < 0 ? 0 : (v > hi ? hi : v));
+  // Bias target: the shortest living snake's head, if it's genuinely shorter
+  // than the popped snake (don't feed candy toward an equal/longer rival).
+  let bias = null;
+  const ti = currentTrailingIndex();
+  if (ti != null && S.slots[ti] && S.slots[ti] !== s && S.slots[ti].body.length < body.length) {
+    bias = S.slots[ti].body[0];
+  }
+  const placed = new Set();
+  for (let n = 0; n < count; n++) {
+    // Scatter around the corpse midpoint, or -- with PINATA.bias odds -- around
+    // a point pulled halfway toward the trailing snake.
+    let cx = mid.x, cy = mid.y;
+    if (bias && Math.random() < PINATA.bias) {
+      cx = Math.round(cx + (bias.x - cx) * 0.5);
+      cy = Math.round(cy + (bias.y - cy) * 0.5);
+    }
+    for (let a = 0; a < 12; a++) {
+      const x = clamp(cx + Math.round((Math.random() * 2 - 1) * spread), cols - 1);
+      const y = clamp(cy + Math.round((Math.random() * 2 - 1) * spread), rows - 1);
+      const key = x + "," + y;
+      if (placed.has(key) || cellHasEntity(x, y)) continue; // one candy per cell, no stacking on existing food/pickups
+      placed.add(key);
+      S.foods.push({ x, y, bounty: true, expiresAtTick });
+      break;
+    }
+  }
+  // Candy-burst visual: negative radius flags the client to draw a pixel spray
+  // (festive candy bits) instead of a blue-shell ring. One-shot, aged out
+  // client-side like every explosion.
+  if (placed.size > 0) S.explosions.push({ x: mid.x, y: mid.y, radius: -spread });
 }
 // Clear and refill food to the current target (used by the placeFood test
 // hook to re-roll for the rubberband distribution sampler).
@@ -374,7 +443,7 @@ function currentMoveIntervalMs() {
 }
 
 module.exports = {
-  S, cellFree, placeOneFood, ensureFoods, rerollFoods, targetFoodCount,
+  S, cellFree, placeOneFood, ensureFoods, dropPinataFood, rerollFoods, targetFoodCount,
   pickupCap, boardPlayerCount, spawnSnake, newPlayerSlot, growSegment,
   removeSegments, currentLeaderIndex, currentTrailingIndex, playerSeatCount,
   allEqualLength, inBounds, hitsBody, currentMoveIntervalMs, targetMoveIntervalMs,

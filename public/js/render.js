@@ -24,7 +24,7 @@
 //
 // Display scaling (fitCanvas) is CSS-only and identical for both paths.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-18.1 (wasm facade)";
+(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-19.1 (wasm facade)";
 const Render = (() => {
   const canvas = document.getElementById("game");
   const POWERUP_STYLE = Render2D.POWERUP_STYLE;
@@ -39,7 +39,7 @@ const Render = (() => {
   // Foods live in the frame-input region (re-encoded per frame so per-frame
   // predicted-eat hiding is trivial), appended after the local body pool.
   // Must match wasm/renderer.ts FR_NFOODS/FR_FOODS.
-  const FR_FOODS_OFF = 3940 + MAX_LOCAL_SEGS * 4; // bytes: nFoods i32, then MAX_FOODS x {x,y} i32
+  const FR_FOODS_OFF = 3940 + MAX_LOCAL_SEGS * 4; // bytes: nFoods i32, then MAX_FOODS x {x,y,bounty} i32
 
   let wasm = null;          // instantiated exports, or null
   let wasmFailed = false;   // permanent this-session failure -> 2D
@@ -286,11 +286,15 @@ const Render = (() => {
     const foods = currSnap.foods || (currSnap.food ? [currSnap.food] : []);
     const nFoodBase = (fp + FR_FOODS_OFF) >>> 2;
     let nFd = 0;
+    // Stride 3 i32 per food: {x, y, bounty} -- the bounty flag lets the wasm
+    // core color piñata food gold (mirrors render2d.js). Must match
+    // wasm/renderer.ts FR_FOODS stride (12).
     for (let i = 0; i < foods.length && nFd < MAX_FOODS; i++) {
       const key = foods[i].x + "," + foods[i].y;
       if (eatenKeys && eatenKeys.indexOf(key) !== -1) continue;
-      i32[nFoodBase + 1 + nFd * 2] = foods[i].x;
-      i32[nFoodBase + 1 + nFd * 2 + 1] = foods[i].y;
+      i32[nFoodBase + 1 + nFd * 3] = foods[i].x;
+      i32[nFoodBase + 1 + nFd * 3 + 1] = foods[i].y;
+      i32[nFoodBase + 1 + nFd * 3 + 2] = foods[i].bounty ? 1 : 0;
       nFd++;
     }
     i32[nFoodBase] = nFd;

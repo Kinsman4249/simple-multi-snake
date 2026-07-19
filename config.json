@@ -62,5 +62,14 @@
   "rubberband": {
     "foodBias":      { "enabled": true, "radius": 15, "strength": 3 },
     "shellPressure": { "enabled": true, "leadRatio": 1.3, "typeWeight": 4, "intervalScale": 0.5 }
+  },
+  "pinata": {
+    "enabled": true,
+    "minLength": 30,
+    "percent": 0.30,
+    "maxFood": 12,
+    "ttlMs": 6000,
+    "spread": 6,
+    "bias": 0.6
   }
 }

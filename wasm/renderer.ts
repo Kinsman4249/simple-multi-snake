@@ -114,8 +114,8 @@ const FR_LOCAL_BODY: i32 = 3940; // 868 + MAX_DUST(256) * 12
 // Re-encoded per frame so predicted-eat hiding is per-frame (an eaten food is
 // simply omitted from the array).
 const FR_NFOODS: i32 = FR_LOCAL_BODY + MAX_LOCAL_SEGS * 4;
-const FR_FOODS: i32 = FR_NFOODS + 4;   // stride 8: {x i32, y i32}
-const FRAME_SIZE: i32 = FR_FOODS + MAX_FOODS * 8;
+const FR_FOODS: i32 = FR_NFOODS + 4;   // stride 12: {x i32, y i32, bounty i32}
+const FRAME_SIZE: i32 = FR_FOODS + MAX_FOODS * 12;
 
 const KIND_RECT: f32 = 0;
 const KIND_ELLIPSE: f32 = 1;
@@ -125,6 +125,21 @@ const KIND_RING: f32 = 2;
 // Uint32Array view over RGBA bytes. Values mirror the old render.js exactly.
 function rgba(r: u32, g: u32, b: u32, a: u32): u32 { return r | (g << 8) | (b << 16) | (a << 24); }
 const COLOR_FOOD: u32 = rgba(0xee, 0x33, 0x33, 255);        // #e33
+const COLOR_FOOD_BOUNTY: u32 = rgba(0xff, 0xcc, 0x00, 255); // #fc0 piñata gold
+// Piñata candy-burst palette (mirrors render2d.js CANDY_COLORS): gold / pink /
+// cyan / lime. CANDY_N particle count must match render2d.js CANDY_N.
+const CANDY_N: i32 = 14;
+const CANDY_GOLD: u32 = rgba(0xff, 0xcc, 0x00, 255); // #ffcc00
+const CANDY_PINK: u32 = rgba(0xff, 0x44, 0x99, 255); // #ff4499
+const CANDY_CYAN: u32 = rgba(0x44, 0xcc, 0xff, 255); // #44ccff
+const CANDY_LIME: u32 = rgba(0x77, 0xee, 0x44, 255); // #77ee44
+function candyColor(i: i32): u32 {
+  const m = i & 3;
+  if (m == 0) return CANDY_GOLD;
+  if (m == 1) return CANDY_PINK;
+  if (m == 2) return CANDY_CYAN;
+  return CANDY_LIME;
+}
 const COLOR_TRAIL_ICE: u32 = rgba(150, 225, 255, 166);      // rgba(150,225,255,0.65)
 const COLOR_TRAIL_POISON: u32 = rgba(110, 210, 70, 153);    // rgba(110,210,70,0.6)
 const COLOR_TRAIL_BANANA: u32 = rgba(255, 221, 68, 153);    // rgba(255,221,68,0.6)
@@ -282,11 +297,13 @@ export function render(now: f64, which: i32): i32 {
       inst(<f32>tx * cs, <f32>ty * cs, cell, cell, trailColor(ttype), 1, KIND_RECT, 0, 0);
     }
   }
-  // food (multi-food, from the frame region; eaten ones are omitted upstream)
+  // food (multi-food, from the frame region; eaten ones are omitted upstream).
+  // Stride 12: {x, y, bounty} -- piñata bounty food (bounty!=0) draws gold.
   const nFoods = min(load<i32>(frameIn + FR_NFOODS), MAX_FOODS);
   for (let i = 0; i < nFoods; i++) {
-    const fo = frameIn + FR_FOODS + <usize>(i << 3);
-    inst(<f32>load<i32>(fo) * cs, <f32>load<i32>(fo, 4) * cs, cell, cell, COLOR_FOOD, 1, KIND_RECT, 0, 0);
+    const fo = frameIn + FR_FOODS + <usize>(i * 12);
+    const fCol = load<i32>(fo, 8) != 0 ? COLOR_FOOD_BOUNTY : COLOR_FOOD;
+    inst(<f32>load<i32>(fo) * cs, <f32>load<i32>(fo, 4) * cs, cell, cell, fCol, 1, KIND_RECT, 0, 0);
   }
   // pickups (pulse)
   const nPickups = min(load<i32>(curr, 24), MAX_PICKUPS);
@@ -339,12 +356,30 @@ export function render(now: f64, which: i32): i32 {
     const o = frameIn + FR_EXPL + <usize>(i << 4);
     const ex = load<i32>(o), ey = load<i32>(o, 4);
     const radiusCells = load<f32>(o, 8), age = load<f32>(o, 12);
+    const cx = <f32>ex * cs + cs / 2, cy = <f32>ey * cs + cs / 2;
+    if (radiusCells < 0) {
+      // Piñata candy burst (negative radius flags it): a deterministic spray
+      // of festive pixel bits flung outward, fading with age. Mirrors
+      // render2d.js drawExplosion's candy branch exactly (f64 trig, same
+      // constants) so wasm/2D stay pixel-parity.
+      const dist = <f64>(-radiusCells) * <f64>cs * <f64>age;
+      const phase = <f64>((ex + ey) % 7) * 0.897;
+      const sz = <f32>(<f64>cs * 0.30 * (1.0 - 0.4 * <f64>age));
+      const al = max<f32>(0, 1 - age);
+      for (let k = 0; k < CANDY_N; k++) {
+        const ang = <f64>k * 2.399963 + phase;
+        const px = <f32>(<f64>cx + Math.cos(ang) * dist);
+        const py = <f32>(<f64>cy + Math.sin(ang) * dist);
+        inst(px - sz / 2, py - sz / 2, sz, sz, candyColor(k), al, KIND_RECT, 0, 0);
+      }
+      continue;
+    }
     const r = radiusCells * cs * age;
     const lw = max<f32>(2, cs * <f32>0.15);
     const outer = r + lw / 2;
     if (outer > 0) {
       const inner = max<f32>(0, r - lw / 2) / outer;
-      inst(<f32>ex * cs + cs / 2 - outer, <f32>ey * cs + cs / 2 - outer, outer * 2, outer * 2, COLOR_SHELL, max<f32>(0, 1 - age), KIND_RING, 0, inner);
+      inst(cx - outer, cy - outer, outer * 2, outer * 2, COLOR_SHELL, max<f32>(0, 1 - age), KIND_RING, 0, inner);
     }
   }
   // players

@@ -16,7 +16,7 @@ const {
   CFG, COLORS, MAX_LOCAL_PLAYERS, SPECTATOR_IDLE_MS, PLAYER_IDLE_MS,
   JOIN_OFFER_MS, MIN_SNAKE_LENGTH, dlog
 } = require("./config");
-const { S, ensureFoods, spawnSnake, newPlayerSlot, scoreMode } = require("./state");
+const { S, ensureFoods, dropPinataFood, spawnSnake, newPlayerSlot, scoreMode } = require("./state");
 const { sendTo, broadcastState } = require("./net");
 const { qualifies, recordScore } = require("./highscores");
 
@@ -251,6 +251,10 @@ function handleDeath(slotIndex) {
   s.boostSince = null;
   s.rampProgress = 0; // death kills momentum; a respawn starts from base speed
   s.driftDir = null;
+  // "Piñata" bounties (v3.6.6): a big enough corpse bursts into fast-decaying
+  // bounty food where it fell. Done BEFORE the body is left to clear on
+  // respawn -- it reads s.body as it stands at the moment of death.
+  dropPinataFood(s);
   // Session-bound initials (v3.4.0): a qualifying score is written to the
   // boards RIGHT NOW, with the mode sampled at this instant -- no prompt,
   // no banking, no parked seats. The respawn timer below runs unchanged.
