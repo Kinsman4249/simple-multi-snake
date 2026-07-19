@@ -3,7 +3,7 @@
 // prompt with countdown, spectator overlay, explicit JOIN offer button,
 // and a DEBUG button/panel (recording enabled only while open).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-19.1";
+(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-19.2";
 const UI = (() => {
   const statusEl = document.getElementById("status");
   let captchaId = null;
@@ -89,14 +89,22 @@ const UI = (() => {
   function setPowerupInfo(info, powerupsCfg) {
     const popup = document.getElementById("powerupInfoPopup");
     if (!popup) return;
-    const entries = Object.values(info || {});
-    if (entries.length === 0) { popup.innerHTML = "<h4>Powerups</h4>No powerups are enabled."; return; }
-    popup.innerHTML = "<h4>Powerups</h4>" + entries.map(e =>
-      "<div class=\"entry\"><span class=\"name\">" + e.title + ":</span> " + e.description + "</div>"
+    // Operator-disabled powerups (powerupsCfg[type].enabled === false, e.g. the
+    // helloWorld demo) never spawn on this server's board, so they must not
+    // appear in EITHER the "what do the powerups do?" popup or the legend --
+    // teaching a powerup a player can never pick up is just noise.
+    const isEnabled = type => {
+      const pc = powerupsCfg && powerupsCfg[type];
+      return !(pc && pc.enabled === false);
+    };
+    const infoTypes = Object.keys(info || {}).filter(isEnabled);
+    if (infoTypes.length === 0) { popup.innerHTML = "<h4>Powerups</h4>No powerups are enabled."; return; }
+    popup.innerHTML = "<h4>Powerups</h4>" + infoTypes.map(type =>
+      "<div class=\"entry\"><span class=\"name\">" + info[type].title + ":</span> " + info[type].description + "</div>"
     ).join("");
     // Scale the popup's height with entry count (small list = tight box,
     // large list = taller box up to the CSS max-height/scroll fallback).
-    popup.style.minHeight = Math.min(400, 40 + entries.length * 55) + "px";
+    popup.style.minHeight = Math.min(400, 40 + infoTypes.length * 55) + "px";
     // Captcha-screen color legend (index.html #powerupLegend): swatch +
     // name per powerup so a new player knows what each pickup color means
     // before their snake ever moves. Colors come from render.js's own
@@ -108,10 +116,7 @@ const UI = (() => {
     // Render is a top-level const (script load order: render.js before
     // ui.js), so it's a global binding but NOT a window property.
     const style = (typeof Render !== "undefined" && Render.POWERUP_STYLE) || {};
-    legend.innerHTML = Object.keys(info || {}).filter(type => {
-      const pc = powerupsCfg && powerupsCfg[type];
-      return !(pc && pc.enabled === false);
-    }).map(type => {
+    legend.innerHTML = infoTypes.map(type => {
       const col = style[type] || "#fff";
       // The banana pickup is drawn on-board as the pixel-art banana crescent
       // (not a flat square), so its legend swatch must be that exact sprite too
