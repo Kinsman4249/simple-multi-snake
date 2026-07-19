@@ -569,11 +569,39 @@ function applyMovementAndFood(active, newHeads, died, stalled) {
     if (s.activePowerup && TRAIL_TYPES.has(s.activePowerup.type)) {
       const type = s.activePowerup.type;
       const layCell = vacatedTail || h;
-      S.trails = S.trails.filter(t => !(t.x === layCell.x && t.y === layCell.y));
-      S.trails.push({
-        id: S.nextPowerupId++, type, x: layCell.x, y: layCell.y, ownerSlot: i,
-        expiresAtTick: S.moveSeq + Math.ceil(POWERUPS[type].tileDurationMs / currentMoveIntervalMs())
-      });
+      const expiresAtTick = S.moveSeq + Math.ceil(POWERUPS[type].tileDurationMs / currentMoveIntervalMs());
+      // Gap fill: at higher snake speeds (a boost drift rigidly skids the whole
+      // body sideways while the head also advances, and the length-scaled
+      // global speed takes several movement steps per sim tick) the vacated
+      // tail can jump MORE than one cell between consecutive lays. Laying only
+      // the endpoint left the trail DASHED -- gaps a snake could slip through
+      // without ever crossing a tile. Walk from the previous laid cell to this
+      // one (x first, then y, so a diagonal drift+follow jump fills as an L)
+      // and lay a tile on every cell in between, all sharing this step's expiry.
+      const prev = s.lastTrailCell;
+      const cells = [];
+      if (prev && (prev.x !== layCell.x || prev.y !== layCell.y)) {
+        let cx = prev.x, cy = prev.y;
+        const sx = Math.sign(layCell.x - cx), sy = Math.sign(layCell.y - cy);
+        // Cap the walk so a pathological jump (not expected in normal play)
+        // can never paint a full line across the board.
+        let guard = CFG.grid.cols + CFG.grid.rows;
+        while ((cx !== layCell.x || cy !== layCell.y) && guard-- > 0) {
+          if (cx !== layCell.x) cx += sx; else cy += sy;
+          cells.push({ x: cx, y: cy });
+        }
+      } else {
+        cells.push({ x: layCell.x, y: layCell.y });
+      }
+      for (const c of cells) {
+        S.trails = S.trails.filter(t => !(t.x === c.x && t.y === c.y));
+        S.trails.push({ id: S.nextPowerupId++, type, x: c.x, y: c.y, ownerSlot: i, expiresAtTick });
+      }
+      s.lastTrailCell = { x: layCell.x, y: layCell.y };
+    } else {
+      // Not laying this step: drop the anchor so the NEXT activation starts a
+      // fresh trail instead of drawing a line back from a stale, far-away cell.
+      s.lastTrailCell = null;
     }
     s.wallStalls = 0;
   }

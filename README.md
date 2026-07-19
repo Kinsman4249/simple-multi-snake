@@ -2,12 +2,15 @@
 
 Browser-based multiplayer Snake. One authoritative Node.js process holds the
 game state and serves the client. Apache reverse-proxies a hostname you choose
-to it, with TLS from Let's Encrypt. Up to four live players share one board;
-extra connections wait in a spectator queue and are promoted when a slot frees.
+to it, with TLS from Let's Encrypt. Up to eight live players share one board by
+default -- the cap (maxPlayers) is configurable to taste and to the hardware you
+run it on; extra connections wait in a spectator queue and are promoted when a
+slot frees.
 
 ## Features
 
-- One to four players on a shared board, no accounts.
+- Up to eight players on a shared board by default (the cap is configurable --
+  see maxPlayers), no accounts.
 - Couch co-op: a second local player can join on the same connection (p1 on
   arrow keys, p2 on WASD), taking a second slot on the same board.
 - Leave button per local seat. Leaving exits that seat completely (it is not
@@ -79,8 +82,9 @@ extra connections wait in a spectator queue and are promoted when a slot frees.
   they never cover the board -- a small round toggle button at the bottom
   reveals or hides them on tap; swipe-steering and the PWR/BOOST buttons keep
   working throughout. The overlays start hidden again on every reload.
-- Spectator queue past four players. A spectator takes over shortly after a
-  player dies; if four or fewer are connected the dead player just respawns.
+- Spectator queue past the player cap (eight by default, configurable). A
+  spectator takes over shortly after a player dies; if the board is not full the
+  dead player just respawns.
 - Killing another player (they run into your body) gives you a 10 point bonus
   and grows your snake by 3 segments. Head-on collisions kill both, no bonus.
 - Global speed scales with the AVERAGE snake length in the room (total length

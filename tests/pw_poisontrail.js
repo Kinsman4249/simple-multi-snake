@@ -4,7 +4,7 @@
 // design) removes one segment, floored at the global minSnakeLength. Run:
 // deno run --allow-net --allow-read --allow-write --allow-run --allow-env
 // tests/pw_poisontrail.js
-import { connectClient, myPlayer, assert, startServer, stopServer, collectNextPickup, stepToward, runTest } from "./helpers.js";
+import { connectClient, myPlayer, assert, startServer, stopServer, collectNextPickup, stepToward, runTest, assertTrailContiguous } from "./helpers.js";
 
 function rotateCW(v) { return { x: -v.y, y: v.x }; }
 function dirName(v) {
@@ -88,7 +88,8 @@ async function main() {
     // Lay the first loop of trail tiles (no self-crossing yet this lap).
     for (const d of dirs) await stepsStraight(c1, 0, d, N);
     assert(c1.state.trails.length > 0, "poison trail tiles should exist on the board");
-    console.log("PASS: trail tiles laid (" + c1.state.trails.length + " on board).");
+    assertTrailContiguous(c1.state, "poisonTrail");
+    console.log("PASS: trail tiles laid (" + c1.state.trails.length + " on board), contiguous.");
 
     // Repeatedly close the loop (crossing the earlier-laid starting tile
     // each time) and confirm length is non-increasing, never drops below

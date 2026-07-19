@@ -12,7 +12,7 @@
 // leaves the striped row for good.
 // Run: deno run --allow-net --allow-read --allow-write --allow-run
 //      --allow-env tests/pw_bananatrail.js
-import { connectClient, myPlayer, assert, startServer, stopServer, runTest, testHook, sleep } from "./helpers.js";
+import { connectClient, myPlayer, assert, startServer, stopServer, runTest, testHook, sleep, assertTrailContiguous } from "./helpers.js";
 
 const STEP_MS = 150;
 
@@ -51,6 +51,7 @@ async function main() {
     // (which trails the layer in x) is guaranteed to hold a tile laid AFTER
     // activation.
     await sleep(2500);
+    assertTrailContiguous(c1.state, "bananaTrail");
 
     // Crosser turns up into the trail row; the moment its head lands on a
     // banana tile it must be flagged inverted.

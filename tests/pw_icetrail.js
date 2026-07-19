@@ -4,7 +4,7 @@
 // movement, refreshes duration, and stacks severity up to a floor. Run:
 // deno run --allow-net --allow-read --allow-write --allow-run --allow-env
 // tests/pw_icetrail.js
-import { connectClient, myPlayer, assert, sleep, startServer, stopServer, collectNextPickup, stepToward, runTest } from "./helpers.js";
+import { connectClient, myPlayer, assert, sleep, startServer, stopServer, collectNextPickup, stepToward, runTest, assertTrailContiguous } from "./helpers.js";
 
 function rotateCW(v) { return { x: -v.y, y: v.x }; }
 function dirName(v) {
@@ -77,7 +77,8 @@ async function main() {
     for (const d of dirs) await stepsStraight(c1, 0, d, N);
 
     assert(c1.state.trails.length > 0, "trail tiles should exist on the board");
-    console.log("PASS: trail tiles laid (" + c1.state.trails.length + " on board).");
+    assertTrailContiguous(c1.state, "iceTrail");
+    console.log("PASS: trail tiles laid (" + c1.state.trails.length + " on board), contiguous.");
 
     // One more step in the original direction should land back on the
     // first-laid tile (the snake's own starting cell) -- self-crossing.

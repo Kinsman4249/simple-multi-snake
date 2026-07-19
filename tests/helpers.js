@@ -222,6 +222,31 @@ async function collectNextPickup(client, local, timeoutMs) {
 // that harness-level noise; each attempt still has to pass every assertion
 // on its own merits against a clean server, so a real regression fails all
 // attempts and still surfaces.
+// Contiguity check for laid powerup trails (regression for the v3.6.4
+// tail-emission gap bug): a correctly laid trail is a single 4-connected blob
+// of cells -- a DASHED trail (the bug, where a fast/drifting tail jumped more
+// than one cell between lays) breaks into multiple components with holes a
+// snake could slip through. Flood-fills from one tile over orthogonal
+// neighbours and asserts every trail cell is reached.
+function assertTrailContiguous(state, label) {
+  const tiles = state.trails || [];
+  if (tiles.length < 2) return; // nothing to gap
+  const key = (x, y) => x + "," + y;
+  const set = new Set(tiles.map(t => key(t.x, t.y)));
+  const seen = new Set();
+  const stack = [tiles[0]];
+  seen.add(key(tiles[0].x, tiles[0].y));
+  while (stack.length) {
+    const c = stack.pop();
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const k = key(c.x + dx, c.y + dy);
+      if (set.has(k) && !seen.has(k)) { seen.add(k); stack.push({ x: c.x + dx, y: c.y + dy }); }
+    }
+  }
+  assert(seen.size === set.size,
+    (label || "trail") + " must be contiguous (no gaps): reached " + seen.size + " of " + set.size + " tiles");
+}
+
 function runTest(mainFn, opts) {
   const attempts = (opts && opts.attempts) || 4;
   const watchdogMs = (opts && opts.watchdogMs) || 240000;
@@ -238,4 +263,4 @@ function runTest(mainFn, opts) {
   })();
 }
 
-export { connectClient, mySlot, myPlayer, sleep, stepToward, assert, BASE, startServer, stopServer, collectNextPickup, runTest, testHook };
+export { connectClient, mySlot, myPlayer, sleep, stepToward, assert, BASE, startServer, stopServer, collectNextPickup, runTest, testHook, assertTrailContiguous };
