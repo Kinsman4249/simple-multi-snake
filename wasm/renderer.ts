@@ -129,7 +129,7 @@ const COLOR_TRAIL_ICE: u32 = rgba(150, 225, 255, 166);      // rgba(150,225,255,
 const COLOR_TRAIL_POISON: u32 = rgba(110, 210, 70, 153);    // rgba(110,210,70,0.6)
 const COLOR_TRAIL_BANANA: u32 = rgba(255, 221, 68, 153);    // rgba(255,221,68,0.6)
 const COLOR_TRAIL_FALLBACK: u32 = rgba(255, 255, 255, 51);  // rgba(255,255,255,0.2)
-const COLOR_SHELL: u32 = rgba(0x33, 0x99, 0xff, 255);       // #39f
+const COLOR_SHELL: u32 = rgba(0x11, 0x44, 0xee, 255);       // #14e deep royal blue (v3.6.2)
 const COLOR_SHELL_HILIGHT: u32 = rgba(0xdd, 0xff, 0xff, 255); // #dff
 const COLOR_JETSTREAM: u32 = rgba(0x99, 0xdd, 0xff, 255);   // #9df
 const COLOR_DUST: u32 = rgba(0xcc, 0xcc, 0xcc, 255);        // #ccc
@@ -137,18 +137,21 @@ const COLOR_WHITE: u32 = rgba(255, 255, 255, 255);
 const COLOR_BLACK: u32 = rgba(0, 0, 0, 255);
 const COLOR_BANANA_BODY: u32 = rgba(0xff, 0xdd, 0x44, 255); // #fd4
 const COLOR_BANANA_TIP: u32 = rgba(0xaa, 0x77, 0x00, 255);  // #a70
+const COLOR_BANANA_SPOT: u32 = rgba(0x66, 0x33, 0x00, 255); // #630 ripeness speckle
 
 // Pickup colors by type index (must match the facade's POWERUP_TYPE_INDEX
-// order): 0 wormhole #a3f, 1 growthSpurt #fd6, 2 iceTrail #9df,
-// 3 poisonTrail #4a2, 4 speedBoost #f93, 5 blueShell #39f,
-// 6 bananaTrail #fd4, 7 helloWorld #0ff.
+// order): 0 wormhole #a3f, 1 growthSpurt #fe0, 2 iceTrail #9df,
+// 3 poisonTrail #4a2, 4 speedBoost #f50, 5 blueShell #14e,
+// 6 bananaTrail #fd4, 7 helloWorld #0ff. growthSpurt/speedBoost recolored in
+// v3.6.2 for contrast (vivid yellow vs hot red-orange); keep in sync with
+// render2d.js POWERUP_STYLE.
 function pickupColor(t: i32): u32 {
   if (t == 0) return rgba(0xaa, 0x33, 0xff, 255);
-  if (t == 1) return rgba(0xff, 0xdd, 0x66, 255);
+  if (t == 1) return rgba(0xff, 0xee, 0x00, 255);
   if (t == 2) return rgba(0x99, 0xdd, 0xff, 255);
   if (t == 3) return rgba(0x44, 0xaa, 0x22, 255);
-  if (t == 4) return rgba(0xff, 0x99, 0x33, 255);
-  if (t == 5) return rgba(0x33, 0x99, 0xff, 255);
+  if (t == 4) return rgba(0xff, 0x55, 0x00, 255);
+  if (t == 5) return rgba(0x11, 0x44, 0xee, 255);
   if (t == 6) return rgba(0xff, 0xdd, 0x44, 255);
   if (t == 7) return rgba(0x00, 0xff, 0xff, 255);
   return COLOR_WHITE;
@@ -204,14 +207,15 @@ function inst(x: f32, y: f32, w: f32, h: f32, color: u32, alphaMul: f32, kind: f
   instN++;
 }
 
-// Pixel-art banana bitmap (5x5), 0 empty / 1 body / 2 tip -- must match
-// render2d.js BANANA_ART exactly (same rows) so the two renderers agree.
+// Pixel-art banana bitmap (5x5), 0 empty / 1 body / 2 tip / 3 ripeness spot
+// -- must match render2d.js BANANA_ART exactly (same rows) so the two
+// renderers agree. Spots at (1,3) and (3,0) added in v3.6.2.
 @inline
 function bananaVal(r: i32, c: i32): i32 {
   if (r == 0) return c == 3 ? 1 : (c == 4 ? 2 : 0);
-  if (r == 1) return (c == 2 || c == 3) ? 1 : 0;
+  if (r == 1) return c == 2 ? 1 : (c == 3 ? 3 : 0);
   if (r == 2) return (c == 1 || c == 2) ? 1 : 0;
-  if (r == 3) return (c == 0 || c == 1) ? 1 : 0;
+  if (r == 3) return c == 0 ? 3 : (c == 1 ? 1 : 0);
   return c == 0 ? 2 : (c == 1 ? 1 : 0);
 }
 @inline
@@ -270,7 +274,8 @@ export function render(now: f64, which: i32): i32 {
           const x1 = <f32>(<i32>Math.round(<f64>(c + 1) * <f64>cell / 5.0));
           const y0 = <f32>(<i32>Math.round(<f64>r * <f64>cell / 5.0));
           const y1 = <f32>(<i32>Math.round(<f64>(r + 1) * <f64>cell / 5.0));
-          inst(bx + x0, by + y0, x1 - x0, y1 - y0, v == 2 ? COLOR_BANANA_TIP : COLOR_BANANA_BODY, 1, KIND_RECT, 0, 0);
+          const bcol = v == 2 ? COLOR_BANANA_TIP : (v == 3 ? COLOR_BANANA_SPOT : COLOR_BANANA_BODY);
+          inst(bx + x0, by + y0, x1 - x0, y1 - y0, bcol, 1, KIND_RECT, 0, 0);
         }
       }
     } else {
@@ -290,9 +295,28 @@ export function render(now: f64, which: i32): i32 {
     const o = pkBase + <usize>(i << 4);
     const px = load<i32>(o), py = load<i32>(o, 4), pt = load<i32>(o, 8), pid = load<i32>(o, 12);
     const pulse = <f32>(0.5 + 0.5 * Math.sin(now / 220.0 + <f64>pid));
+    const pkAlpha = <f32>0.6 + <f32>0.4 * pulse;
+    if (pt == 6) {
+      // banana pickup: pixel-art crescent (identical to the laid trail art),
+      // pulsing only in alpha -- shape carries the identity, see render2d.js.
+      const bx = <f32>px * cs, by = <f32>py * cs;
+      for (let r = 0; r < 5; r++) {
+        for (let c = 0; c < 5; c++) {
+          const v = bananaVal(r, c);
+          if (v == 0) continue;
+          const x0 = <f32>(<i32>Math.round(<f64>c * <f64>cell / 5.0));
+          const x1 = <f32>(<i32>Math.round(<f64>(c + 1) * <f64>cell / 5.0));
+          const y0 = <f32>(<i32>Math.round(<f64>r * <f64>cell / 5.0));
+          const y1 = <f32>(<i32>Math.round(<f64>(r + 1) * <f64>cell / 5.0));
+          const bcol = v == 2 ? COLOR_BANANA_TIP : (v == 3 ? COLOR_BANANA_SPOT : COLOR_BANANA_BODY);
+          inst(bx + x0, by + y0, x1 - x0, y1 - y0, bcol, pkAlpha, KIND_RECT, 0, 0);
+        }
+      }
+      continue;
+    }
     const size = (cs - 2) * (<f32>0.7 + <f32>0.3 * pulse);
     const off = (cs - size) / 2;
-    inst(<f32>px * cs + off, <f32>py * cs + off, size, size, pickupColor(pt), <f32>0.6 + <f32>0.4 * pulse, KIND_RECT, 0, 0);
+    inst(<f32>px * cs + off, <f32>py * cs + off, size, size, pickupColor(pt), pkAlpha, KIND_RECT, 0, 0);
   }
   // blue shells (spinning ellipse + highlight)
   const nShells = min(load<i32>(curr, 28), MAX_SHELLS);

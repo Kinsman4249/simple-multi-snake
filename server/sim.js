@@ -442,7 +442,9 @@ function firePowerup(slot, slotIndex, type) {
     // firer is not exempt from being hit by their own shell. The pickup path
     // additionally gates on playerSeatCount() >= 2 before calling this.
     const head = slot.body[0];
-    S.blueShells.push({ id: S.nextPowerupId++, x: head.x, y: head.y, ownerSlot: slotIndex, moveAccumMs: 0 });
+    // stepAxis seeds the staircase alternator in updateBlueShells; "y" means
+    // the first off-axis diagonal step flips to "x" (horizontal-first).
+    S.blueShells.push({ id: S.nextPowerupId++, x: head.x, y: head.y, ownerSlot: slotIndex, moveAccumMs: 0, stepAxis: "y" });
     dlog && dlog("blueShell launched", { slot: slotIndex, x: head.x, y: head.y });
   } else {
     const durationMs = POWERUPS[type].durationMs;
@@ -609,7 +611,9 @@ function expirePowerupsAndTrails() {
 // happily hit its own launcher if they are or become the leader). It PHASES
 // THROUGH every body (its own target's included) and only detonates on the
 // target's HEAD cell, so you cannot shield with your tail -- it must be
-// outrun, not blocked. Its step cadence is blueShell.speedRatio of the
+// outrun, not blocked. When the target is off-axis on both axes it moves in a
+// staircase (alternating x/y each step) rather than a rigid L, tracking the
+// leader along a natural diagonal. Its step cadence is blueShell.speedRatio of the
 // current game move interval, so it is faster than a normal snake at every
 // game phase yet a fully-boosted snake (hold-boost x Speed Boost) can still
 // outrun it: almost impossible to dodge, but dodgeable at maximum speed.
@@ -626,8 +630,20 @@ function updateBlueShells(dt) {
     if (targetIdx === null) { S.blueShells = S.blueShells.filter(b => b.id !== shell.id); continue; }
     const targetHead = S.slots[targetIdx].body[0];
     const dx = targetHead.x - shell.x, dy = targetHead.y - shell.y;
-    if (dx !== 0) shell.x += dx > 0 ? 1 : -1;
-    else if (dy !== 0) shell.y += dy > 0 ? 1 : -1;
+    // Staircase tracking (v3.6.2): when the target is off-axis on BOTH axes,
+    // alternate the step axis every frame (x, then y, then x...) so the shell
+    // traces a smooth diagonal staircase instead of the old rigid L (all of
+    // one axis, then all of the other). Once it lines up on one axis, dx or
+    // dy is 0 and it simply closes the remaining gap on the other axis.
+    let stepX;
+    if (dx !== 0 && dy !== 0) {
+      shell.stepAxis = shell.stepAxis === "x" ? "y" : "x"; // flip each diagonal step
+      stepX = shell.stepAxis === "x";
+    } else {
+      stepX = dx !== 0; // only one axis left to travel -- move along it
+    }
+    if (stepX) shell.x += dx > 0 ? 1 : -1;
+    else shell.y += dy > 0 ? 1 : -1;
     moved = true;
     // Head only -- phases through the body, detonates on the head cell.
     if (shell.x === targetHead.x && shell.y === targetHead.y) {

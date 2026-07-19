@@ -14,7 +14,7 @@
 // ============================================================
 const {
   CFG, COLORS, MAX_LOCAL_PLAYERS, SPECTATOR_IDLE_MS, PLAYER_IDLE_MS,
-  JOIN_OFFER_MS, dlog
+  JOIN_OFFER_MS, MIN_SNAKE_LENGTH, dlog
 } = require("./config");
 const { S, ensureFoods, spawnSnake, newPlayerSlot, scoreMode } = require("./state");
 const { sendTo, broadcastState } = require("./net");
@@ -30,7 +30,17 @@ function assignConnection(connId, ws) {
 // Record a qualifying score for one local seat, immediately, using the
 // seat's session-bound initials. The mode (local vs networked board) is
 // sampled by the CALLER at the death/leave moment, before any teardown.
-function recordIfQualifies(conn, localIdx, score, mode) {
+//
+// Earned-length gate (v3.6.2): a score only commits if the snake still has
+// body segments it actually earned at the moment of death. If poison / a blue
+// shell has shrunk it all the way back to the default starting length
+// (MIN_SNAKE_LENGTH), the run counts as wiped out -- we skip the save
+// entirely, no matter what the raw score number says.
+function recordIfQualifies(conn, localIdx, score, mode, slot) {
+  if (slot && slot.body.length <= MIN_SNAKE_LENGTH) {
+    dlog && dlog("score save skipped: snake at starting length", { local: localIdx, score, len: slot.body.length });
+    return;
+  }
   const targets = qualifies(score, mode);
   if (targets.length === 0) return;
   const initials = (conn && conn.initials[localIdx]) || "???";
@@ -97,7 +107,7 @@ function removeLocalSeat(connId, localIdx) {
   if (entry === null || entry === undefined) return false;
   if (entry.role === "player" && entry.slotIndex != null) {
     const s = S.slots[entry.slotIndex];
-    if (s && s.alive) recordIfQualifies(conn, localIdx, s.score, scoreMode());
+    if (s && s.alive) recordIfQualifies(conn, localIdx, s.score, scoreMode(), s);
     S.slots[entry.slotIndex] = null;
   }
   S.spectatorQueue = S.spectatorQueue.filter(e => !(e.connId === connId && e.local === localIdx));
@@ -241,7 +251,7 @@ function handleDeath(slotIndex) {
   // no banking, no parked seats. The respawn timer below runs unchanged.
   const conn = S.connections.get(s.connId);
   const localIdx = conn ? conn.locals.findIndex(l => l && l.role === "player" && l.slotIndex === slotIndex) : -1;
-  if (conn && localIdx !== -1) recordIfQualifies(conn, localIdx, s.score, scoreMode());
+  if (conn && localIdx !== -1) recordIfQualifies(conn, localIdx, s.score, scoreMode(), s);
   const connId = s.connId;
   setTimeout(() => {
     if (!S.slots[slotIndex] || S.slots[slotIndex].connId !== connId) return;

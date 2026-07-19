@@ -61,11 +61,20 @@ const Render2D = (() => {
   // meaning -- see server.js POWERUPS for the actual config/behavior.
   const POWERUP_STYLE = {
     wormhole: "#a3f",
-    growthSpurt: "#fd6",
+    // growthSpurt & speedBoost used to be near-identical warm yellows/oranges
+    // (#fd6 vs #f93) that read the same as the banana pickup at a glance
+    // (v3.6.2). They are now pushed to opposite ends of the warm range for
+    // maximum contrast: growthSpurt a vivid pure yellow, speedBoost a hot
+    // red-orange. The banana pickup no longer competes for a flat color at all
+    // -- it renders as a pixel-art banana (see drawPickup / BANANA_ART).
+    growthSpurt: "#fe0",
     iceTrail: "#9df",
     poisonTrail: "#4a2",
-    speedBoost: "#f93",
-    blueShell: "#39f",
+    speedBoost: "#f50",
+    // blueShell was #39f, an azure too close to iceTrail's pale #9df -- the two
+    // pickup icons read as the same blue at a glance (v3.6.2). Pushed to a deep
+    // royal blue that's clearly darker/richer than the icy powder blue.
+    blueShell: "#14e",
     bananaTrail: "#fd4",
     helloWorld: "#0ff"
   };
@@ -78,19 +87,20 @@ const Render2D = (() => {
     // bananaTrail is drawn as pixel-art bananas (drawBananaTile), not a flat
     // tint -- see BANANA_ART below.
   };
-  // Pixel-art banana (5x5 sub-grid), 0 empty / 1 body / 2 tip -- a yellow
-  // crescent with brown tips, drawn grid-aligned so a banana tile reads as a
-  // tiny banana instead of a flat yellow square (v3.5.0). The wasm renderer
-  // draws the identical shape (bananaVal + the same round(i*cell/5) pixel
-  // edges) so parity stays exact.
+  // Pixel-art banana (5x5 sub-grid): 0 empty / 1 body / 2 tip / 3 ripeness
+  // spot -- a yellow crescent with brown tips AND a couple of dark-brown
+  // speckles on the body (v3.6.2), drawn grid-aligned so a banana tile reads
+  // unmistakably as a banana instead of yet another warm-colored square. The
+  // wasm renderer draws the identical shape (bananaVal + the same
+  // round(i*cell/5) pixel edges) so parity stays exact.
   const BANANA_ART = [
     [0, 0, 0, 1, 2],
-    [0, 0, 1, 1, 0],
+    [0, 0, 1, 3, 0], // ripeness spot at (1,3)
     [0, 1, 1, 0, 0],
-    [1, 1, 0, 0, 0],
+    [3, 1, 0, 0, 0], // ripeness spot at (3,0)
     [2, 1, 0, 0, 0]
   ];
-  const BANANA_BODY = "#fd4", BANANA_TIP = "#a70";
+  const BANANA_BODY = "#fd4", BANANA_TIP = "#a70", BANANA_SPOT = "#630";
   // Gap between cells, in internal-resolution pixels. Scales with cell size
   // so it survives fractional CSS downscales (a fixed 1px gap lands between
   // destination pixels below scale 1 and vanishes).
@@ -135,8 +145,19 @@ const Render2D = (() => {
   // reads as "alive" on the board without needing a sprite/animation asset.
   function drawPickup(p, now) {
     const cs = grid.cellSize;
-    const color = POWERUP_STYLE[p.type] || "#fff";
     const pulse = 0.5 + 0.5 * Math.sin(now / 220 + p.id);
+    // Banana pickup: draw the pixel-art banana (crescent + brown tips/spots)
+    // rather than a flat square, so it can never be mistaken for the warm-
+    // colored growthSpurt/speedBoost pickups (v3.6.2). It still "breathes" via
+    // the shared alpha pulse; the shape carries the identity instead of color.
+    if (p.type === "bananaTrail") {
+      ctx.save();
+      ctx.globalAlpha = 0.6 + 0.4 * pulse;
+      drawBananaTile(p.x, p.y);
+      ctx.restore();
+      return;
+    }
+    const color = POWERUP_STYLE[p.type] || "#fff";
     const size = (cs - 2) * (0.7 + 0.3 * pulse);
     const offset = (cs - size) / 2;
     ctx.save();
@@ -168,7 +189,7 @@ const Render2D = (() => {
         if (!v) continue;
         const x0 = Math.round(c * cell / 5), x1 = Math.round((c + 1) * cell / 5);
         const y0 = Math.round(r * cell / 5), y1 = Math.round((r + 1) * cell / 5);
-        ctx.fillStyle = v === 2 ? BANANA_TIP : BANANA_BODY;
+        ctx.fillStyle = v === 2 ? BANANA_TIP : (v === 3 ? BANANA_SPOT : BANANA_BODY);
         ctx.fillRect(ox + x0, oy + y0, x1 - x0, y1 - y0);
       }
     }
@@ -235,7 +256,7 @@ const Render2D = (() => {
     ctx.save();
     ctx.translate(cx, cy);
     ctx.rotate(spin);
-    ctx.fillStyle = "#39f";
+    ctx.fillStyle = "#14e"; // matches the deep-royal blueShell pickup (v3.6.2)
     ctx.beginPath();
     ctx.ellipse(0, 0, cs * 0.42, cs * 0.32, 0, 0, Math.PI * 2);
     ctx.fill();

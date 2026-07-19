@@ -121,6 +121,31 @@ function ensureFoods() {
 // Clear and refill food to the current target (used by the placeFood test
 // hook to re-roll for the rubberband distribution sampler).
 function rerollFoods() { S.foods = []; ensureFoods(); }
+// Safe-spawn tuning (v3.6.2): how many empty cells a fresh snake keeps from
+// every wall, and the halo radius that must be clear of OTHER snakes around
+// every one of its body cells. Both auto-shrink on tiny boards (see spawnSnake).
+const SPAWN_WALL_MARGIN = 4;
+const SPAWN_CLEARANCE = 2;
+// True when a snake of `len` placed head-first at (hx,hy) heading `dir` fits
+// with `wallMargin` empty cells from every edge AND no other snake within
+// `clearance` cells of any of its body cells. clearance 0 = "no body overlap"
+// only (used for the crowded-board fallback). Off-board halo cells count as
+// free -- wall proximity is enforced separately by the margin check.
+function spawnAreaClear(hx, hy, dir, len, slotIndex, clearance, wallMargin) {
+  for (let n = 0; n < len; n++) {
+    const bx = hx - dir.x * n, by = hy - dir.y * n;
+    // Whole body must sit inside the wall margin on every edge.
+    if (bx < wallMargin || bx >= CFG.grid.cols - wallMargin ||
+        by < wallMargin || by >= CFG.grid.rows - wallMargin) return false;
+    // Clearance halo around this body cell must be free of other snakes.
+    for (let ox = -clearance; ox <= clearance; ox++) {
+      for (let oy = -clearance; oy <= clearance; oy++) {
+        if (!cellFree(bx + ox, by + oy, slotIndex)) return false;
+      }
+    }
+  }
+  return true;
+}
 function spawnSnake(slotIndex) {
   let len = MIN_SNAKE_LENGTH;
   let x, y, dir = { x: 1, y: 0 };
@@ -135,12 +160,36 @@ function spawnSnake(slotIndex) {
     dir = DIR_VECTORS[forced.dir] || dir;
     if (Number.isInteger(forced.len) && forced.len >= MIN_SNAKE_LENGTH) len = forced.len;
   } else {
-    let attempts = 0;
-    do {
-      x = 3 + Math.floor(Math.random() * (CFG.grid.cols - 6));
-      y = 3 + Math.floor(Math.random() * (CFG.grid.rows - 6));
-      attempts++;
-    } while ((!cellFree(x, y, slotIndex) || !cellFree(x - 1, y, slotIndex) || !cellFree(x - 2, y, slotIndex)) && attempts < 100);
+    // Safe random spawn (v3.6.2). The old spawn only checked the three exact
+    // body cells, so a snake could pop in nose-to-nose with someone (head-on
+    // before you could turn) or a couple of cells from a wall it was already
+    // heading into -- either kills you within a second. Now we require:
+    //   * a CLEARANCE halo of empty cells around the whole body (no other
+    //     snake nearby), and
+    //   * a WALL MARGIN of empty cells from every edge, and
+    //   * the head oriented toward the roomier (center-ward) side of the
+    //     board, so the nearest wall is never straight ahead.
+    // Margins shrink on tiny boards so a valid spawn always exists; if the
+    // board is genuinely too crowded we fall back to the best candidate seen
+    // (body-overlap-free if possible, else the last one) rather than loop forever.
+    const cols = CFG.grid.cols, rows = CFG.grid.rows;
+    const wallMargin = Math.max(1, Math.min(SPAWN_WALL_MARGIN, Math.floor(Math.min(cols, rows) / 4)));
+    let chosen = null, bodyFree = null, anyCandidate = null;
+    for (let attempts = 0; attempts < 200 && !chosen; attempts++) {
+      // Head x keeps room for the trailing body plus the wall margin on both
+      // sides; head y just clears the top/bottom margin (body is horizontal).
+      const hx = wallMargin + len + Math.floor(Math.random() * Math.max(1, cols - 2 * (wallMargin + len)));
+      const hy = wallMargin + Math.floor(Math.random() * Math.max(1, rows - 2 * wallMargin));
+      // Face toward the center: from the left half head right, from the right
+      // half head left -- the long open stretch is always ahead of the head.
+      const d = hx < cols / 2 ? { x: 1, y: 0 } : { x: -1, y: 0 };
+      anyCandidate = { x: hx, y: hy, dir: d };
+      if (spawnAreaClear(hx, hy, d, len, slotIndex, SPAWN_CLEARANCE, wallMargin)) chosen = anyCandidate;
+      else if (!bodyFree && spawnAreaClear(hx, hy, d, len, slotIndex, 0, wallMargin)) bodyFree = anyCandidate;
+    }
+    const pick = chosen || bodyFree || anyCandidate ||
+      { x: Math.floor(cols / 2), y: Math.floor(rows / 2), dir: { x: 1, y: 0 } };
+    x = pick.x; y = pick.y; dir = pick.dir;
   }
   const s = S.slots[slotIndex];
   const body = [];
