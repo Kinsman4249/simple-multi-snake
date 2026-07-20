@@ -20,6 +20,10 @@ function broadcastState() {
     // still reads a single food.
     tickMs: interval, simHz: SIM_HZ, grid: CFG.grid, foods: S.foods, food: S.foods[0] || null,
     powerupPickups: S.powerupPickups, trails: S.trails, blueShells: S.blueShells, explosions: S.explosions,
+    // Kill feed (v3.6.8): one-shot, same pattern as explosions -- events
+    // queued by lifecycle.js handleDeath since the last broadcast, cleared
+    // right after this one goes out so nobody sees the same kill twice.
+    kills: S.killEvents,
     players: S.slots.map((s, i) => s ? {
       // Score IS the snake's current length (v3.6.x): classic-snake scoring,
       // and what the leaderboard records at death. Poison / a blue shell that
@@ -73,6 +77,7 @@ function broadcastState() {
   // then cleared so none repeats.
   for (const s of S.slots) if (s) { s.teleportedThisTick = false; s.activatedFx = null; }
   S.explosions = [];
+  S.killEvents = [];
   // Latency/CPU: the shared portion of the state is identical for every
   // connection, so serialize it ONCE and splice each connection's small
   // per-you payload into the JSON string, instead of re-stringifying the

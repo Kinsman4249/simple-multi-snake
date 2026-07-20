@@ -459,6 +459,10 @@ function handleState(curr, prev) {
       if (p && p.activated) activePowerFlashes.push({ slot, type: p.activated, startTime: now });
     });
   }
+  // Kill feed (v3.6.8): one-shot events queued server-side since the last
+  // broadcast (same pattern as explosions above) -- hand straight to ui.js,
+  // which owns the fading-line DOM lifecycle.
+  if (curr.kills && curr.kills.length) UI.pushKillFeed(curr.kills);
   refreshBoost(); // direction may have changed under a held key
   UI.updateStatus(curr);
   UI.updateLeaveButtons(myLocals);

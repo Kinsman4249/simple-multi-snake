@@ -16,7 +16,7 @@ const {
   CFG, COLORS, MAX_LOCAL_PLAYERS, SPECTATOR_IDLE_MS, PLAYER_IDLE_MS,
   JOIN_OFFER_MS, MIN_SNAKE_LENGTH, dlog
 } = require("./config");
-const { S, ensureFoods, dropPinataFood, spawnSnake, newPlayerSlot, scoreMode } = require("./state");
+const { S, ensureFoods, dropPinataFood, spawnSnake, newPlayerSlot, scoreMode, initialsForSlot, bumpRivalry } = require("./state");
 const { sendTo, broadcastState } = require("./net");
 const { qualifies, recordScore } = require("./highscores");
 
@@ -243,7 +243,7 @@ function movePlayerToSpectator(slotIndex) {
   }
   maybeOfferSlot();
 }
-function handleDeath(slotIndex) {
+function handleDeath(slotIndex, killInfo) {
   const s = S.slots[slotIndex];
   if (!s) return;
   s.alive = false;
@@ -261,6 +261,18 @@ function handleDeath(slotIndex) {
   const conn = S.connections.get(s.connId);
   const localIdx = conn ? conn.locals.findIndex(l => l && l.role === "player" && l.slotIndex === slotIndex) : -1;
   if (conn && localIdx !== -1) recordIfQualifies(conn, localIdx, scoreMode(), s);
+  // Kill feed (v3.6.8): one line per death, cause + killer straight off the
+  // died-map entry sim.js built (wall/self/headon carry no killer credit --
+  // clearMutualKills already stripped it for a mutual head-on). Queued here
+  // for the very next broadcast, same one-shot pattern as S.explosions.
+  const victimInitials = (conn && localIdx !== -1 && conn.initials[localIdx]) || "???";
+  const event = { victim: victimInitials, victimColor: s.color, killer: null, killerColor: null, cause: killInfo.cause };
+  if (killInfo.killer != null && S.slots[killInfo.killer]) {
+    event.killer = initialsForSlot(killInfo.killer);
+    event.killerColor = S.slots[killInfo.killer].color;
+    event.rivalryCount = bumpRivalry(event.killer, event.victim);
+  }
+  S.killEvents.push(event);
   const connId = s.connId;
   setTimeout(() => {
     if (!S.slots[slotIndex] || S.slots[slotIndex].connId !== connId) return;

@@ -713,6 +713,54 @@ const UI = (() => {
     };
   }
 
+  // ---- Kill feed (v3.6.8) ----------------------------------------------
+  // Server queues one event per death (server/lifecycle.js handleDeath,
+  // one-shot like explosions -- see server/net.js) with cause "body" (a
+  // credited kill), "wall"/"self" (no killer), or "headon" (mutual, credit
+  // stripped by clearMutualKills). This turns each into a fading DOM line in
+  // #killFeed (index.html), color-coded: a credited "body" kill uses the
+  // KILLER's snake color so the feed also reads who's doing the killing at a
+  // glance; wall/self/headon have no killer to credit, so they use the
+  // VICTIM's own color instead. Rivalry escalation (server-tallied
+  // killer->victim count, S.rivalries) only applies to credited kills.
+  function killFeedLine(ev) {
+    if (ev.cause === "body" && ev.killer) {
+      let text = ev.killer + " killed " + ev.victim;
+      const n = ev.rivalryCount || 1;
+      if (n >= 5) text += " -- DOMINATING (x" + n + ")";
+      else if (n >= 3) text += " -- RIVALRY (x" + n + ")";
+      else if (n >= 2) text += " (x" + n + ")";
+      return { text, color: ev.killerColor && ev.killerColor.head };
+    }
+    const suffix = ev.cause === "wall" ? " hit the wall"
+      : ev.cause === "self" ? " ran into itself"
+      : ev.cause === "headon" ? " collided head-on"
+      : " died";
+    return { text: ev.victim + suffix, color: ev.victimColor && ev.victimColor.head };
+  }
+  // Caps the number of simultaneously visible lines so a multi-kill tick (or
+  // a laggy tab) can't pile up an unbounded stack -- oldest just drops early.
+  const KILL_FEED_MAX_LINES = 6;
+  const KILL_FEED_LINGER_MS = 4000;
+  function pushKillFeed(events) {
+    const el = document.getElementById("killFeed");
+    if (!el) return;
+    for (const ev of events) {
+      const { text, color } = killFeedLine(ev);
+      const line = document.createElement("div");
+      line.className = "kf-line";
+      line.style.borderLeftColor = color || "#888";
+      line.textContent = text;
+      el.appendChild(line);
+      requestAnimationFrame(() => line.classList.add("show"));
+      setTimeout(() => {
+        line.classList.add("fade");
+        setTimeout(() => line.remove(), 300);
+      }, KILL_FEED_LINGER_MS);
+      while (el.children.length > KILL_FEED_MAX_LINES) el.removeChild(el.firstChild);
+    }
+  }
+
   // ---- Mobile UI hide toggle (v3.6.0; scope fixed v3.6.1) -------------
   // On touch devices the INFO overlays are hidden by DEFAULT (main.js calls
   // this only when IS_TOUCH) so they can't cover the board or eat touches; a
@@ -806,5 +854,6 @@ const UI = (() => {
            showSpectator, offerJoin, initDebug, showVersionStamp,
            initCoOp, coOpJoined, coOpLeft, notifyJoinLocalDenied,
            initLeaveButtons, updateLeaveButtons, showRejoin, initKeymapPanel,
-           initPowerupRefButton, setPowerupInfo, initTouchControls, initMobileUiToggle };
+           initPowerupRefButton, setPowerupInfo, initTouchControls, initMobileUiToggle,
+           pushKillFeed };
 })();

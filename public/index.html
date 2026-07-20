@@ -127,6 +127,24 @@
   }
   #powerupRef .pr-name { color: #c9f; font-weight: bold; }
   #powerupRef .pr-desc { color: #bbb; margin-top: 2px; }
+  /* Kill feed (v3.6.8): a stack of fading lines, corner-pinned like the
+     hover-leaderboard's styling but always visible (no hover-to-reveal --
+     a kill you'd miss while not hovering defeats the point). ui.js
+     pushKillFeed appends/removes .kf-line children; non-interactive so it
+     never steals clicks/taps from the board underneath. */
+  #killFeed {
+    position: fixed; left: 8px; bottom: 8px; z-index: 9980;
+    display: flex; flex-direction: column; gap: 3px;
+    font-family: monospace; font-size: 12px; max-width: 320px;
+    pointer-events: none;
+  }
+  .kf-line {
+    background: rgba(17,17,17,0.8); border-left: 3px solid #888; padding: 3px 8px;
+    color: #eee; opacity: 0; transform: translateY(4px);
+    transition: opacity 0.25s, transform 0.25s;
+  }
+  .kf-line.show { opacity: 1; transform: translateY(0); }
+  .kf-line.fade { opacity: 0; }
   #powerupInfoPopup h4 { margin: 0 0 6px 0; font-size: 13px; color: #c9f; }
   #powerupInfoPopup .entry { margin-bottom: 10px; }
   #powerupInfoPopup .entry:last-child { margin-bottom: 0; }
@@ -146,7 +164,8 @@
   body.mobile-hidden #topBar,
   body.mobile-hidden #debugPanel,
   body.mobile-hidden #keymapPanel,
-  body.mobile-hidden #initialsPanel { display: none !important; }
+  body.mobile-hidden #initialsPanel,
+  body.mobile-hidden #killFeed { display: none !important; }
 </style>
 </head>
 <body>
@@ -187,6 +206,10 @@
      initPowerupRefButton), like KEYS/INITIALS/Leave; filled by ui.js
      setPowerupInfo from /api/config. Hidden until the button flips it. -->
 <div id="powerupRef"></div>
+
+<!-- Kill feed (v3.6.8): fading death-attribution lines, filled by ui.js
+     pushKillFeed as `kills` events arrive on the state broadcast. -->
+<div id="killFeed"></div>
 
 <!-- Captcha / gate overlay, shown before a WebSocket connection is attempted -->
 <div id="overlay">

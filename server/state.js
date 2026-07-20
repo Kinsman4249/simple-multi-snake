@@ -29,7 +29,14 @@ const S = {
   lastPowerupSpawnAt: null,
   moveSeq: 0,              // counts MOVEMENT ticks (used as network seq)
   lastSimAt: null,
-  nextSimAt: null
+  nextSimAt: null,
+  // Kill feed (v3.6.8): one-shot per-broadcast queue, same pattern as
+  // S.explosions -- pushed to in lifecycle.js handleDeath, broadcast once by
+  // net.js, then cleared. rivalries tallies killer->victim pairs (keyed by
+  // "killerInitials>victimInitials") for the whole server session -- NOT
+  // persisted to the highscores store, lost on restart like any other S state.
+  killEvents: [],
+  rivalries: new Map()
 };
 
 function cellFree(x, y, ignoreSlotIndex = -1) {
@@ -359,6 +366,28 @@ function playerSeatCount() {
   }
   return n;
 }
+// Kill feed (v3.6.8): a slot's session-bound initials, looked up the same
+// way recordIfQualifies does (via its connection's per-local-index initials
+// array) -- "???" for a slot with none set, matching the highscores fallback.
+function initialsForSlot(slotIndex) {
+  const s = S.slots[slotIndex];
+  if (!s) return "???";
+  const conn = S.connections.get(s.connId);
+  if (!conn) return "???";
+  const localIdx = conn.locals.findIndex(l => l && l.role === "player" && l.slotIndex === slotIndex);
+  if (localIdx === -1) return "???";
+  return conn.initials[localIdx] || "???";
+}
+// Kill feed rivalry tally: increments and returns the running count of
+// killerInitials having killed victimInitials this server session (in-memory
+// only, never persisted). Keyed on the displayed initials themselves --
+// consistent with the feed text ("EEA killed DEC") being the whole point.
+function bumpRivalry(killerInitials, victimInitials) {
+  const key = killerInitials + ">" + victimInitials;
+  const count = (S.rivalries.get(key) || 0) + 1;
+  S.rivalries.set(key, count);
+  return count;
+}
 // Blue-shell equal-length gate (v3.6.0): true only when there are at least
 // TWO living snakes and they ALL share the same body length. A shell needs a
 // length spread to have a meaningful target, so an all-equal board neither
@@ -447,5 +476,5 @@ module.exports = {
   pickupCap, boardPlayerCount, spawnSnake, newPlayerSlot, growSegment,
   removeSegments, currentLeaderIndex, currentTrailingIndex, playerSeatCount,
   allEqualLength, inBounds, hitsBody, currentMoveIntervalMs, targetMoveIntervalMs,
-  advanceGlobalSpeed, isInverted, scoreMode
+  advanceGlobalSpeed, isInverted, scoreMode, initialsForSlot, bumpRivalry
 };

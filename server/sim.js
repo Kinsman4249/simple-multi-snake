@@ -181,7 +181,7 @@ function movementStep(movers) {
   clearMutualKills(died);
   applyMovementAndFood(movers, newHeads, died, stalled);
   applyKillBonuses(died);
-  for (const [victimIndex] of died) handleDeath(victimIndex);
+  for (const [victimIndex, info] of died) handleDeath(victimIndex, info);
   expirePowerupsAndTrails();
   S.moveSeq++;
 }
@@ -279,7 +279,7 @@ function computeNewHeads(active) {
 // win or lose -- a failed landing (nowhere safe to phase to) still consumes
 // the charge and the snake dies normally; it is not a repeatable shield.
 // ---------------------------------------------------------------
-function tryWormholeOrDie(idx, killerIdxOrNull, died, stalled, newHeads) {
+function tryWormholeOrDie(idx, killerIdxOrNull, cause, died, stalled, newHeads) {
   const s = S.slots[idx];
   if (s && s.wormholeCharge) {
     // A split-step head-on can kill a snake that is NOT moving this step --
@@ -325,7 +325,7 @@ function tryWormholeOrDie(idx, killerIdxOrNull, died, stalled, newHeads) {
     }
     dlog && dlog("wormhole fizzled, no landing", { slot: idx });
   }
-  died.set(idx, killerIdxOrNull);
+  died.set(idx, { killer: killerIdxOrNull, cause });
 }
 function resolveWallCollisions(active, newHeads, died, stalled) {
   for (const { s, i } of active) {
@@ -342,7 +342,7 @@ function resolveWallCollisions(active, newHeads, died, stalled) {
     // redesign): boost is a risk -- a boosted head aimed at a wall with no
     // saving turn queued dies without the stall tick.
     if (s.wallStalls < WALL_GRACE_TICKS && boostRamp(s, Date.now()) === 0) { s.wallStalls++; stalled.add(i); newHeads.set(i, { x: s.body[0].x, y: s.body[0].y }); continue; }
-    tryWormholeOrDie(i, null, died, stalled, newHeads);
+    tryWormholeOrDie(i, null, "wall", died, stalled, newHeads);
     s.wallStalls = 0;
   }
 }
@@ -353,7 +353,7 @@ function resolveSelfCollisions(active, newHeads, died, stalled) {
     // still-draining body -- exempt from self-collision until the drain
     // completes (see teleportDrain), so threading never reads as self-death.
     if (s.teleportDrain > 0) continue;
-    if (hitsBody(s.body, newHeads.get(i), true)) tryWormholeOrDie(i, null, died, stalled, newHeads);
+    if (hitsBody(s.body, newHeads.get(i), true)) tryWormholeOrDie(i, null, "self", died, stalled, newHeads);
   }
 }
 // Movers are checked against EVERY living snake (allAlive), not just other
@@ -396,8 +396,8 @@ function resolveSnakeCollisions(active, newHeads, died, stalled, allAlive) {
         // INDEPENDENTLY for a wormhole charge, so one snake phasing away does
         // not block the other's own charge from also firing (or dying
         // normally). No kill credit -- nobody survived the exchange.
-        tryWormholeOrDie(i, null, died, stalled, newHeads);
-        tryWormholeOrDie(j, null, died, stalled, newHeads);
+        tryWormholeOrDie(i, null, "headon", died, stalled, newHeads);
+        tryWormholeOrDie(j, null, "headon", died, stalled, newHeads);
         if (died.has(i) || stalled.has(i)) break; // i is resolved; stop checking further pairs against it
         continue;
       }
@@ -408,13 +408,13 @@ function resolveSnakeCollisions(active, newHeads, died, stalled, allAlive) {
       const oh = other.body.length ? other.body[0] : null;
       if (!jMoves && !died.has(j) && oh && h.x === oh.x && h.y === oh.y &&
           other.dir && other.dir.x === -me.dir.x && other.dir.y === -me.dir.y) {
-        tryWormholeOrDie(i, null, died, stalled, newHeads);
-        tryWormholeOrDie(j, null, died, stalled, newHeads);
+        tryWormholeOrDie(i, null, "headon", died, stalled, newHeads);
+        tryWormholeOrDie(j, null, "headon", died, stalled, newHeads);
         if (died.has(i) || stalled.has(i)) break;
         continue;
       }
       if (hitsBody(other.body, h, jMoves)) {
-        tryWormholeOrDie(i, j, died, stalled, newHeads);
+        tryWormholeOrDie(i, j, "body", died, stalled, newHeads);
         break; // i is resolved (died or teleported); stop checking further pairs
       }
     }
@@ -426,10 +426,11 @@ function resolveSnakeCollisions(active, newHeads, died, stalled, allAlive) {
 // the other (matching the same-cell head-on, which already credits no one).
 function clearMutualKills(died) {
   const mutual = [];
-  for (const [victim, killer] of died) {
-    if (killer != null && died.get(killer) === victim) mutual.push(victim);
+  for (const [victim, info] of died) {
+    const killerInfo = info.killer != null && died.get(info.killer);
+    if (killerInfo && killerInfo.killer === victim) mutual.push(victim);
   }
-  for (const v of mutual) died.set(v, null);
+  for (const v of mutual) died.set(v, { killer: null, cause: "headon" });
 }
 // Applies a powerup's activation effect to a slot: either a one-shot (blueShell
 // launches an independent seeking projectile) or a timed self-buff (everything
@@ -607,7 +608,8 @@ function applyMovementAndFood(active, newHeads, died, stalled) {
   }
 }
 function applyKillBonuses(died) {
-  for (const [, killerIndex] of died) {
+  for (const [, info] of died) {
+    const killerIndex = info.killer;
     if (killerIndex === null) continue;
     const killer = S.slots[killerIndex];
     if (!killer || !killer.alive) continue;
