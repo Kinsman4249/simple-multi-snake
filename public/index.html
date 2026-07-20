@@ -105,12 +105,15 @@
     display: inline-block; width: 10px; height: 10px; margin-right: 5px;
     vertical-align: baseline;
   }
-  /* In-game powerup reference (v3.6.5): a second hover-to-reveal overlay
-     (reuses .panel's opacity/hover + mobile-hidden behavior) pinned top-LEFT
-     so it doesn't collide with the leaderboard on the right. Filled by ui.js
-     setPowerupInfo from the same POWERUP_INFO the gate legend uses. */
+  /* In-game powerup reference (v3.6.5; v3.6.7 button toggle): a dropdown
+     opened by the top-bar POWERUPS button (ui.js initPowerupRefButton) --
+     an explicit press like KEYS/INITIALS/Leave, replacing the old
+     hover-to-reveal panel. Hidden by default; the button flips display.
+     Filled by ui.js setPowerupInfo from the same POWERUP_INFO the gate uses. */
   #powerupRef {
-    right: auto; left: 8px; width: 240px; max-height: 80vh; overflow-y: auto;
+    position: fixed; top: 34px; left: 8px; width: 240px; max-height: 80vh;
+    overflow-y: auto; z-index: 9999; display: none;
+    background: rgba(17,17,17,0.96); border: 1px solid #444; padding: 8px 12px;
   }
   #powerupRef h3 {
     margin: 0 0 6px 0; font-size: 14px; border-bottom: 1px solid #444;
@@ -177,12 +180,13 @@
   </div>
 </div>
 
-<!-- In-game powerup reference (v3.6.5): the same swatch legend + descriptions
-     the gate shows, kept available DURING play so a player can check what a
-     pickup does without quitting back to the captcha/gate screen. Reuses the
-     .panel hover-to-reveal + mobile-hidden behavior (desktop: hover; mobile:
-     UI-unhide toggle); filled by ui.js setPowerupInfo from /api/config. -->
-<div id="powerupRef" class="panel"></div>
+<!-- In-game powerup reference (v3.6.5; v3.6.7 button toggle): the same swatch
+     legend + descriptions the gate shows, kept available DURING play so a
+     player can check what a pickup does without quitting back to the
+     captcha/gate screen. Opened by the top-bar POWERUPS button (ui.js
+     initPowerupRefButton), like KEYS/INITIALS/Leave; filled by ui.js
+     setPowerupInfo from /api/config. Hidden until the button flips it. -->
+<div id="powerupRef"></div>
 
 <!-- Captcha / gate overlay, shown before a WebSocket connection is attempted -->
 <div id="overlay">

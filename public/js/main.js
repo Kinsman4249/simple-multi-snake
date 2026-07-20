@@ -367,6 +367,7 @@ function startGame(token, initials) {
   }
   UI.initLeaveButtons(leaveSeat);
   UI.initKeymapPanel(() => KEY_MAPS, saveKeyMap, swapKeyMaps);
+  UI.initPowerupRefButton();
   // Persistent "Change Initials" (v3.4.0): overwrite either seat's session
   // initials any time, no refresh needed. Saving re-arms the grace window.
   UI.initInitialsPanel(

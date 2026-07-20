@@ -140,10 +140,10 @@ const UI = (() => {
     // In-game reference panel (v3.6.5, index.html #powerupRef): the SAME
     // legend + descriptions the gate shows, kept available DURING play so a
     // player can check what a pickup does without quitting back to the gate.
-    // Desktop reveals it on hover (the .panel behavior, like the leaderboard);
-    // mobile reveals it via the UI-unhide toggle (body.mobile-hidden .panel).
-    // Reuses the same POWERUP_INFO copy, isEnabled filter, and swatchStyle --
-    // no duplicated data.
+    // Opened by the top-bar POWERUPS button (initPowerupRefButton, v3.6.7) --
+    // an explicit press like KEYS/INITIALS/Leave, not a hover. This block just
+    // fills the content; the button toggles its visibility. Reuses the same
+    // POWERUP_INFO copy, isEnabled filter, and swatchStyle -- no duplicated data.
     const ref = document.getElementById("powerupRef");
     if (ref) {
       ref.innerHTML = infoTypes.length === 0
@@ -691,6 +691,28 @@ const UI = (() => {
     };
   }
 
+  // ---- Powerup reference button (top bar, next to KEYS/INITIALS) -- toggles
+  // the #powerupRef dropdown that setPowerupInfo already fills from the same
+  // POWERUP_INFO the gate uses (v3.6.7). Replaces the old hover-to-reveal
+  // panel so checking what a pickup does is an explicit press, consistent with
+  // Leave/KEYS/INITIALS. Content lives in the DOM (index.html #powerupRef);
+  // this only owns the button and the show/hide.
+  function initPowerupRefButton() {
+    if (document.getElementById("powerupRefBtn")) return;
+    const ref = document.getElementById("powerupRef");
+    if (!ref) return;
+    const btn = document.createElement("button");
+    btn.id = "powerupRefBtn";
+    btn.textContent = "POWERUPS";
+    btn.style.cssText = "background:#222;color:#c9f;border:1px solid #666;font-family:monospace;font-size:12px;padding:4px 8px;cursor:pointer;";
+    topBar().appendChild(btn);
+    btn.onclick = () => {
+      const open = ref.style.display !== "block";
+      ref.style.display = open ? "block" : "none";
+      topBarPin(open); // keep the fading bar up while the panel is open
+    };
+  }
+
   // ---- Mobile UI hide toggle (v3.6.0; scope fixed v3.6.1) -------------
   // On touch devices the INFO overlays are hidden by DEFAULT (main.js calls
   // this only when IS_TOUCH) so they can't cover the board or eat touches; a
@@ -784,5 +806,5 @@ const UI = (() => {
            showSpectator, offerJoin, initDebug, showVersionStamp,
            initCoOp, coOpJoined, coOpLeft, notifyJoinLocalDenied,
            initLeaveButtons, updateLeaveButtons, showRejoin, initKeymapPanel,
-           setPowerupInfo, initTouchControls, initMobileUiToggle };
+           initPowerupRefButton, setPowerupInfo, initTouchControls, initMobileUiToggle };
 })();
