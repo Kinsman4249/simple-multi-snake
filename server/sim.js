@@ -11,7 +11,7 @@ const {
 const {
   S, cellFree, ensureFoods, pickupCap, advanceGlobalSpeed, growSegment,
   removeSegments, currentLeaderIndex, playerSeatCount, allEqualLength,
-  inBounds, hitsBody, currentMoveIntervalMs
+  inBounds, hitsBody, currentMoveIntervalMs, advanceFoodRateTimers, bumpFoodRatePoints
 } = require("./state");
 const { broadcastState } = require("./net");
 const { lifecycleSweep, handleDeath } = require("./lifecycle");
@@ -105,6 +105,12 @@ function simLoop() {
   advanceGlobalSpeed(dt);
   ensureFoods();
   maybeSpawnPowerupPickup(now);
+  // Speed-run / food-rate score mode (v3.7.0): advance every seated player's
+  // play-time bucket by this tick's dt. Independent of the movement
+  // accumulator loop below on purpose -- play time accrues once per sim tick
+  // regardless of how many (or how few) movement steps a snake takes this
+  // tick.
+  advanceFoodRateTimers(dt);
   const interval = currentMoveIntervalMs();
   // Per-snake movement accumulators. A boosting snake's accumulator fills
   // BOOST.boostSpeed times faster, so it crosses the shared ramped interval
@@ -480,6 +486,7 @@ function applyMovementAndFood(active, newHeads, died, stalled) {
     const fi = S.foods.findIndex(f => f.x === h.x && f.y === h.y);
     if (fi !== -1) {
       s.score += 1;
+      bumpFoodRatePoints(i, 1);
       const mult = POWERUP_MODULES.growthSpurt.foodGrowthMultiplier(s, POWERUPS);
       for (let n = 1; n < mult; n++) growSegment(s);
       S.foods.splice(fi, 1);
@@ -614,6 +621,7 @@ function applyKillBonuses(died) {
     const killer = S.slots[killerIndex];
     if (!killer || !killer.alive) continue;
     killer.score += CFG.killBonusScore;
+    bumpFoodRatePoints(killerIndex, CFG.killBonusScore);
     const growthAmt = CFG.killBonusGrowth + POWERUP_MODULES.growthSpurt.killBonusGrowthBonus(killer, POWERUPS);
     const tail = killer.body[killer.body.length - 1];
     for (let n = 0; n < growthAmt; n++) killer.body.push({ ...tail });

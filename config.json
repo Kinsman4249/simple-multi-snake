@@ -71,5 +71,11 @@
     "ttlMs": 6000,
     "spread": 6,
     "bias": 0.6
+  },
+  "foodRate": {
+    "enabled": true,
+    "bucketMs": 1000,
+    "floorMs": 300000,
+    "windowMs": 300000
   }
 }

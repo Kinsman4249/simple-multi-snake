@@ -16,7 +16,10 @@ const {
   CFG, COLORS, MAX_LOCAL_PLAYERS, SPECTATOR_IDLE_MS, PLAYER_IDLE_MS,
   JOIN_OFFER_MS, MIN_SNAKE_LENGTH, dlog
 } = require("./config");
-const { S, ensureFoods, dropPinataFood, spawnSnake, newPlayerSlot, scoreMode, initialsForSlot, bumpRivalry } = require("./state");
+const {
+  S, ensureFoods, dropPinataFood, spawnSnake, newPlayerSlot, scoreMode, initialsForSlot, bumpRivalry,
+  ensureFoodRateAcc, foodRateScoreForSeat
+} = require("./state");
 const { sendTo, broadcastState } = require("./net");
 const { qualifies, recordScore } = require("./highscores");
 
@@ -52,6 +55,23 @@ function recordIfQualifies(conn, localIdx, mode, slot) {
   recordScore(targets, initials, score, mode);
   dlog && dlog("score recorded", { local: localIdx, initials, score, mode, targets });
 }
+// Food-rate (speed-run) score mode (v3.7.0): unlike recordIfQualifies above,
+// this is DEATH-INDEPENDENT -- no earned-length gate, no reset of the
+// underlying accumulator (it keeps running across the seat's whole session).
+// Called at the same two checkpoints as recordIfQualifies (death, explicit
+// leave) purely because those are the natural "a run just ended, see if it's
+// worth writing down" moments already wired up -- not because the metric
+// itself resets there. foodRateScoreForSeat returns null until the seat has
+// cleared the floorMs play-time floor (provisional-only until then, per spec).
+function recordIfQualifiesFoodRate(conn, localIdx, mode) {
+  const score = foodRateScoreForSeat(conn, localIdx);
+  if (score == null) return;
+  const targets = qualifies(score, mode, "foodRate");
+  if (targets.length === 0) return;
+  const initials = (conn && conn.initials[localIdx]) || "???";
+  recordScore(targets, initials, score, mode);
+  dlog && dlog("food-rate score recorded", { local: localIdx, initials, score, mode, targets });
+}
 // Seat a (new or re-requested) local player slot for connId at localIdx.
 // This is the single admission path used by a fresh connect (localIdx 0),
 // a couch-co-op joinLocal request (localIdx 1+), and nowhere else -- there
@@ -69,6 +89,7 @@ function admitLocal(connId, localIdx) {
     S.slots[freeIndex].color = COLORS[freeIndex];
     spawnSnake(freeIndex);
     conn.locals[localIdx] = { role: "player", slotIndex: freeIndex };
+    ensureFoodRateAcc(conn, localIdx);
     if (S.sessionStart === null) S.sessionStart = Date.now();
     ensureFoods(); // new player joined: top food up to the new count immediately
   } else {
@@ -113,6 +134,9 @@ function removeLocalSeat(connId, localIdx) {
   if (entry.role === "player" && entry.slotIndex != null) {
     const s = S.slots[entry.slotIndex];
     if (s && s.alive) recordIfQualifies(conn, localIdx, scoreMode(), s);
+    // Food-rate is death-independent (unlike the length score above) --
+    // attempted whether this seat is mid-life or already dead-awaiting-respawn.
+    recordIfQualifiesFoodRate(conn, localIdx, scoreMode());
     S.slots[entry.slotIndex] = null;
   }
   S.spectatorQueue = S.spectatorQueue.filter(e => !(e.connId === connId && e.local === localIdx));
@@ -177,6 +201,7 @@ function acceptJoin(connId, localIdx) {
   S.slots[openIndex].color = COLORS[openIndex];
   spawnSnake(openIndex);
   conn.locals[localIdx] = { role: "player", slotIndex: openIndex };
+  ensureFoodRateAcc(conn, localIdx);
   if (S.sessionStart === null) S.sessionStart = Date.now();
   ensureFoods();
 }
@@ -260,7 +285,10 @@ function handleDeath(slotIndex, killInfo) {
   // no banking, no parked seats. The respawn timer below runs unchanged.
   const conn = S.connections.get(s.connId);
   const localIdx = conn ? conn.locals.findIndex(l => l && l.role === "player" && l.slotIndex === slotIndex) : -1;
-  if (conn && localIdx !== -1) recordIfQualifies(conn, localIdx, scoreMode(), s);
+  if (conn && localIdx !== -1) {
+    recordIfQualifies(conn, localIdx, scoreMode(), s);
+    recordIfQualifiesFoodRate(conn, localIdx, scoreMode());
+  }
   // Kill feed (v3.6.8): one line per death, cause + killer straight off the
   // died-map entry sim.js built (wall/self/headon carry no killer credit --
   // clearMutualKills already stripped it for a mutual head-on). Queued here

@@ -281,6 +281,26 @@ const PINATA = Object.assign(
   CFG.pinata || {}
 );
 
+// Speed-run / food-rate score mode (v3.7.0, maintainer-specced 2026-07-19):
+// a scoring mode oriented toward speed-running rather than raw length --
+// see state.js's foodRate accumulator block for the full design. Knobs:
+//   bucketMs:  granularity of one "sample" of play time (a bucket only ever
+//     closes after this much ACTUAL PLAY time -- spectating never advances
+//     it, which is how the timer "pauses" per the spec). Small on purpose
+//     ("as close to real time as we can go") -- 8 players each closing a
+//     bucket once a second is negligible load.
+//   floorMs:   minimum accumulated play time before the rate LOCKS in and
+//     becomes eligible for the leaderboard; before that it's provisional-only.
+//   windowMs:  the "best N minutes" window size -- how many closed buckets
+//     (windowMs / bucketMs) are kept as the running top-K, by food count.
+// floorMs and windowMs are both 5 minutes by default, matching the spec's
+// "best 5, locked after 5" -- but are independent knobs (an operator could
+// widen the window without moving the floor, or vice versa).
+const FOOD_RATE = Object.assign(
+  { enabled: true, bucketMs: 1000, floorMs: 300000, windowMs: 300000 },
+  CFG.foodRate || {}
+);
+
 const COLORS = [
   { head: "#6f6", body: "#3a3" },
   { head: "#6cf", body: "#38a" },
@@ -305,5 +325,5 @@ module.exports = {
   JOIN_OFFER_MS, INPUT_BUFFER, BOOST, boostRamp, updateMomentum, MIN_SNAKE_LENGTH,
   POWERUPS, POWERUP_TYPES, POWERUP_INFO, HELD_TYPES, TRAIL_TYPES, SPEED_MULT_TYPES, POWERUP_MODULES,
   ENABLE_DEBUG, dlog, PERF, COLORS, DIR_VECTORS, TEST_SPAWNS, TEST_HOOKS,
-  RUBBERBAND, PINATA
+  RUBBERBAND, PINATA, FOOD_RATE
 };

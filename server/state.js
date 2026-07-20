@@ -5,7 +5,7 @@
 // writes THE SAME state -- reassignments like `S.trails = S.trails.filter`
 // stay visible everywhere, which plain destructured bindings would break.
 // ============================================================
-const { CFG, MOVE, MAX_FOOD, POWERUPS, MIN_SNAKE_LENGTH, DIR_VECTORS, TEST_SPAWNS, RUBBERBAND, PINATA } = require("./config");
+const { CFG, MOVE, MAX_FOOD, POWERUPS, MIN_SNAKE_LENGTH, DIR_VECTORS, TEST_SPAWNS, RUBBERBAND, PINATA, FOOD_RATE } = require("./config");
 
 const S = {
   slots: new Array(CFG.maxPlayers).fill(null),
@@ -420,6 +420,121 @@ function scoreMode() {
   }
   return n >= 2 ? "networked" : "local";
 }
+// ---------------------------------------------------------------
+// Speed-run / food-rate score mode (v3.7.0). One accumulator lives per LOCAL
+// SEAT on its connection (conn.foodRate[localIdx], created lazily the first
+// time that seat becomes a player -- see ensureFoodRateAcc) rather than on
+// the S.slots entry, because a slot is discarded and replaced with a fresh
+// object every time a seat is demoted to spectator (movePlayerToSpectator)
+// and a NEW one is handed out on rejoin (acceptJoin/admitLocal). Keying off
+// the connection instead is what makes the metric survive across lives AND
+// across spectate/rejoin cycles for the whole session (session = the
+// connection's lifetime, maintainer-specced) -- exactly the "independent of
+// death" requirement.
+//
+// Buckets close on PLAY time, not wall-clock time: a bucket only accumulates
+// while advanceFoodRateTimers sees the owning slot alive and on the board, so
+// a spectate stretch simply never advances curPlayMs -- the pause falls out
+// of the mechanism for free, no separate pause/resume bookkeeping needed.
+// Each closed bucket is worth exactly FOOD_RATE.bucketMs of real play time,
+// so ranking buckets by raw food count IS ranking them by rate.
+// topBuckets is a small (windowMs/bucketMs, default 300) ascending-sorted
+// array of the best bucket food-counts seen all session -- a worse new bucket
+// is discarded, a better one evicts the current worst. That rolling top-K is
+// the "best N minutes, not necessarily contiguous" the spec asks for, and
+// topSum/cachedRate stay O(1) to read every broadcast tick.
+function foodRateWindowSize() {
+  return Math.max(1, Math.round(FOOD_RATE.windowMs / FOOD_RATE.bucketMs));
+}
+function newFoodRateAcc() {
+  return { curFood: 0, curPlayMs: 0, closedCount: 0, topBuckets: [], topSum: 0, cachedRate: 0, locked: false };
+}
+// Called once, the first time a local seat becomes a player -- idempotent,
+// so later re-joins of the same seat (spectate -> rejoin) reuse the same
+// accumulator instead of resetting the session.
+function ensureFoodRateAcc(conn, localIdx) {
+  if (!conn) return;
+  if (!conn.foodRate) conn.foodRate = [];
+  if (!conn.foodRate[localIdx]) conn.foodRate[localIdx] = newFoodRateAcc();
+}
+function closeFoodRateBucket(acc) {
+  const food = acc.curFood;
+  acc.curFood = 0;
+  acc.curPlayMs -= FOOD_RATE.bucketMs;
+  acc.closedCount++;
+  const N = foodRateWindowSize();
+  const arr = acc.topBuckets;
+  if (arr.length < N) {
+    let idx = arr.length;
+    while (idx > 0 && arr[idx - 1] > food) idx--;
+    arr.splice(idx, 0, food);
+    acc.topSum += food;
+  } else if (food > arr[0]) {
+    acc.topSum += food - arr[0];
+    arr[0] = food;
+    let idx = 0;
+    while (idx + 1 < arr.length && arr[idx] > arr[idx + 1]) {
+      const t = arr[idx]; arr[idx] = arr[idx + 1]; arr[idx + 1] = t; idx++;
+    }
+  }
+  const k = Math.min(acc.closedCount, N);
+  acc.cachedRate = k > 0 ? (acc.topSum * 60000) / (k * FOOD_RATE.bucketMs) : 0;
+  if (!acc.locked && acc.closedCount * FOOD_RATE.bucketMs >= FOOD_RATE.floorMs) acc.locked = true;
+}
+// The local seat (conn + localIdx) currently occupying slot i, or null. Same
+// lookup shape as initialsForSlot; kept separate since the callers differ
+// (one wants initials text, this wants the accumulator object).
+function seatForSlot(slotIndex) {
+  const s = S.slots[slotIndex];
+  if (!s) return null;
+  const conn = S.connections.get(s.connId);
+  if (!conn) return null;
+  const localIdx = conn.locals.findIndex(l => l && l.role === "player" && l.slotIndex === slotIndex);
+  if (localIdx === -1) return null;
+  return { conn, localIdx };
+}
+// Called from the food-eaten and kill-bonus sites in sim.js (the same two
+// s.score increment sites the handoff flagged as the food-rate signal to
+// repurpose) -- credits the owning seat's CURRENT bucket, whatever life it's
+// on. A slot with no owning seat (shouldn't happen for a living snake, but
+// cheap to guard) is a no-op.
+function bumpFoodRatePoints(slotIndex, amount) {
+  if (!FOOD_RATE.enabled) return;
+  const seat = seatForSlot(slotIndex);
+  const acc = seat && seat.conn.foodRate && seat.conn.foodRate[seat.localIdx];
+  if (acc) acc.curFood += amount;
+}
+// Advance every living, seated player's play-time by dt (called once per sim
+// tick from simLoop, mirroring how advanceGlobalSpeed/ensureFoods run once
+// per tick). A snake with no owning seat (shouldn't happen) or no
+// accumulator yet (spectator, never was a player) is skipped.
+function advanceFoodRateTimers(dt) {
+  if (!FOOD_RATE.enabled || dt <= 0) return;
+  for (let i = 0; i < S.slots.length; i++) {
+    const s = S.slots[i];
+    if (!s || !s.alive) continue;
+    const seat = seatForSlot(i);
+    const acc = seat && seat.conn.foodRate && seat.conn.foodRate[seat.localIdx];
+    if (!acc) continue;
+    acc.curPlayMs += dt;
+    while (acc.curPlayMs >= FOOD_RATE.bucketMs) closeFoodRateBucket(acc);
+  }
+}
+// Live snapshot for the broadcast (both while playing and while spectating
+// between lives -- the accumulator outlives any one slot). Rate is rounded
+// to one decimal for display; null when this seat has never been a player.
+function foodRateSnapshot(conn, localIdx) {
+  const acc = conn && conn.foodRate && conn.foodRate[localIdx];
+  if (!acc) return null;
+  return { ratePerMin: Math.round(acc.cachedRate * 10) / 10, locked: acc.locked };
+}
+// The value to submit to the food-rate leaderboard, or null if this seat
+// hasn't cleared the floor yet (provisional-only, doesn't count -- spec).
+function foodRateScoreForSeat(conn, localIdx) {
+  const acc = conn && conn.foodRate && conn.foodRate[localIdx];
+  if (!acc || !acc.locked) return null;
+  return Math.round(acc.cachedRate * 100) / 100;
+}
 function inBounds(h) { return h.x >= 0 && h.x < CFG.grid.cols && h.y >= 0 && h.y < CFG.grid.rows; }
 // hitsBody: does (h) land on any segment of `body` except the tail? The tail
 // cell vacates this step. Index loop instead of slice().some() on purpose:
@@ -476,5 +591,7 @@ module.exports = {
   pickupCap, boardPlayerCount, spawnSnake, newPlayerSlot, growSegment,
   removeSegments, currentLeaderIndex, currentTrailingIndex, playerSeatCount,
   allEqualLength, inBounds, hitsBody, currentMoveIntervalMs, targetMoveIntervalMs,
-  advanceGlobalSpeed, isInverted, scoreMode, initialsForSlot, bumpRivalry
+  advanceGlobalSpeed, isInverted, scoreMode, initialsForSlot, bumpRivalry,
+  ensureFoodRateAcc, bumpFoodRatePoints, advanceFoodRateTimers, foodRateSnapshot,
+  foodRateScoreForSeat
 };

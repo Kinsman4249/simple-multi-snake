@@ -5,7 +5,7 @@
 const {
   BUILD, SIM_HZ, CFG, BOOST, boostRamp, POWERUPS, POWERUP_MODULES, SPEED_MULT_TYPES, PERF
 } = require("./config");
-const { S, currentMoveIntervalMs, isInverted, scoreMode } = require("./state");
+const { S, currentMoveIntervalMs, isInverted, scoreMode, foodRateSnapshot } = require("./state");
 const { getHighScores } = require("./highscores");
 
 function sendTo(ws, msg) { if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg)); }
@@ -67,8 +67,14 @@ function broadcastState() {
     // two or more. `mode` is the session's CURRENT classification, so the
     // client can highlight the board this run would land on.
     highScores: {
-      local: { daily: highScores.modes.local.daily, allTime: highScores.modes.local.allTime },
-      networked: { daily: highScores.modes.networked.daily, allTime: highScores.modes.networked.allTime }
+      local: {
+        daily: highScores.modes.local.daily, allTime: highScores.modes.local.allTime,
+        foodRateDaily: highScores.modes.local.foodRateDaily, foodRateAllTime: highScores.modes.local.foodRateAllTime
+      },
+      networked: {
+        daily: highScores.modes.networked.daily, allTime: highScores.modes.networked.allTime,
+        foodRateDaily: highScores.modes.networked.foodRateDaily, foodRateAllTime: highScores.modes.networked.foodRateAllTime
+      }
     },
     mode: scoreMode()
   };
@@ -97,13 +103,19 @@ function broadcastState() {
     const you = {
       locals: conn.locals.map((entry, localIdx) => {
         if (!entry) return null;
+        // Speed-run / food-rate (v3.7.0): the accumulator lives on the
+        // connection and outlives any one slot, so this is sent for BOTH
+        // roles below -- a spectator between lives still wants to see their
+        // running provisional/locked rate, not just while actively playing.
+        const foodRate = foodRateSnapshot(conn, localIdx) || undefined;
         if (entry.role === "player") {
           const s = S.slots[entry.slotIndex];
-          return { local: localIdx, role: "player", slot: entry.slotIndex, ack: s ? s.lastAck : 0 };
+          return { local: localIdx, role: "player", slot: entry.slotIndex, ack: s ? s.lastAck : 0, foodRate };
         }
         return {
           local: localIdx, role: "spectator",
-          queuePos: queuePos.get(connId + ":" + localIdx) || 0, queueLen: S.spectatorQueue.length
+          queuePos: queuePos.get(connId + ":" + localIdx) || 0, queueLen: S.spectatorQueue.length,
+          foodRate
         };
       })
     };

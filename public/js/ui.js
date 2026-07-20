@@ -197,6 +197,12 @@ const UI = (() => {
   function updateStatus(curr) {
     const locals = curr.you.locals || [];
     const present = locals.filter(e => e);
+    // Speed-run / food-rate readout (v3.7.0): best-5-minutes food/min,
+    // provisional until floorMs of play accrues (see server/state.js),
+    // shown for both roles since the accumulator outlives any one life.
+    const frText = entry => entry.foodRate
+      ? " | " + entry.foodRate.ratePerMin.toFixed(1) + " food/min" + (entry.foodRate.locked ? "" : " (provisional)")
+      : "";
     const parts = locals.map(entry => {
       if (!entry) return ""; // seat left (null hole): nothing to report
       const label = present.length > 1 ? (entry.local === 0 ? "P1" : "P2") + ": " : "You: ";
@@ -206,9 +212,10 @@ const UI = (() => {
         // `inverted` -- say so where the player is already looking.
         return label + "slot " + (entry.slot + 1) + " | score " +
           (me ? me.score : 0) + (me && !me.alive ? " | waiting" : "") +
+          frText(entry) +
           (me && me.alive && me.inverted ? " | ⇄ CONTROLS REVERSED" : "");
       }
-      return label + "spectating (queue " + entry.queuePos + " of " + entry.queueLen + ")";
+      return label + "spectating (queue " + entry.queuePos + " of " + entry.queueLen + ")" + frText(entry);
     }).filter(s => s);
     statusEl.textContent = parts.join("   ");
   }
@@ -219,13 +226,23 @@ const UI = (() => {
   function updateLeaderboards(hs, mode) {
     const fmt = list => (list || []).map(e => "<li>" + e.initials + " - " + e.score + "</li>").join("");
     const local = hs.local || hs; // tolerate a pre-split server during a rolling deploy
-    const net = hs.networked || { daily: [], allTime: [] };
+    const net = hs.networked || { daily: [], allTime: [], foodRateDaily: [], foodRateAllTime: [] };
     document.getElementById("dailyList").innerHTML = fmt(local.daily);
     document.getElementById("allTimeList").innerHTML = fmt(local.allTime);
     const nd = document.getElementById("netDailyList");
     const na = document.getElementById("netAllTimeList");
     if (nd) nd.innerHTML = fmt(net.daily);
     if (na) na.innerHTML = fmt(net.allTime);
+    // Speed-run / food-rate boards (v3.7.0) -- optional elements so an older
+    // cached index.html (pre this feature) doesn't throw.
+    const frd = document.getElementById("frDailyList");
+    const fra = document.getElementById("frAllTimeList");
+    if (frd) frd.innerHTML = fmt(local.foodRateDaily);
+    if (fra) fra.innerHTML = fmt(local.foodRateAllTime);
+    const nfrd = document.getElementById("netFrDailyList");
+    const nfra = document.getElementById("netFrAllTimeList");
+    if (nfrd) nfrd.innerHTML = fmt(net.foodRateDaily);
+    if (nfra) nfra.innerHTML = fmt(net.foodRateAllTime);
     const secLocal = document.getElementById("hsLocal");
     const secNet = document.getElementById("hsNetworked");
     if (secLocal) secLocal.classList.toggle("current", mode !== "networked");
