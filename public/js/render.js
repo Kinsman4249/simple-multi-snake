@@ -33,13 +33,24 @@ const Render = (() => {
   const DIR_INDEX = { up: 0, down: 1, left: 2, right: 3 };
   const PLAYER_STRIDE_I32 = 16;   // 64 bytes (activeIdx i32 + activePct f32, then wormholeCharge i32 + pad)
   const PLAYER_STRIDE_B = PLAYER_STRIDE_I32 * 4;
-  const SNAP_PLAYERS_I32 = 8;     // header is 32 bytes
-  const MAX_PLAYERS = 8, MAX_SEGS = 16384, MAX_TRAILS = 8192, MAX_PICKUPS = 32, MAX_SHELLS = 16;
+  const SNAP_PLAYERS_I32 = 10;    // header is 40 bytes (v3.8.0: +nWalls +pad)
+  const MAX_PLAYERS = 8, MAX_SEGS = 16384, MAX_TRAILS = 8192, MAX_PICKUPS = 32, MAX_SHELLS = 16, MAX_WALLS = 32;
   const MAX_FLASHES = 8, MAX_GLIDES = 8, MAX_EXPLOSIONS = 16, MAX_PFLASHES = 8, MAX_DUST = 256, MAX_LOCALS = 4, MAX_LOCAL_SEGS = 16384, MAX_FOODS = 32;
   // Foods live in the frame-input region (re-encoded per frame so per-frame
   // predicted-eat hiding is trivial), appended after the local body pool.
   // Must match wasm/renderer.ts FR_NFOODS/FR_FOODS.
   const FR_FOODS_OFF = 3940 + MAX_LOCAL_SEGS * 4; // bytes: nFoods i32, then MAX_FOODS x {x,y,bounty} i32
+  // Snapshot region byte offsets -- must match wasm/renderer.ts SNAP_* consts
+  // exactly (v3.8.0: header grew by 8 bytes for nWalls, shifting everyone
+  // after it; named consts here instead of ad-hoc arithmetic to keep the two
+  // sides from drifting apart again).
+  const SNAP_PLAYERS = 40;
+  const SNAP_BODY = SNAP_PLAYERS + MAX_PLAYERS * 64;
+  const SNAP_TRAILS = SNAP_BODY + MAX_SEGS * 4;
+  const SNAP_PICKUPS = SNAP_TRAILS + MAX_TRAILS * 8;
+  const SNAP_SHELLS = SNAP_PICKUPS + MAX_PICKUPS * 16;
+  const SNAP_WALLS = SNAP_SHELLS + MAX_SHELLS * 8;
+  const WALL_STATE_INDEX = { warn: 0, solid: 1, fading: 2 };
 
   let wasm = null;          // instantiated exports, or null
   let wasmFailed = false;   // permanent this-session failure -> 2D
@@ -133,7 +144,7 @@ const Render = (() => {
     const players = snap.players || [];
     const nP = Math.min(players.length, MAX_PLAYERS);
     i32[base + 4] = nP;
-    const bodyBase16 = (wasm.snapPtr(w) + 32 + MAX_PLAYERS * PLAYER_STRIDE_B) >>> 1; // i16 index
+    const bodyBase16 = (wasm.snapPtr(w) + SNAP_BODY) >>> 1; // i16 index
     let segOff = 0;
     for (let i = 0; i < nP; i++) {
       const p = players[i];
@@ -171,7 +182,7 @@ const Render = (() => {
     const trails = snap.trails || [];
     const nT = Math.min(trails.length, MAX_TRAILS);
     i32[base + 5] = nT;
-    const trailBase16 = (wasm.snapPtr(w) + 32 + MAX_PLAYERS * PLAYER_STRIDE_B + MAX_SEGS * 4) >>> 1;
+    const trailBase16 = (wasm.snapPtr(w) + SNAP_TRAILS) >>> 1;
     for (let i = 0; i < nT; i++) {
       const t = trails[i];
       i16[trailBase16 + (i << 2)] = t.x;
@@ -181,7 +192,7 @@ const Render = (() => {
     const pickups = snap.powerupPickups || [];
     const nPk = Math.min(pickups.length, MAX_PICKUPS);
     i32[base + 6] = nPk;
-    const pkBase32 = (wasm.snapPtr(w) + 32 + MAX_PLAYERS * PLAYER_STRIDE_B + MAX_SEGS * 4 + MAX_TRAILS * 8) >>> 2;
+    const pkBase32 = (wasm.snapPtr(w) + SNAP_PICKUPS) >>> 2;
     for (let i = 0; i < nPk; i++) {
       const p = pickups[i];
       i32[pkBase32 + (i << 2)] = p.x;
@@ -196,6 +207,18 @@ const Render = (() => {
     for (let i = 0; i < nSh; i++) {
       i32[shBase32 + (i << 1)] = shells[i].x;
       i32[shBase32 + (i << 1) + 1] = shells[i].y;
+    }
+    // Grid decay / anti-turtling obstacles (v3.8.0).
+    const walls = snap.walls || [];
+    const nW = Math.min(walls.length, MAX_WALLS);
+    i32[base + 8] = nW;
+    const wallBase32 = (wasm.snapPtr(w) + SNAP_WALLS) >>> 2;
+    for (let i = 0; i < nW; i++) {
+      const wobj = walls[i];
+      i32[wallBase32 + (i << 2)] = wobj.x;
+      i32[wallBase32 + (i << 2) + 1] = wobj.y;
+      i32[wallBase32 + (i << 2) + 2] = WALL_STATE_INDEX[wobj.state] != null ? WALL_STATE_INDEX[wobj.state] : 1;
+      i32[wallBase32 + (i << 2) + 3] = wobj.id | 0;
     }
   }
 

@@ -25,8 +25,15 @@ const S = {
   trails: [],              // [{ id, type, x, y, ownerSlot, expiresAtTick }]
   blueShells: [],          // [{ id, x, y, ownerSlot, moveAccumMs }]
   explosions: [],          // one-shot, broadcast once then cleared: [{ x, y, radius }]
+  // Grid decay / anti-turtling obstacles (v3.8.0): telegraphed, temporary
+  // indestructible walls -- see server/sim.js maybeSpawnWall. Each entry is
+  // { id, x, y, telegraphUntil, solidUntil } (epoch ms); "warn"/"solid"/
+  // "fading" display state is derived from these at broadcast time (net.js),
+  // never stored -- see isSolidWallCell for the collision-time check.
+  walls: [],
   nextPowerupId: 1,
   lastPowerupSpawnAt: null,
+  lastWallSpawnAt: null,
   moveSeq: 0,              // counts MOVEMENT ticks (used as network seq)
   lastSimAt: null,
   nextSimAt: null,
@@ -47,11 +54,23 @@ function cellFree(x, y, ignoreSlotIndex = -1) {
   }
   return true;
 }
-// Cell already taken by food or a powerup pickup? (Snakes are handled by
-// cellFree.) Used so a new food never lands on an existing food/pickup.
+// Cell already taken by food, a powerup pickup, or an obstacle wall (any
+// display state -- warn or solid, never just the solid ones)? Used so a new
+// food/pickup/wall never lands on top of another entity.
 function cellHasEntity(x, y) {
   if (S.foods.some(f => f.x === x && f.y === y)) return true;
   if (S.powerupPickups.some(p => p.x === x && p.y === y)) return true;
+  if (S.walls.some(w => w.x === x && w.y === y)) return true;
+  return false;
+}
+// True while (x,y) is an ACTIVE (past its telegraph, not yet despawned)
+// obstacle wall -- the collision-time check sim.js's movement/drift paths
+// treat exactly like an out-of-bounds cell. A cell still in its telegraph
+// window is a warning only, not yet solid.
+function isSolidWallCell(x, y, now) {
+  for (const w of S.walls) {
+    if (w.x === x && w.y === y && now >= w.telegraphUntil && now < w.solidUntil) return true;
+  }
   return false;
 }
 // Place ONE food. Uniform rejection sampling over free cells -- except when
@@ -213,6 +232,8 @@ function spawnAreaClear(hx, hy, dir, len, slotIndex, clearance, wallMargin) {
     // Whole body must sit inside the wall margin on every edge.
     if (bx < wallMargin || bx >= CFG.grid.cols - wallMargin ||
         by < wallMargin || by >= CFG.grid.rows - wallMargin) return false;
+    // Never spawn a snake onto (or under the telegraph of) an obstacle wall.
+    if (S.walls.some(w => w.x === bx && w.y === by)) return false;
     // Clearance halo around this body cell must be free of other snakes.
     for (let ox = -clearance; ox <= clearance; ox++) {
       for (let oy = -clearance; oy <= clearance; oy++) {
@@ -587,11 +608,11 @@ function currentMoveIntervalMs() {
 }
 
 module.exports = {
-  S, cellFree, placeOneFood, ensureFoods, dropPinataFood, rerollFoods, targetFoodCount,
+  S, cellFree, cellHasEntity, placeOneFood, ensureFoods, dropPinataFood, rerollFoods, targetFoodCount,
   pickupCap, boardPlayerCount, spawnSnake, newPlayerSlot, growSegment,
   removeSegments, currentLeaderIndex, currentTrailingIndex, playerSeatCount,
   allEqualLength, inBounds, hitsBody, currentMoveIntervalMs, targetMoveIntervalMs,
   advanceGlobalSpeed, isInverted, scoreMode, initialsForSlot, bumpRivalry,
   ensureFoodRateAcc, bumpFoodRatePoints, advanceFoodRateTimers, foodRateSnapshot,
-  foodRateScoreForSeat
+  foodRateScoreForSeat, isSolidWallCell
 };

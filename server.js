@@ -264,6 +264,19 @@ wss.on("connection", ws => {
         }
       } else if (msg.op === "placeFood") {
         rerollFoods();
+      } else if (msg.op === "spawnWall") {
+        // Grid decay / anti-turtling obstacles (v3.8.0): places a wall
+        // directly at (x,y), bypassing the cell picker/gates for
+        // deterministic staging. telegraphMs defaults to 0 (instantly
+        // solid) so a test doesn't have to wait out the real telegraph
+        // window; lifetimeMs defaults to a generous 30s.
+        const wnow = Date.now();
+        const telegraphMs = Number.isInteger(msg.telegraphMs) ? msg.telegraphMs : 0;
+        const lifetimeMs = Number.isInteger(msg.lifetimeMs) ? msg.lifetimeMs : 30000;
+        S.walls.push({
+          id: S.nextPowerupId++, x: msg.x | 0, y: msg.y | 0,
+          telegraphUntil: wnow + telegraphMs, solidUntil: wnow + telegraphMs + lifetimeMs
+        });
       } else if (msg.op === "clearPickups") {
         // Remove all board pickups so the spawner produces a fresh one next
         // interval -- lets a test sample a STREAM of spawn types without

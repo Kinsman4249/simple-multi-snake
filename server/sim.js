@@ -6,12 +6,12 @@
 // ============================================================
 const {
   CFG, SIM_MS, BOOST, boostRamp, updateMomentum, POWERUPS, POWERUP_TYPES, POWERUP_MODULES,
-  HELD_TYPES, TRAIL_TYPES, SPEED_MULT_TYPES, WALL_GRACE_TICKS, MIN_SNAKE_LENGTH, dlog, PERF, RUBBERBAND
+  HELD_TYPES, TRAIL_TYPES, SPEED_MULT_TYPES, WALL_GRACE_TICKS, MIN_SNAKE_LENGTH, dlog, PERF, RUBBERBAND, WALLS
 } = require("./config");
 const {
-  S, cellFree, ensureFoods, pickupCap, advanceGlobalSpeed, growSegment,
+  S, cellFree, cellHasEntity, ensureFoods, pickupCap, advanceGlobalSpeed, growSegment,
   removeSegments, currentLeaderIndex, playerSeatCount, allEqualLength,
-  inBounds, hitsBody, currentMoveIntervalMs, advanceFoodRateTimers, bumpFoodRatePoints
+  inBounds, hitsBody, currentMoveIntervalMs, advanceFoodRateTimers, bumpFoodRatePoints, isSolidWallCell
 } = require("./state");
 const { broadcastState } = require("./net");
 const { lifecycleSweep, handleDeath } = require("./lifecycle");
@@ -88,6 +88,65 @@ function maybeSpawnPowerupPickup(now) {
   dlog && dlog("powerup spawned", { type, x, y });
 }
 
+// Grid decay / anti-turtling obstacles (v3.8.0): periodically telegraphs a
+// warning at a chosen empty cell, then WALLS.telegraphMs later it becomes a
+// solid, indestructible wall (see isSolidWallCell / resolveWallCollisions)
+// until it despawns WALLS.lifetimeMs after going solid. Presence-gated like
+// blueShell/pinata (no obstacles in solo play), interval-gated + capped like
+// the powerup pickup spawner. Cell choice is rejection-sampled: never on a
+// snake/food/pickup/existing wall, never orthogonally touching another wall
+// (the anti-sealing guard -- two walls can never chain into a line that
+// could carve off a pocket of the board), never within minHeadDistance of a
+// living snake's head, and (softly) biased toward the current leader's area
+// so it's their loop that gets disrupted most often.
+function maybeSpawnWall(now) {
+  if (!WALLS.enabled) return;
+  if (S.lastWallSpawnAt === null) S.lastWallSpawnAt = now;
+  if (playerSeatCount() < WALLS.minPlayers) { S.lastWallSpawnAt = now; return; }
+  if (now - S.lastWallSpawnAt < WALLS.spawnIntervalMs) return;
+  if (S.walls.length >= WALLS.maxConcurrent) return;
+  const li = currentLeaderIndex();
+  const target = li != null ? S.slots[li].body[0] : null;
+  const lb = WALLS.leaderBias;
+  let chosen = null;
+  for (let attempts = 0; attempts < 200 && !chosen; attempts++) {
+    const x = Math.floor(Math.random() * CFG.grid.cols);
+    const y = Math.floor(Math.random() * CFG.grid.rows);
+    if (!cellFree(x, y) || cellHasEntity(x, y)) continue;
+    if (S.walls.some(w => Math.abs(w.x - x) + Math.abs(w.y - y) <= 1)) continue;
+    let tooClose = false;
+    for (const s of S.slots) {
+      if (!s || !s.alive) continue;
+      const h = s.body[0];
+      if (Math.max(Math.abs(h.x - x), Math.abs(h.y - y)) < WALLS.minHeadDistance) { tooClose = true; break; }
+    }
+    if (tooClose) continue;
+    if (target && lb.enabled) {
+      const d = Math.max(Math.abs(x - target.x), Math.abs(y - target.y));
+      if (d > lb.radius && Math.random() >= 1 / lb.strength) continue;
+    }
+    chosen = { x, y };
+  }
+  S.lastWallSpawnAt = now;
+  if (!chosen) return false; // board too crowded / no valid cell this attempt, try again next interval
+  S.walls.push({
+    id: S.nextPowerupId++, x: chosen.x, y: chosen.y,
+    telegraphUntil: now + WALLS.telegraphMs, solidUntil: now + WALLS.telegraphMs + WALLS.lifetimeMs
+  });
+  dlog && dlog("wall telegraphed", { x: chosen.x, y: chosen.y });
+  return true;
+}
+// Drops any wall past its despawn time. Returns true if any were removed (so
+// simLoop knows to broadcast even on a tick where no snake itself moved).
+// The list is capped tiny (WALLS.maxConcurrent) so an unconditional filter
+// every tick is cheap -- no need for the "only reallocate when something's
+// actually due" trick the much larger trails array uses.
+function sweepWalls(now) {
+  if (S.walls.length === 0) return false;
+  const before = S.walls.length;
+  S.walls = S.walls.filter(w => now < w.solidUntil);
+  return S.walls.length !== before;
+}
 // Fixed-rate simulation loop: sample inputs every tick, move on cadence.
 // Scheduling is against an ABSOLUTE next-tick time (nextSimAt) rather than a
 // relative setTimeout(SIM_MS): timer callbacks always fire late by some
@@ -105,6 +164,7 @@ function simLoop() {
   advanceGlobalSpeed(dt);
   ensureFoods();
   maybeSpawnPowerupPickup(now);
+  const wallsChanged = maybeSpawnWall(now) | sweepWalls(now);
   // Speed-run / food-rate score mode (v3.7.0): advance every seated player's
   // play-time bucket by this tick's dt. Independent of the movement
   // accumulator loop below on purpose -- play time accrues once per sim tick
@@ -120,7 +180,7 @@ function simLoop() {
   // increment rather than forking the loop, so hold-to-boost and the
   // speed-boost powerup stack multiplicatively (confirmed design) and ice
   // slow composes the same way.
-  let moved = false;
+  let moved = !!wallsChanged;
   let guard = 0;
   do {
     const movers = [];
@@ -194,12 +254,13 @@ function movementStep(movers) {
 // NOTE: a turn consumed early here to dodge a wall deliberately does NOT
 // start a drift even if it was made while boosting -- the head is jammed
 // against a wall, where a lateral body skid would clamp anyway.
-function consumeInboundsTurn(s) {
+function consumeInboundsTurn(s, now) {
   const head = s.body[0];
   for (let k = 0; k < s.inputQueue.length; k++) {
     const d = s.inputQueue[k];
     if (d.x === -s.dir.x && d.y === -s.dir.y) continue;
-    if (inBounds({ x: head.x + d.x, y: head.y + d.y })) {
+    const c = { x: head.x + d.x, y: head.y + d.y };
+    if (inBounds(c) && !isSolidWallCell(c.x, c.y, now)) {
       for (let j = 0; j <= k; j++) if (s.inputQueue[j].seq != null) s.lastAck = s.inputQueue[j].seq;
       s.inputQueue.splice(0, k + 1);
       return d;
@@ -234,7 +295,9 @@ function applyDriftSlides(active) {
     let blocked = false;
     for (const seg of s.body) {
       const c = { x: seg.x + d.x, y: seg.y + d.y };
-      if (!inBounds(c)) { blocked = true; break; }
+      // An obstacle wall clamps the skid exactly like a board edge -- it is
+      // solid to everyone, drifting snakes included.
+      if (!inBounds(c) || isSolidWallCell(c.x, c.y, now)) { blocked = true; break; }
       for (let j = 0; j < S.slots.length && !blocked; j++) {
         const other = S.slots[j];
         if (j === i || !other || !other.alive) continue;
@@ -334,21 +397,26 @@ function tryWormholeOrDie(idx, killerIdxOrNull, cause, died, stalled, newHeads) 
   died.set(idx, { killer: killerIdxOrNull, cause });
 }
 function resolveWallCollisions(active, newHeads, died, stalled) {
+  const now = Date.now();
   for (const { s, i } of active) {
     if (died.has(i)) continue;
     let h = newHeads.get(i);
-    if (inBounds(h)) { s.wallStalls = 0; continue; }
+    // An obstacle wall (grid decay, v3.8.0) is lethal exactly like the board
+    // edge -- same wall-grace/wormhole rescue path, distinguished only in the
+    // death cause ("obstacle" vs "wall") for the kill feed.
+    const obstacle = inBounds(h) && isSolidWallCell(h.x, h.y, now);
+    if (inBounds(h) && !obstacle) { s.wallStalls = 0; continue; }
     // Wormhole threading: while the body is mid-drain its positions are
     // transient, so never die at a wall during the transition -- hold the head
     // in place this step (it stays on-board, alive) until the drain completes.
     if (s.teleportDrain > 0) { stalled.add(i); newHeads.set(i, { x: s.body[0].x, y: s.body[0].y }); continue; }
-    const saved = consumeInboundsTurn(s);
+    const saved = consumeInboundsTurn(s, now);
     if (saved) { s.dir = saved; h = { x: s.body[0].x + saved.x, y: s.body[0].y + saved.y }; newHeads.set(i, h); s.wallStalls = 0; continue; }
     // No wall grace while boosting (maintainer-specced with the drift
     // redesign): boost is a risk -- a boosted head aimed at a wall with no
     // saving turn queued dies without the stall tick.
-    if (s.wallStalls < WALL_GRACE_TICKS && boostRamp(s, Date.now()) === 0) { s.wallStalls++; stalled.add(i); newHeads.set(i, { x: s.body[0].x, y: s.body[0].y }); continue; }
-    tryWormholeOrDie(i, null, "wall", died, stalled, newHeads);
+    if (s.wallStalls < WALL_GRACE_TICKS && boostRamp(s, now) === 0) { s.wallStalls++; stalled.add(i); newHeads.set(i, { x: s.body[0].x, y: s.body[0].y }); continue; }
+    tryWormholeOrDie(i, null, obstacle ? "obstacle" : "wall", died, stalled, newHeads);
     s.wallStalls = 0;
   }
 }

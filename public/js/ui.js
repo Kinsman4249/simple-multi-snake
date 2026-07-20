@@ -733,8 +733,9 @@ const UI = (() => {
   // ---- Kill feed (v3.6.8) ----------------------------------------------
   // Server queues one event per death (server/lifecycle.js handleDeath,
   // one-shot like explosions -- see server/net.js) with cause "body" (a
-  // credited kill), "wall"/"self" (no killer), or "headon" (mutual, credit
-  // stripped by clearMutualKills). This turns each into a fading DOM line in
+  // credited kill), "wall"/"obstacle"/"self" (no killer -- "obstacle" is a
+  // grid-decay wall, v3.8.0), or "headon" (mutual, credit stripped by
+  // clearMutualKills). This turns each into a fading DOM line in
   // #killFeed (index.html), color-coded: a credited "body" kill uses the
   // KILLER's snake color so the feed also reads who's doing the killing at a
   // glance; wall/self/headon have no killer to credit, so they use the
@@ -750,6 +751,7 @@ const UI = (() => {
       return { text, color: ev.killerColor && ev.killerColor.head };
     }
     const suffix = ev.cause === "wall" ? " hit the wall"
+      : ev.cause === "obstacle" ? " hit an obstacle"
       : ev.cause === "self" ? " ran into itself"
       : ev.cause === "headon" ? " collided head-on"
       : " died";

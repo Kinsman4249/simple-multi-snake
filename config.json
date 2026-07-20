@@ -77,5 +77,16 @@
     "bucketMs": 1000,
     "floorMs": 300000,
     "windowMs": 300000
+  },
+  "walls": {
+    "enabled": true,
+    "minPlayers": 2,
+    "telegraphMs": 3000,
+    "lifetimeMs": 45000,
+    "despawnTelegraphMs": 3000,
+    "spawnIntervalMs": 15000,
+    "maxConcurrent": 3,
+    "minHeadDistance": 4,
+    "leaderBias": { "enabled": true, "radius": 12, "strength": 3 }
   }
 }

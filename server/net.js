@@ -3,7 +3,7 @@
 // per-tick state fanout, with the serialize-once you-splice optimization).
 // ============================================================
 const {
-  BUILD, SIM_HZ, CFG, BOOST, boostRamp, POWERUPS, POWERUP_MODULES, SPEED_MULT_TYPES, PERF
+  BUILD, SIM_HZ, CFG, BOOST, boostRamp, POWERUPS, POWERUP_MODULES, SPEED_MULT_TYPES, PERF, WALLS
 } = require("./config");
 const { S, currentMoveIntervalMs, isInverted, scoreMode, foodRateSnapshot } = require("./state");
 const { getHighScores } = require("./highscores");
@@ -20,6 +20,17 @@ function broadcastState() {
     // still reads a single food.
     tickMs: interval, simHz: SIM_HZ, grid: CFG.grid, foods: S.foods, food: S.foods[0] || null,
     powerupPickups: S.powerupPickups, trails: S.trails, blueShells: S.blueShells, explosions: S.explosions,
+    // Grid decay / anti-turtling obstacles (v3.8.0): S.walls stores raw epoch
+    // timestamps (server/state.js); the display state -- "warn" (telegraph,
+    // not yet collidable), "solid", or "fading" (still solid, just the
+    // despawn cue) -- is derived fresh every broadcast from those, off the
+    // SAME bNow used for moveMs above, rather than stored.
+    walls: S.walls.map(w => {
+      let state = "solid";
+      if (bNow < w.telegraphUntil) state = "warn";
+      else if (bNow >= w.solidUntil - WALLS.despawnTelegraphMs) state = "fading";
+      return { id: w.id, x: w.x, y: w.y, state };
+    }),
     // Kill feed (v3.6.8): one-shot, same pattern as explosions -- events
     // queued by lifecycle.js handleDeath since the last broadcast, cleared
     // right after this one goes out so nobody sees the same kill twice.

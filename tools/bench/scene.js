@@ -82,9 +82,17 @@
       { x: Math.floor(cols / 3), y: Math.floor(rows / 4) },
       { x: Math.floor(cols * 2 / 3), y: Math.floor(rows * 3 / 4) }
     ];
+    // Grid decay / anti-turtling obstacles (v3.8.0): one of each display
+    // state (warn/solid/fading) so the parity diff exercises every wall
+    // pulse branch in both renderers.
+    const walls = [
+      { id: 101, x: 6, y: Math.floor(rows / 2) + 3, state: "warn" },
+      { id: 102, x: 9, y: Math.floor(rows / 2) + 3, state: "solid" },
+      { id: 103, x: 12, y: Math.floor(rows / 2) + 3, state: "fading" }
+    ];
     const curr = {
       seq: 1000, tickMs: 100, grid, food: foods[0], foods, powerupPickups, trails, blueShells,
-      players, recvTime: 0
+      walls, players, recvTime: 0
     };
     const prev = Object.assign({}, curr, { seq: 999, players: prevPlayers });
     // Slot 0 is the "local predicted" body (skips interpolation, like real

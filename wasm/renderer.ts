@@ -25,7 +25,9 @@
 //   20 nTrails    i32
 //   24 nPickups   i32
 //   28 nShells    i32
-//   32 players[MAX_PLAYERS] stride 64:
+//   32 nWalls     i32   (grid decay / anti-turtling obstacles, v3.8.0)
+//   36 pad
+//   40 players[MAX_PLAYERS] stride 64:
 //        0 present i32, 4 alive i32, 8 colorHead u32 (ABGR byte order:
 //        r=low byte), 12 colorBody u32, 16 dirX i32, 20 dirY i32,
 //        24 moveMs f32, 28 boost i32, 32 sliding i32, 36 bodyLen i32,
@@ -39,6 +41,8 @@
 //   +pool: trails, MAX_TRAILS stride 8: {x:i16, y:i16, type:i16, pad}
 //   +trails: pickups, MAX_PICKUPS stride 16: {x:i32, y:i32, type:i32, id:i32}
 //   +pickups: shells, MAX_SHELLS stride 8: {x:i32, y:i32}
+//   +shells: walls, MAX_WALLS stride 16: {x:i32, y:i32, state:i32 (0 warn/
+//        1 solid/2 fading), id:i32 (seeds the pulse phase, like pickups)}
 //
 // Frame-input region (written every frame BEFORE render()):
 //   0  interpolate i32, 4 boostTrail i32, 8 slideDust i32, 12 foodHidden i32
@@ -72,6 +76,7 @@ const MAX_SEGS: i32 = 16384;
 const MAX_TRAILS: i32 = 8192;
 const MAX_PICKUPS: i32 = 32;
 const MAX_SHELLS: i32 = 16;
+const MAX_WALLS: i32 = 32;
 const MAX_FLASHES: i32 = 8;
 const MAX_GLIDES: i32 = 8;
 const MAX_EXPLOSIONS: i32 = 16;
@@ -84,13 +89,15 @@ const INSTANCE_CAP: i32 = 40960;
 
 // snapshot-internal offsets. Player stride 64: fields 0..52 as before, plus
 // +56 wormholeCharge i32 (and 4 bytes of pad to stay 8-aligned).
-const SNAP_PLAYERS: i32 = 32;
+const SNAP_NWALLS: i32 = 32;
+const SNAP_PLAYERS: i32 = 40; // was 32; +8 for nWalls + pad (v3.8.0)
 const PLAYER_STRIDE: i32 = 64;
 const SNAP_BODY: i32 = SNAP_PLAYERS + MAX_PLAYERS * PLAYER_STRIDE;
 const SNAP_TRAILS: i32 = SNAP_BODY + MAX_SEGS * 4;
 const SNAP_PICKUPS: i32 = SNAP_TRAILS + MAX_TRAILS * 8;
 const SNAP_SHELLS: i32 = SNAP_PICKUPS + MAX_PICKUPS * 16;
-const SNAP_SIZE: i32 = SNAP_SHELLS + MAX_SHELLS * 8;
+const SNAP_WALLS: i32 = SNAP_SHELLS + MAX_SHELLS * 8;
+const SNAP_SIZE: i32 = SNAP_WALLS + MAX_WALLS * 16;
 
 // frame-input offsets
 const FR_FLAGS: i32 = 0;
@@ -153,6 +160,10 @@ const COLOR_BLACK: u32 = rgba(0, 0, 0, 255);
 const COLOR_BANANA_BODY: u32 = rgba(0xff, 0xdd, 0x44, 255); // #fd4
 const COLOR_BANANA_TIP: u32 = rgba(0xaa, 0x77, 0x00, 255);  // #a70
 const COLOR_BANANA_SPOT: u32 = rgba(0x66, 0x33, 0x00, 255); // #630 ripeness speckle
+// Grid decay / anti-turtling obstacles (v3.8.0): must mirror render2d.js
+// WALL_WARN_COLOR (#f60) / WALL_SOLID_COLOR (#8a8a8a) exactly.
+const WALL_WARN: u32 = rgba(0xff, 0x66, 0x00, 255);
+const WALL_SOLID: u32 = rgba(0x8a, 0x8a, 0x8a, 255);
 
 // Pickup colors by type index (must match the facade's POWERUP_TYPE_INDEX
 // order): 0 wormhole #a3f, 1 growthSpurt #fe0, 2 iceTrail #9df,
@@ -295,6 +306,30 @@ export function render(now: f64, which: i32): i32 {
       }
     } else {
       inst(<f32>tx * cs, <f32>ty * cs, cell, cell, trailColor(ttype), 1, KIND_RECT, 0, 0);
+    }
+  }
+  // Grid decay / anti-turtling obstacles (v3.8.0): "warn" (telegraph, not
+  // yet collidable) pulses low-alpha hazard orange; "solid" is an opaque
+  // block; "fading" (despawn cue) is the same block pulsing faster/deeper.
+  // Must mirror render2d.js drawWalls exactly (same pulse formulas, keyed
+  // off wall id like pickups) for parity.
+  const nWalls = min(load<i32>(curr, SNAP_NWALLS), MAX_WALLS);
+  const wallBase = curr + SNAP_WALLS;
+  for (let i = 0; i < nWalls; i++) {
+    const o = wallBase + <usize>(i << 4);
+    const wx = load<i32>(o), wy = load<i32>(o, 4);
+    const wstate = load<i32>(o, 8), wid = load<i32>(o, 12);
+    if (wstate == 0) {
+      const pulse = <f32>(0.5 + 0.5 * Math.sin(now / 150.0 + <f64>wid));
+      const alpha = <f32>0.35 + <f32>0.35 * pulse;
+      inst(<f32>wx * cs, <f32>wy * cs, cell, cell, WALL_WARN, alpha, KIND_RECT, 0, 0);
+    } else {
+      let alpha: f32 = 1;
+      if (wstate == 2) {
+        const pulse = <f32>(0.5 + 0.5 * Math.sin(now / 90.0 + <f64>wid));
+        alpha = <f32>0.5 + <f32>0.5 * pulse;
+      }
+      inst(<f32>wx * cs, <f32>wy * cs, cell, cell, WALL_SOLID, alpha, KIND_RECT, 0, 0);
     }
   }
   // food (multi-food, from the frame region; eaten ones are omitted upstream).

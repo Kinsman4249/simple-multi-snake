@@ -301,6 +301,37 @@ const FOOD_RATE = Object.assign(
   CFG.foodRate || {}
 );
 
+// Grid decay / anti-turtling obstacles (v3.8.0, maintainer-selected
+// 2026-07-19): the server periodically TELEGRAPHS a warning at an empty
+// cell, then a telegraphMs later the cell becomes a solid, indestructible
+// 1x1 wall -- lethal to any snake (or wall-graced turn/wormhole rescue, same
+// as any other fatal move). Unlike the original pitch, walls are TEMPORARY:
+// they despawn lifetimeMs after going solid, so the topology keeps churning
+// rather than permanently shrinking the board over a long session.
+//   minPlayers:    presence gate (like blueShell/pinata) -- solo play never
+//     spawns obstacles, so a single player never gets walled in alone.
+//   telegraphMs:   warning duration before the cell goes solid -- the
+//     reaction window that mitigates "RNG traps me unfairly".
+//   lifetimeMs:    how long the wall stays solid once telegraphMs elapses.
+//   despawnTelegraphMs: a matching fade-out cue for the last stretch before
+//     the wall disappears (purely visual; the cell is solid the whole time).
+//   spawnIntervalMs / maxConcurrent: cadence + live cap, same shape as the
+//     powerup pickup spawner.
+//   minHeadDistance: never telegraph within this Chebyshev distance of a
+//     living snake's HEAD, so a spawn is never sprung directly under a nose
+//     even before the telegraph itself starts counting down.
+//   leaderBias: like RUBBERBAND.foodBias but pulling toward the LEADER's
+//     area instead of the trailing snake's -- breaks up a leader running an
+//     infinite safe loop. A free cell within `radius` of the leader's head
+//     is always accepted; farther ones only with probability 1/strength.
+const WALLS = Object.assign(
+  { enabled: true, minPlayers: 2, telegraphMs: 3000, lifetimeMs: 45000,
+    despawnTelegraphMs: 3000, spawnIntervalMs: 15000, maxConcurrent: 3,
+    minHeadDistance: 4 },
+  CFG.walls || {}
+);
+WALLS.leaderBias = Object.assign({ enabled: true, radius: 12, strength: 3 }, WALLS.leaderBias || {});
+
 const COLORS = [
   { head: "#6f6", body: "#3a3" },
   { head: "#6cf", body: "#38a" },
@@ -325,5 +356,5 @@ module.exports = {
   JOIN_OFFER_MS, INPUT_BUFFER, BOOST, boostRamp, updateMomentum, MIN_SNAKE_LENGTH,
   POWERUPS, POWERUP_TYPES, POWERUP_INFO, HELD_TYPES, TRAIL_TYPES, SPEED_MULT_TYPES, POWERUP_MODULES,
   ENABLE_DEBUG, dlog, PERF, COLORS, DIR_VECTORS, TEST_SPAWNS, TEST_HOOKS,
-  RUBBERBAND, PINATA, FOOD_RATE
+  RUBBERBAND, PINATA, FOOD_RATE, WALLS
 };

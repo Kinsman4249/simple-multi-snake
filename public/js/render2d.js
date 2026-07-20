@@ -82,6 +82,13 @@ const Render2D = (() => {
     bananaTrail: "#fd4",
     helloWorld: "#0ff"
   };
+  // Grid decay / anti-turtling obstacles (v3.8.0): a telegraphed cell pulses
+  // hazard orange for the warning window, then becomes an opaque steel-gray
+  // block once solid, pulsing again (faster) during its despawn-telegraph
+  // tail. Colors chosen to read as distinct from every powerup/trail/food
+  // tint on the board. Must mirror wasm/renderer.ts WALL_WARN/WALL_SOLID.
+  const WALL_WARN_COLOR = "#f60";
+  const WALL_SOLID_COLOR = "#8a8a8a";
   // Trail tints sit directly on the black background, so they need far more
   // alpha than an overlay would: the old 0.35-0.4 read as near-black,
   // especially after a fractional downscale.
@@ -179,6 +186,31 @@ const Render2D = (() => {
       if (t.type === "bananaTrail") { drawBananaTile(t.x, t.y); continue; }
       ctx.fillStyle = TRAIL_STYLE[t.type] || "rgba(255,255,255,0.2)";
       ctx.fillRect(t.x * cs, t.y * cs, cs - cellGap, cs - cellGap);
+    }
+  }
+  // Grid decay / anti-turtling obstacles (v3.8.0): "warn" pulses hazard
+  // orange at low alpha (the telegraph -- not yet collidable), "solid" is a
+  // flat opaque block, "fading" is the same block pulsing (faster, deeper)
+  // as a despawn cue. Must mirror wasm/renderer.ts's wall instance emission
+  // exactly (same pulse formulas, keyed off wall id like pickups) for parity.
+  function drawWalls(wallList, now) {
+    if (!wallList) return;
+    const cs = grid.cellSize;
+    for (const w of wallList) {
+      ctx.save();
+      if (w.state === "warn") {
+        const pulse = 0.5 + 0.5 * Math.sin(now / 150 + w.id);
+        ctx.globalAlpha = 0.35 + 0.35 * pulse;
+        ctx.fillStyle = WALL_WARN_COLOR;
+      } else {
+        if (w.state === "fading") {
+          const pulse = 0.5 + 0.5 * Math.sin(now / 90 + w.id);
+          ctx.globalAlpha = 0.5 + 0.5 * pulse;
+        }
+        ctx.fillStyle = WALL_SOLID_COLOR;
+      }
+      ctx.fillRect(w.x * cs, w.y * cs, cs - cellGap, cs - cellGap);
+      ctx.restore();
     }
   }
   // A single pixel-art banana on tile (cx,cy). Pixel edges are round(i*cell/5)
@@ -366,6 +398,7 @@ const Render2D = (() => {
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     drawTrails(currSnap.trails);
+    drawWalls(currSnap.walls, now);
     // Multi-food (v3.5.0): draw every active food cell, hiding any the local
     // predictor is provisionally treating as eaten. Falls back to the single
     // `food` compat field if `foods` is absent (rolling deploy).
