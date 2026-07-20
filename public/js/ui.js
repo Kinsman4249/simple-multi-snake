@@ -3,7 +3,7 @@
 // prompt with countdown, spectator overlay, explicit JOIN offer button,
 // and a DEBUG button/panel (recording enabled only while open).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-19.3";
+(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-19.4";
 const UI = (() => {
   const statusEl = document.getElementById("status");
   let captchaId = null;
@@ -23,16 +23,38 @@ const UI = (() => {
     captchaId = data.id;
     document.getElementById("captchaQuestion").textContent = data.a + " + " + data.b + " = ?";
   }
-  // One-tap, non-blocking acknowledgement of the boost/slide tip (see
-  // index.html #boostTip): hides the tip text entirely (not just dimmed --
-  // dimming alone made the click look like it did nothing). Does not gate
-  // Join, and is entirely independent of captcha state -- dismissing this
-  // tip has nothing to do with whether the captcha has been solved yet.
-  function initBoostTip() {
-    const tip = document.getElementById("boostTip");
-    const btn = document.getElementById("boostTipAck");
-    if (!tip || !btn) return;
-    btn.onclick = () => { tip.style.display = "none"; };
+  // Persisted show/hide state for the captcha/gate screen's static explainer
+  // blocks (boost/slide, piñata, grid-decay -- every ".tip" -- plus the
+  // powerup info popup below). Remembers your last choice across reloads,
+  // the SAME localStorage-backed pattern main.js uses for session initials
+  // (storeInitials/storedInitials): once you hide a block it stays hidden
+  // next time, and vice versa. Replaces the old boostTip-only one-shot "Got
+  // it" ack (which didn't persist and didn't let you bring the tip back).
+  const TIP_STORAGE_PREFIX = "snake.tipShown.";
+  function loadTipShown(key, defaultShown) {
+    try {
+      const v = localStorage.getItem(TIP_STORAGE_PREFIX + key);
+      return v === null ? defaultShown : v === "1";
+    } catch (_) { return defaultShown; }
+  }
+  function saveTipShown(key, shown) {
+    try { localStorage.setItem(TIP_STORAGE_PREFIX + key, shown ? "1" : "0"); } catch (_) {}
+  }
+  // Wires every ".tip" block's header toggle button (see index.html
+  // #boostTip/#pinataTip/#wallsTip, each now a `.tip` with a `.tip-head`
+  // containing a `.tip-toggle` button and a `.tip-body`). Keyed by the
+  // block's own element id so each tip remembers independently; defaults to
+  // shown the first time (matches the pre-toggle behavior where every tip
+  // was always visible).
+  function initTipToggles() {
+    document.querySelectorAll(".tip").forEach(el => {
+      const btn = el.querySelector(".tip-toggle");
+      if (!btn) return;
+      let shown = loadTipShown(el.id, true);
+      const apply = () => { el.classList.toggle("collapsed", !shown); btn.textContent = shown ? "Hide" : "Show"; };
+      apply();
+      btn.onclick = () => { shown = !shown; saveTipShown(el.id, shown); apply(); };
+    });
   }
   // Plain toggle button + popup explaining ALL powerups (see index.html
   // #powerupInfoBtn/#powerupInfoPopup). Independent of the captcha form and
@@ -41,12 +63,18 @@ const UI = (() => {
   // filled in later by setPowerupInfo(), once main.js's /api/config fetch
   // resolves with each powerup's title/description (sourced from the
   // powerup's own JS file -- see powerups/*.js -- so this list can never
-  // drift out of sync with what powerups actually exist).
+  // drift out of sync with what powerups actually exist). Open/closed state
+  // persists via the same loadTipShown/saveTipShown mechanism as the .tip
+  // blocks above, defaulting to CLOSED the first time (unlike the tips,
+  // which default open) -- this popup has always started collapsed.
   function initPowerupInfo() {
     const btn = document.getElementById("powerupInfoBtn");
     const popup = document.getElementById("powerupInfoPopup");
     if (!btn || !popup) return;
-    btn.onclick = () => popup.classList.toggle("open");
+    let open = loadTipShown("powerupInfoPopup", false);
+    const apply = () => popup.classList.toggle("open", open);
+    apply();
+    btn.onclick = () => { open = !open; saveTipShown("powerupInfoPopup", open); apply(); };
   }
   // Pixel-art banana as an SVG data-URI for the captcha legend swatch, so the
   // key shows the SAME crescent the pickup draws on-board (not a flat square).
@@ -160,7 +188,7 @@ const UI = (() => {
   // typed here can reach the game's key handlers.
   function initCaptchaGate(onSuccess) {
     loadCaptcha();
-    initBoostTip();
+    initTipToggles();
     initPowerupInfo();
     textEntryCount++;
     const initialsEl = document.getElementById("initialsEntry");

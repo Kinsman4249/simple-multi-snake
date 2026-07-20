@@ -82,13 +82,26 @@ const Render2D = (() => {
     bananaTrail: "#fd4",
     helloWorld: "#0ff"
   };
-  // Grid decay / anti-turtling obstacles (v3.8.0): a telegraphed cell pulses
-  // hazard orange for the warning window, then becomes an opaque steel-gray
-  // block once solid, pulsing again (faster) during its despawn-telegraph
-  // tail. Colors chosen to read as distinct from every powerup/trail/food
-  // tint on the board. Must mirror wasm/renderer.ts WALL_WARN/WALL_SOLID.
+  // Grid decay / anti-turtling obstacles (v3.8.1): a telegraphed cell pulses
+  // hazard orange for the warning window, then becomes a pixel-art SPIKE
+  // trap once solid (not a flat block -- v3.8.0's plain gray square read as
+  // just another powerup pickup, maintainer feedback), pulsing again
+  // (faster) during its despawn-telegraph tail. Colors chosen to read as
+  // distinct from every powerup/trail/food tint on the board.
   const WALL_WARN_COLOR = "#f60";
-  const WALL_SOLID_COLOR = "#8a8a8a";
+  // Spike pixel-art (5x5 sub-grid), same rect-composition technique as
+  // BANANA_ART below: 1 = mid-gray body, 2 = bright tip highlight, 3 = dark
+  // shadow/gap. Three spike columns (0/2/4) alternate tip-then-body down the
+  // cell so it reads as a row of stalagmite spikes, not a solid block. Must
+  // mirror wasm/renderer.ts spikeVal()/spikeColor() exactly for parity.
+  const SPIKE_COLORS = { 1: "#9a9a9a", 2: "#eee", 3: "#4a4a4a" };
+  function spikeVal(r, c) {
+    if (r === 0) return c % 2 === 0 ? 2 : 3;
+    if (r === 1) return c % 2 === 0 ? 1 : 2;
+    if (r === 2) return 1;
+    if (r === 3) return c % 2 === 0 ? 3 : 1;
+    return 3;
+  }
   // Trail tints sit directly on the black background, so they need far more
   // alpha than an overlay would: the old 0.35-0.4 read as near-black,
   // especially after a fractional downscale.
@@ -188,29 +201,49 @@ const Render2D = (() => {
       ctx.fillRect(t.x * cs, t.y * cs, cs - cellGap, cs - cellGap);
     }
   }
-  // Grid decay / anti-turtling obstacles (v3.8.0): "warn" pulses hazard
-  // orange at low alpha (the telegraph -- not yet collidable), "solid" is a
-  // flat opaque block, "fading" is the same block pulsing (faster, deeper)
-  // as a despawn cue. Must mirror wasm/renderer.ts's wall instance emission
-  // exactly (same pulse formulas, keyed off wall id like pickups) for parity.
+  // A single pixel-art spike trap on tile (cx,cy), same 5x5 sub-cell edge
+  // math as drawBananaTile below so both stay gaplessly tiled and pixel-
+  // aligned with the wasm path.
+  function drawSpikeTile(cx, cy, alpha) {
+    const cs = grid.cellSize, cell = cs - cellGap;
+    const ox = cx * cs, oy = cy * cs;
+    ctx.save();
+    if (alpha != null) ctx.globalAlpha = alpha;
+    for (let r = 0; r < 5; r++) {
+      for (let c = 0; c < 5; c++) {
+        const x0 = Math.round(c * cell / 5), x1 = Math.round((c + 1) * cell / 5);
+        const y0 = Math.round(r * cell / 5), y1 = Math.round((r + 1) * cell / 5);
+        ctx.fillStyle = SPIKE_COLORS[spikeVal(r, c)];
+        ctx.fillRect(ox + x0, oy + y0, x1 - x0, y1 - y0);
+      }
+    }
+    ctx.restore();
+  }
+  // Grid decay / anti-turtling obstacles (v3.8.1): "warn" pulses hazard
+  // orange at low alpha (the telegraph -- not yet collidable); "solid" is
+  // the pixel-art spike trap at full alpha; "fading" is the same spikes
+  // pulsing (faster, deeper) as a despawn cue. Must mirror wasm/renderer.ts's
+  // wall instance emission exactly (same pulse formulas, keyed off wall id
+  // like pickups) for parity.
   function drawWalls(wallList, now) {
     if (!wallList) return;
     const cs = grid.cellSize;
     for (const w of wallList) {
-      ctx.save();
       if (w.state === "warn") {
         const pulse = 0.5 + 0.5 * Math.sin(now / 150 + w.id);
+        ctx.save();
         ctx.globalAlpha = 0.35 + 0.35 * pulse;
         ctx.fillStyle = WALL_WARN_COLOR;
-      } else {
-        if (w.state === "fading") {
-          const pulse = 0.5 + 0.5 * Math.sin(now / 90 + w.id);
-          ctx.globalAlpha = 0.5 + 0.5 * pulse;
-        }
-        ctx.fillStyle = WALL_SOLID_COLOR;
+        ctx.fillRect(w.x * cs, w.y * cs, cs - cellGap, cs - cellGap);
+        ctx.restore();
+        continue;
       }
-      ctx.fillRect(w.x * cs, w.y * cs, cs - cellGap, cs - cellGap);
-      ctx.restore();
+      let alpha = 1;
+      if (w.state === "fading") {
+        const pulse = 0.5 + 0.5 * Math.sin(now / 90 + w.id);
+        alpha = 0.5 + 0.5 * pulse;
+      }
+      drawSpikeTile(w.x, w.y, alpha);
     }
   }
   // A single pixel-art banana on tile (cx,cy). Pixel edges are round(i*cell/5)

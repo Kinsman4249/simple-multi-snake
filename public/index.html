@@ -68,22 +68,39 @@
   }
   #status { font-size: 13px; margin-bottom: 8px; min-height: 18px; }
   .err { color: #f66; }
-  #boostTip {
-    background: #14201a; border: 1px solid #3a5; padding: 14px 18px; margin-bottom: 14px;
-    text-align: left; max-width: 320px; font-size: 12px; line-height: 1.5; color: #cfc;
+  /* Generic captcha/gate explainer block (v3.8.1). Every static blurb on the
+     gate -- boost/slide, piñata, grid-decay -- shares this ONE ".tip" shape:
+     a header (title + a persisted Show/Hide toggle, wired by ui.js
+     initTipToggles) and a body that collapses when hidden. Replaces the old
+     boostTip-only one-shot "Got it" ack: the toggle remembers your last
+     choice per-block across reloads (localStorage, same mechanism as session
+     initials), and every block gets the same affordance instead of some
+     being dismissible and others not. Per-block background/border/text
+     color stay on the #id selector below (each tip keeps its own accent);
+     shape/spacing lives here once. */
+  .tip {
+    padding: 14px 18px; margin: 14px 0;
+    text-align: left; max-width: 320px; font-size: 12px; line-height: 1.5;
   }
-  #boostTip h4 { margin: 0 0 6px 0; font-size: 13px; color: #9f9; }
-  #boostTip button {
-    margin-top: 10px; background: #234; color: #bdf; border: 1px solid #57a;
-    padding: 4px 12px; font-size: 12px; cursor: pointer; font-family: monospace;
+  .tip-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .tip-head h4 { margin: 0; font-size: 13px; }
+  .tip-body { margin-top: 6px; }
+  .tip.collapsed .tip-body { display: none; }
+  .tip-toggle {
+    flex: none; background: #222; color: #ccc; border: 1px solid #666;
+    padding: 2px 10px; font-size: 11px; cursor: pointer; font-family: monospace;
   }
-  #boostTip.acked { opacity: 0.45; }
-  #boostTip.acked button { display: none; }
-  #pinataTip {
-    background: #201d10; border: 1px solid #a83; padding: 14px 18px; margin: 14px 0;
-    text-align: left; max-width: 320px; font-size: 12px; line-height: 1.5; color: #eda;
-  }
-  #pinataTip h4 { margin: 0 0 6px 0; font-size: 13px; color: #fc0; }
+  .tip-toggle:hover { background: #333; }
+  #boostTip { background: #14201a; border: 1px solid #3a5; color: #cfc; }
+  #boostTip h4 { color: #9f9; }
+  #pinataTip { background: #201d10; border: 1px solid #a83; color: #eda; }
+  #pinataTip h4 { color: #fc0; }
+  /* Grid decay / anti-turtling obstacles (v3.8.1): same .tip shape as
+     #pinataTip -- fixed copy, no per-config content, so it lives inline
+     here rather than being built from server data. Hazard-orange accent to
+     match the on-board telegraph color. */
+  #wallsTip { background: #201512; border: 1px solid #a63; color: #edc; }
+  #wallsTip h4 { color: #f60; }
   #powerupInfoBtn {
     background: #241a2e; color: #c9f; border: 1px solid #758;
     padding: 4px 10px; font-size: 12px; cursor: pointer; font-family: monospace;
@@ -225,36 +242,58 @@
 <div id="overlay">
   <div class="box">
     <!-- Shown while the captcha is being solved, so a new player reads it
-         before their snake ever moves. "Got it" is a one-tap, non-blocking
-         acknowledgement (see ui.js initCaptchaGate) -- it does not gate Join,
-         it just confirms the player noticed the mechanic. -->
-    <div id="boostTip">
-      <h4>Boost &amp; Slide</h4>
-      Hold the key you're already moving in to speed up &mdash; it ramps up,
-      so keep it held (a quick tap does nothing).<br>
-      Turning while boosting turns your head instantly, but your body keeps
-      skidding sideways &mdash; the faster you were going, the longer the
-      skid &mdash; and there's no mercy at walls while boosting. Let off
-      boost first for a clean corner.
-      <div><button id="boostTipAck">Got it</button></div>
+         before their snake ever moves. Every ".tip" block (this one, piñata,
+         grid-decay below) shares one persisted Show/Hide toggle mechanism
+         (ui.js initTipToggles) -- your last choice per block is remembered
+         across reloads, the same way session initials are. -->
+    <div id="boostTip" class="tip">
+      <div class="tip-head"><h4>Boost &amp; Slide</h4><button class="tip-toggle" type="button"></button></div>
+      <div class="tip-body">
+        Hold the key you're already moving in to speed up &mdash; it ramps up,
+        so keep it held (a quick tap does nothing).<br>
+        Turning while boosting turns your head instantly, but your body keeps
+        skidding sideways &mdash; the faster you were going, the longer the
+        skid &mdash; and there's no mercy at walls while boosting. Let off
+        boost first for a clean corner.
+      </div>
     </div>
     <!-- Powerup explainer: a plain toggle button + popup (see ui.js
          initPowerupInfo), independent of the boost tip above and not gated
          on captcha state either. Content and popup size come from the
          server's /api/config powerupInfo (sourced from each powerup's own
          JS file, see powerups/*.js), so this list never has to be
-         hand-kept in sync with what powerups actually exist. -->
+         hand-kept in sync with what powerups actually exist. Open/closed
+         state persists the same way the .tip blocks do. -->
     <button id="powerupInfoBtn" type="button">? What do the powerups do?</button>
     <!-- Piñata bounties (v3.6.6): a static blurb explaining the corpse-burst
          feeding frenzy. Server-driven feature, but the explainer is fixed
          copy (no per-config content), so it lives inline here. -->
-    <div id="pinataTip">
-      <h4>🪅 Piñata bounties</h4>
-      Grow a really long snake and you become a piñata: when a big snake dies,
-      it bursts into a wide scatter of <b style="color:#fc0">gold candy</b>
-      near where it fell &mdash; a sudden feeding frenzy, and the drop leans
-      toward whoever's shortest. The gold decays fast, so dive in and scoop it
-      before it vanishes (and before someone else does). Multiplayer only.
+    <div id="pinataTip" class="tip">
+      <div class="tip-head"><h4>🪅 Piñata bounties</h4><button class="tip-toggle" type="button"></button></div>
+      <div class="tip-body">
+        Grow a really long snake and you become a piñata: when a big snake dies,
+        it bursts into a wide scatter of <b style="color:#fc0">gold candy</b>
+        near where it fell &mdash; a sudden feeding frenzy, and the drop leans
+        toward whoever's shortest. The gold decays fast, so dive in and scoop it
+        before it vanishes (and before someone else does). Multiplayer only.
+      </div>
+    </div>
+    <!-- Grid decay / anti-turtling obstacles (v3.8.1): NOT a powerup -- this
+         is a board hazard the server spawns on its own, so it needs its own
+         explainer separate from the powerup popup/legend above (a new
+         player who never saw this screen mistook the spikes for a pickup
+         and got a nasty surprise). Static blurb, same .tip pattern as
+         #pinataTip. -->
+    <div id="wallsTip" class="tip">
+      <div class="tip-head"><h4>⚠️ Grid decay</h4><button class="tip-toggle" type="button"></button></div>
+      <div class="tip-body">
+      The board isn't static: the server drops <b style="color:#f60">warning
+      cells</b> that turn solid a few seconds later &mdash; watch for the
+      pulsing orange tile. Once it's spikes, it's a permanent-feeling wall:
+      touch it and you die just like hitting the edge of the board. Each one
+      despawns on its own after a while, so the layout keeps shifting instead
+      of a corner ever staying safe forever.
+      </div>
     </div>
     <!-- Color legend: one swatch+name per ENABLED powerup, filled in by
          ui.js setPowerupInfo from the same /api/config data as the popup
@@ -281,7 +320,7 @@
 <div id="versionStamp" style="display:none;position:fixed;right:6px;bottom:5px;z-index:9999;font-family:monospace;font-size:10px;color:#666;pointer-events:none;white-space:pre;"></div>
 <!-- index.html build stamp (mirrors the per-file __BUILDS__ stamps the JS
      modules self-register); bump on any change to this file. -->
-<script>(window.__BUILDS__ = window.__BUILDS__ || {}).index = "index 2026-07-19.3";</script>
+<script>(window.__BUILDS__ = window.__BUILDS__ || {}).index = "index 2026-07-19.4";</script>
 
 <!-- Load order matters: main.js references everything before it. -->
 <script src="js/net.js"></script>

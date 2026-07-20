@@ -160,10 +160,32 @@ const COLOR_BLACK: u32 = rgba(0, 0, 0, 255);
 const COLOR_BANANA_BODY: u32 = rgba(0xff, 0xdd, 0x44, 255); // #fd4
 const COLOR_BANANA_TIP: u32 = rgba(0xaa, 0x77, 0x00, 255);  // #a70
 const COLOR_BANANA_SPOT: u32 = rgba(0x66, 0x33, 0x00, 255); // #630 ripeness speckle
-// Grid decay / anti-turtling obstacles (v3.8.0): must mirror render2d.js
-// WALL_WARN_COLOR (#f60) / WALL_SOLID_COLOR (#8a8a8a) exactly.
+// Grid decay / anti-turtling obstacles (v3.8.1): must mirror render2d.js
+// WALL_WARN_COLOR (#f60) exactly; the solid state is a pixel-art spike trap
+// (see spikeVal/spikeColor below), not a flat fill -- a plain gray square
+// read as just another powerup pickup (maintainer feedback on v3.8.0).
 const WALL_WARN: u32 = rgba(0xff, 0x66, 0x00, 255);
-const WALL_SOLID: u32 = rgba(0x8a, 0x8a, 0x8a, 255);
+const WALL_SPIKE_1: u32 = rgba(0x9a, 0x9a, 0x9a, 255); // mid-gray body
+const WALL_SPIKE_2: u32 = rgba(0xee, 0xee, 0xee, 255); // bright tip highlight
+const WALL_SPIKE_3: u32 = rgba(0x4a, 0x4a, 0x4a, 255); // dark shadow/gap
+// Spike pixel-art (5x5 sub-grid): three spike columns (0/2/4) alternate
+// tip-then-body down the cell, same rect-composition technique as
+// bananaVal() above -- must mirror render2d.js spikeVal()/SPIKE_COLORS
+// exactly for parity.
+@inline
+function spikeVal(r: i32, c: i32): i32 {
+  if (r == 0) return (c % 2 == 0) ? 2 : 3;
+  if (r == 1) return (c % 2 == 0) ? 1 : 2;
+  if (r == 2) return 1;
+  if (r == 3) return (c % 2 == 0) ? 3 : 1;
+  return 3;
+}
+@inline
+function spikeColor(v: i32): u32 {
+  if (v == 2) return WALL_SPIKE_2;
+  if (v == 3) return WALL_SPIKE_3;
+  return WALL_SPIKE_1;
+}
 
 // Pickup colors by type index (must match the facade's POWERUP_TYPE_INDEX
 // order): 0 wormhole #a3f, 1 growthSpurt #fe0, 2 iceTrail #9df,
@@ -308,11 +330,11 @@ export function render(now: f64, which: i32): i32 {
       inst(<f32>tx * cs, <f32>ty * cs, cell, cell, trailColor(ttype), 1, KIND_RECT, 0, 0);
     }
   }
-  // Grid decay / anti-turtling obstacles (v3.8.0): "warn" (telegraph, not
-  // yet collidable) pulses low-alpha hazard orange; "solid" is an opaque
-  // block; "fading" (despawn cue) is the same block pulsing faster/deeper.
-  // Must mirror render2d.js drawWalls exactly (same pulse formulas, keyed
-  // off wall id like pickups) for parity.
+  // Grid decay / anti-turtling obstacles (v3.8.1): "warn" (telegraph, not
+  // yet collidable) pulses low-alpha hazard orange; "solid" is the pixel-art
+  // spike trap at full alpha; "fading" (despawn cue) is the same spikes
+  // pulsing faster/deeper. Must mirror render2d.js drawWalls/drawSpikeTile
+  // exactly (same pulse formulas, keyed off wall id like pickups) for parity.
   const nWalls = min(load<i32>(curr, SNAP_NWALLS), MAX_WALLS);
   const wallBase = curr + SNAP_WALLS;
   for (let i = 0; i < nWalls; i++) {
@@ -323,13 +345,22 @@ export function render(now: f64, which: i32): i32 {
       const pulse = <f32>(0.5 + 0.5 * Math.sin(now / 150.0 + <f64>wid));
       const alpha = <f32>0.35 + <f32>0.35 * pulse;
       inst(<f32>wx * cs, <f32>wy * cs, cell, cell, WALL_WARN, alpha, KIND_RECT, 0, 0);
-    } else {
-      let alpha: f32 = 1;
-      if (wstate == 2) {
-        const pulse = <f32>(0.5 + 0.5 * Math.sin(now / 90.0 + <f64>wid));
-        alpha = <f32>0.5 + <f32>0.5 * pulse;
+      continue;
+    }
+    let alpha: f32 = 1;
+    if (wstate == 2) {
+      const pulse = <f32>(0.5 + 0.5 * Math.sin(now / 90.0 + <f64>wid));
+      alpha = <f32>0.5 + <f32>0.5 * pulse;
+    }
+    const wbx = <f32>wx * cs, wby = <f32>wy * cs;
+    for (let r = 0; r < 5; r++) {
+      for (let c = 0; c < 5; c++) {
+        const x0 = <f32>(<i32>Math.round(<f64>c * <f64>cell / 5.0));
+        const x1 = <f32>(<i32>Math.round(<f64>(c + 1) * <f64>cell / 5.0));
+        const y0 = <f32>(<i32>Math.round(<f64>r * <f64>cell / 5.0));
+        const y1 = <f32>(<i32>Math.round(<f64>(r + 1) * <f64>cell / 5.0));
+        inst(wbx + x0, wby + y0, x1 - x0, y1 - y0, spikeColor(spikeVal(r, c)), alpha, KIND_RECT, 0, 0);
       }
-      inst(<f32>wx * cs, <f32>wy * cs, cell, cell, WALL_SOLID, alpha, KIND_RECT, 0, 0);
     }
   }
   // food (multi-food, from the frame region; eaten ones are omitted upstream).
