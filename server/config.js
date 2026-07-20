@@ -308,8 +308,10 @@ const FOOD_RATE = Object.assign(
 // as any other fatal move). Unlike the original pitch, walls are TEMPORARY:
 // they despawn lifetimeMs after going solid, so the topology keeps churning
 // rather than permanently shrinking the board over a long session.
-//   minPlayers:    presence gate (like blueShell/pinata) -- solo play never
-//     spawns obstacles, so a single player never gets walled in alone.
+//   minPlayers:    presence gate, same shape as blueShell/pinata's (1 = no
+//     gate at all -- obstacles spawn in solo play too, a general anti-
+//     turtling mechanic rather than a multiplayer-only one; raise to 2+ to
+//     restore the "never alone" exemption those other mechanics use).
 //   telegraphMs:   warning duration before the cell goes solid -- the
 //     reaction window that mitigates "RNG traps me unfairly".
 //   lifetimeMs:    how long the wall stays solid once telegraphMs elapses.
@@ -325,7 +327,7 @@ const FOOD_RATE = Object.assign(
 //     infinite safe loop. A free cell within `radius` of the leader's head
 //     is always accepted; farther ones only with probability 1/strength.
 const WALLS = Object.assign(
-  { enabled: true, minPlayers: 2, telegraphMs: 3000, lifetimeMs: 45000,
+  { enabled: true, minPlayers: 1, telegraphMs: 3000, lifetimeMs: 45000,
     despawnTelegraphMs: 3000, spawnIntervalMs: 15000, maxConcurrent: 3,
     minHeadDistance: 4 },
   CFG.walls || {}

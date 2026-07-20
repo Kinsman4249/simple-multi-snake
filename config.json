@@ -80,7 +80,7 @@
   },
   "walls": {
     "enabled": true,
-    "minPlayers": 2,
+    "minPlayers": 1,
     "telegraphMs": 3000,
     "lifetimeMs": 45000,
     "despawnTelegraphMs": 3000,
