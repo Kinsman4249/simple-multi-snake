@@ -5,7 +5,8 @@
 # (public/js/render-wasm.js), compiled here from wasm/renderer.ts via
 # tools/build-wasm.mjs rather than committed to the repo -- so what a release
 # contains is verifiably built from the tagged sources. Everything else is
-# source (Node.js server, static client, deploy files, shell scripts). On a
+# source (Rust server sources, static client, deploy files, shell scripts;
+# install.sh compiles the server binary on the target host). On a
 # version tag this workflow builds that artifact, packages the tagged tree
 # PLUS the artifact into .tar.gz and .zip snapshots, and attaches both to a
 # GitHub Release. (install.sh performs the same build on the target host, so
