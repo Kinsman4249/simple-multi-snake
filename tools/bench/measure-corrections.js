@@ -7,10 +7,17 @@ const CDP_PORT = 9226;
 const BASE = "http://127.0.0.1:8080";
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-const server = new Deno.Command("deno", {
-  args: ["run", "--allow-net", "--allow-read", "--allow-write", "--allow-run", "--allow-env", "--unstable-detect-cjs", "server.js"],
-  cwd: repoRoot, stdout: "null", stderr: "null"
-}).spawn();
+// Prefer the checkout's compiled Rust server binary; an older worktree
+// without one (a pre-rewrite baseline) falls back to its JS server.
+const binPath = repoRoot.replace(/\/$/, "") + "/server-rust/target/release/multisnake-server";
+let haveBin = false;
+try { haveBin = (await Deno.stat(binPath)).isFile; } catch (_) { /* not built */ }
+const server = haveBin
+  ? new Deno.Command(binPath, { cwd: repoRoot, stdout: "null", stderr: "null" }).spawn()
+  : new Deno.Command("deno", {
+      args: ["run", "--allow-net", "--allow-read", "--allow-write", "--allow-run", "--allow-env", "--unstable-detect-cjs", "server.js"],
+      cwd: repoRoot, stdout: "null", stderr: "null"
+    }).spawn();
 let ready = false;
 for (let i = 0; i < 50 && !ready; i++) {
   try { await (await fetch(BASE + "/api/config")).body?.cancel(); ready = true; } catch (_) { await sleep(100); }

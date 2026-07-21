@@ -9,7 +9,7 @@ Open an issue using the Bug report template. Please include:
 - The exact command or workflow that triggered the issue
 - The full error output (redact any secrets, credentials, or personal data)
 - Relevant log excerpts
-- Your runtime environment (OS, Node.js version, deployment target, etc.)
+- Your runtime environment (OS, Rust toolchain version, deployment target, etc.)
 
 ## How to propose a feature
 
@@ -19,7 +19,7 @@ Open an issue using the Feature request template. Describe the use case before t
 
 - Fork the repo and create a feature branch (git checkout -b feat/short-description).
 - Make your change. Keep changes focused, one logical change per PR.
-- Test it. To verify locally, from the repo root run: npm install, then node server.js, then open http://127.0.0.1:8080 in a browser and confirm a snake spawns and moves, food is eaten, and the score updates. Open a second browser session to confirm a second player slot fills, and a fifth session to confirm the spectator queue.
+- Test it. To verify locally, build and start the server (cd server-rust && cargo build --release, then run ./server-rust/target/release/multisnake-server from the repo root), then open http://127.0.0.1:8080 in a browser and confirm a snake spawns and moves, food is eaten, and the score updates. Open a second browser session to confirm a second player slot fills, and a fifth session to confirm the spectator queue.
 - Lint it. Run any project-specific formatters before pushing.
 - Update documentation. If your change alters user-visible behavior, update README.md and add a new numbered entry to CHANGELOG.md under the current round.
 - Open a PR against main. Fill in the PR template.

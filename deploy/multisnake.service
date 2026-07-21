@@ -7,10 +7,9 @@ Type=simple
 User=multisnake
 Group=multisnake
 WorkingDirectory=/opt/multisnake
-ExecStart=/usr/bin/node /opt/multisnake/server.js
+ExecStart=/opt/multisnake/multisnake-server
 Restart=on-failure
 RestartSec=3
-Environment=NODE_ENV=production
 # Basic hardening
 NoNewPrivileges=true
 ProtectSystem=full

@@ -6,3 +6,4 @@ highscores.json
 handoff.md
 public/js/render-wasm.js
 tools/bench/out/
+server-rust/target/

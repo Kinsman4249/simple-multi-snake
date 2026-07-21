@@ -14,13 +14,15 @@ const outDir = repoRoot + "tools/bench/out";
 await Deno.mkdir(outDir, { recursive: true });
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// --- start the game server (same fallback logic as tests/helpers.js) ---
+// --- start the game server (same fallback logic as tests/helpers.js:
+// prefer the compiled Rust binary, fall back to the legacy JS server) ---
 let server;
-try {
-  server = new Deno.Command("node", { args: ["server.js"], cwd: repoRoot, stdout: "null", stderr: "null" }).spawn();
-  await sleep(300);
-  if ((await Promise.race([server.status, sleep(50).then(() => null)])) != null) throw new Error("node exited");
-} catch (_) {
+const binPath = repoRoot + "/server-rust/target/release/multisnake-server";
+let haveBin = false;
+try { haveBin = (await Deno.stat(binPath)).isFile; } catch (_) { /* not built */ }
+if (haveBin) {
+  server = new Deno.Command(binPath, { cwd: repoRoot, stdout: "null", stderr: "null" }).spawn();
+} else {
   server = new Deno.Command("deno", {
     args: ["run", "--allow-net", "--allow-read", "--allow-write", "--allow-run", "--allow-env", "--unstable-detect-cjs", "server.js"],
     cwd: repoRoot, stdout: "null", stderr: "null"

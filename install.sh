@@ -17,7 +17,7 @@
 # Port: the app binds a loopback TCP port that Apache proxies to. The default
 # is 8080, but if that port is already in use (common on a host that already
 # runs other services) the installer automatically selects the next free port
-# and points server.js and the vhosts at it. Force a specific port with PORT.
+# and points config.json and the vhosts at it. Force a specific port with PORT.
 # The chosen port is saved and reused on later runs. A previous install that
 # crash-looped on a port clash is detected and offered an automatic fix.
 #
@@ -48,7 +48,14 @@ REPO_URL="${REPO_URL:-https://github.com/Kinsman4249/simple-multi-snake.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 APP_DIR="${APP_DIR:-/opt/multisnake}"        # where the app is installed
 SERVICE_USER="${SERVICE_USER:-multisnake}"   # unprivileged account the service runs as
-NODE_MAJOR="${NODE_MAJOR:-22}"               # Node.js LTS major version to install
+# The server is a compiled Rust binary (server-rust/). The Rust toolchain is
+# installed via rustup into RUSTUP_DIR (self-contained, apt is not involved)
+# and only used at install/update time to build; the service itself runs the
+# resulting static-ish binary with no runtime beyond libc.
+RUSTUP_DIR="${RUSTUP_DIR:-/opt/multisnake-toolchain}"
+# Deno is installed only to build the WASM renderer (tools/build-wasm.mjs);
+# Node.js is no longer needed at all.
+DENO_INSTALL_DIR="${DENO_INSTALL_DIR:-/usr/local}"
 STATE_DIR="${STATE_DIR:-/etc/multisnake}"    # holds installer state between runs
 STATE_FILE="${STATE_DIR}/last-domain"        # the hostname used on the last run
 PORT_FILE="${STATE_DIR}/last-port"           # the port used on the last run
@@ -378,15 +385,19 @@ detect_prior_failure() {
   local failed=0
   if systemctl is-failed --quiet multisnake 2>/dev/null; then
     failed=1
-  elif journalctl -u multisnake -n 50 --no-pager 2>/dev/null | grep -q 'EADDRINUSE'; then
+  elif journalctl -u multisnake -n 50 --no-pager 2>/dev/null | grep -qE 'EADDRINUSE|Address already in use'; then
     failed=1
   fi
   [ "$failed" -eq 1 ] || return 0
 
   # Work out which port the failed install was trying to use.
   local prior_port=""
-  # PORT lived in server.js before v3.2.0 and lives in server/config.js
-  # after -- check both so upgrades from either shape are diagnosed.
+  # The port lives in config.json ("port") since the Rust rewrite; before
+  # that it was a const in server/config.js or server.js. Check all three so
+  # upgrades from any shape are diagnosed.
+  if [ -r "${APP_DIR}/config.json" ]; then
+    prior_port="$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "${APP_DIR}/config.json" | grep -oE '[0-9]+' | head -n1 || true)"
+  fi
   local port_file_candidate
   for port_file_candidate in "${APP_DIR}/server/config.js" "${APP_DIR}/server.js"; do
     if [ -z "$prior_port" ] && [ -r "$port_file_candidate" ]; then
@@ -517,37 +528,51 @@ resolve_tls_inputs() {
 resolve_tls_inputs
 
 # ---------------------------------------------------------------------------
-# 1. Base tools. curl and git are needed to fetch Node and the repo.
+# 1. Base tools. curl and git fetch the toolchain and the repo; gcc (from
+#    build-essential) is the linker rustc needs; unzip is for the deno
+#    installer.
 # ---------------------------------------------------------------------------
-echo "[1/9] Installing base packages (curl, git, ca-certificates)..."
+echo "[1/9] Installing base packages (curl, git, ca-certificates, build-essential, unzip)..."
 apt-get update -y
-apt-get install -y curl git ca-certificates
+apt-get install -y curl git ca-certificates build-essential unzip
 
 # ---------------------------------------------------------------------------
-# 2. Node.js. Install the requested LTS only if a good-enough node is missing,
-#    so we do not clobber an existing newer install.
+# 2. Build toolchains.
+#    - Rust (rustup, minimal profile) builds the game server binary. It is
+#      installed self-contained under RUSTUP_DIR so nothing touches apt or
+#      any developer's ~/.cargo; re-runs reuse and update it.
+#    - Deno builds the WASM renderer (tools/build-wasm.mjs). Node.js is no
+#      longer used; an old NodeSource install, if present, is simply ignored.
 # ---------------------------------------------------------------------------
-NEED_NODE=1
-if command -v node >/dev/null 2>&1; then
-  CURRENT_MAJOR="$(node -v | sed 's/^v\([0-9]*\).*/\1/')"
-  if [ "$CURRENT_MAJOR" -ge "$NODE_MAJOR" ]; then
-    NEED_NODE=0
-    echo "[2/9] Node $(node -v) already present, skipping install."
-  fi
+export RUSTUP_HOME="${RUSTUP_DIR}/rustup"
+export CARGO_HOME="${RUSTUP_DIR}/cargo"
+export PATH="${CARGO_HOME}/bin:${DENO_INSTALL_DIR}/bin:${PATH}"
+if command -v cargo >/dev/null 2>&1; then
+  echo "[2/9] Rust toolchain already present ($(rustc --version)); updating..."
+  rustup update stable >/dev/null 2>&1 || true
+else
+  echo "[2/9] Installing the Rust toolchain (rustup, stable, minimal profile)..."
+  mkdir -p "${RUSTUP_DIR}"
+  curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal --default-toolchain stable --no-modify-path
 fi
-if [ "$NEED_NODE" -eq 1 ]; then
-  echo "[2/9] Installing Node.js ${NODE_MAJOR}.x from NodeSource..."
-  curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -
-  apt-get install -y nodejs
+rustc --version
+cargo --version
+
+if command -v deno >/dev/null 2>&1; then
+  echo "  Deno already present ($(deno --version | head -n1)); reusing it."
+else
+  echo "  Installing Deno (for the WASM renderer build)..."
+  curl -fsSL https://deno.land/install.sh | DENO_INSTALL="${DENO_INSTALL_DIR}" sh -s -- -y >/dev/null
 fi
-node --version
+deno --version | head -n1
 
 # ---------------------------------------------------------------------------
 # 3. Get the source. If run from inside a checkout, use it. Otherwise clone
 #    to a temp dir. The curl | bash one-liner always takes the clone path.
 # ---------------------------------------------------------------------------
 CLEANUP_SRC=0
-if [ -f "./server.js" ] && [ -f "./deploy/multisnake.service" ]; then
+if [ -d "./server-rust" ] && [ -f "./deploy/multisnake.service" ]; then
   SRC="$(pwd)"
   echo "[3/9] Using local checkout at ${SRC}."
 else
@@ -568,22 +593,33 @@ fi
 # removes a previously deployed render-wasm.js (the stale-file sweep), so
 # re-run the installer once the build issue is fixed.
 echo "[3/9] Building the WASM renderer from source..."
-if ( cd "${SRC}" && node tools/build-wasm.mjs ); then
+if ( cd "${SRC}" && deno run -A tools/build-wasm.mjs ); then
   echo "  Built public/js/render-wasm.js from wasm/renderer.ts."
 else
   echo "  WARNING: WASM renderer build failed; the game will use the 2D fallback renderer." >&2
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Lay the app down in APP_DIR, then patch the port into server.js and the
-#    chosen sim rate into config.json. An existing highscores.json is left in
-#    place.
+# 4. Lay the app down in APP_DIR, then patch the chosen port/sim rate into
+#    config.json. An existing highscores.json is left in place.
+#    package.json is still installed: the server reads its "version" field
+#    for the build stamp (it is data now, not a Node manifest).
 # ---------------------------------------------------------------------------
 echo "[4/9] Installing app files to ${APP_DIR}..."
 mkdir -p "${APP_DIR}/public"
-install -m 0644 "${SRC}/server.js"    "${APP_DIR}/server.js"
 install -m 0644 "${SRC}/config.json"  "${APP_DIR}/config.json"
 install -m 0644 "${SRC}/package.json" "${APP_DIR}/package.json"
+
+# Build stamp: APP_DIR is not a git checkout, so the server falls back to
+# build-info.json. Stamp it here from the source checkout's git metadata so
+# the deployed build identifies itself precisely instead of as "dev".
+if git -C "${SRC}" rev-parse --short HEAD >/dev/null 2>&1; then
+  DESCRIBE="$(git -C "${SRC}" describe --tags --always 2>/dev/null || true)"
+  COMMIT="$(git -C "${SRC}" rev-parse --short HEAD)"
+  printf '{ "describe": "%s", "commit": "%s" }\n' "${DESCRIBE}" "${COMMIT}" \
+    > "${APP_DIR}/build-info.json"
+  chmod 0644 "${APP_DIR}/build-info.json"
+fi
 
 # Every file under public/ (index.html, public/js/*.js, and anything added
 # later) is synced by walking the tree rather than naming files one at a
@@ -607,60 +643,43 @@ find "${APP_DIR}/public" -type f -print0 2>/dev/null | while IFS= read -r -d '' 
   [ -f "${SRC}/public/${rel}" ] || { rm -f "$f"; echo "  Removed stale ${rel} (no longer shipped)."; }
 done
 
-# Server-side powerups/ modules (base.js, index.js, one file per powerup).
-# server.js does require("./powerups") at startup, so a missing tree crashes
-# the service on boot with MODULE_NOT_FOUND -- the exact same "named files
-# fell out of sync with a new directory" failure the public/ walk above was
-# written to prevent, so this walks the tree the same way. A future new
-# powerup file deploys automatically.
-mkdir -p "${APP_DIR}/powerups"
-find "${SRC}/powerups" -type f -print0 | while IFS= read -r -d '' f; do
-  rel="${f#"${SRC}"/powerups/}"
-  dest="${APP_DIR}/powerups/${rel}"
-  mkdir -p "$(dirname "$dest")"
-  install -m 0644 "$f" "$dest"
-done
-# Drop any powerup module no longer shipped, so a removed/renamed one does not
-# linger (and, e.g., keep getting picked up by the type registry).
-find "${APP_DIR}/powerups" -type f -print0 2>/dev/null | while IFS= read -r -d '' f; do
-  rel="${f#"${APP_DIR}"/powerups/}"
-  [ -f "${SRC}/powerups/${rel}" ] || { rm -f "$f"; echo "  Removed stale powerups/${rel} (no longer shipped)."; }
+# The node server's JS trees (server.js, server/, powerups/) and its
+# node_modules are no longer shipped -- the game logic is compiled into the
+# Rust binary. Sweep them from an APP_DIR that predates the rewrite so no
+# stale runtime lingers.
+for legacy in server.js server powerups node_modules package-lock.json; do
+  if [ -e "${APP_DIR}/${legacy}" ]; then
+    rm -rf "${APP_DIR:?}/${legacy}"
+    echo "  Removed legacy ${legacy} (node runtime no longer shipped)."
+  fi
 done
 
-# Server-side server/ modules (config/state/sim/... -- server.js became a
-# thin entry point over this tree in v3.2.0). Same walk-the-tree rule as
-# powerups/ and public/ above: a missing tree crashes the service on boot
-# with MODULE_NOT_FOUND, and naming files individually is how deploys rot.
-mkdir -p "${APP_DIR}/server"
-find "${SRC}/server" -type f -print0 | while IFS= read -r -d '' f; do
-  rel="${f#"${SRC}"/server/}"
-  dest="${APP_DIR}/server/${rel}"
-  mkdir -p "$(dirname "$dest")"
-  install -m 0644 "$f" "$dest"
-done
-find "${APP_DIR}/server" -type f -print0 2>/dev/null | while IFS= read -r -d '' f; do
-  rel="${f#"${APP_DIR}"/server/}"
-  [ -f "${SRC}/server/${rel}" ] || { rm -f "$f"; echo "  Removed stale server/${rel} (no longer shipped)."; }
-done
-
-# The app ships with a default port of 8080; set it to the chosen port. The
-# PORT const moved from server.js to server/config.js in v3.2.0 -- patch
-# whichever file carries it so both fresh installs and this repo's history
-# keep working.
-sed -i "s/const PORT = [0-9]\+;/const PORT = ${CHOSEN_PORT};/" "${APP_DIR}/server/config.js"
-sed -i "s/const PORT = [0-9]\+;/const PORT = ${CHOSEN_PORT};/" "${APP_DIR}/server.js" 2>/dev/null || true
-
-# config.json ships with a default simHz; set it to the chosen sim rate using
-# the Node runtime this installer just ensured is present. Editing JSON with
-# Node keeps the file valid regardless of key order or formatting.
-node -e "const f='${APP_DIR}/config.json';const c=JSON.parse(require('fs').readFileSync(f));c.simHz=${CHOSEN_SIMHZ};c.maxPlayers=${CHOSEN_MAXPLAYERS};c.enableDebug=${CHOSEN_DEBUG};require('fs').writeFileSync(f,JSON.stringify(c,null,2)+'\n');"
-echo "  Set simHz=${CHOSEN_SIMHZ}, maxPlayers=${CHOSEN_MAXPLAYERS}, enableDebug=${CHOSEN_DEBUG} in ${APP_DIR}/config.json."
+# config.json carries the chosen port (the Rust binary reads "port"; the
+# PORT env var would also work, but keeping it in config.json keeps one
+# config surface), the sim rate, capacity, and the debug switch. Edited with
+# deno so the JSON stays valid regardless of key order or formatting.
+deno eval "
+const f = '${APP_DIR}/config.json';
+const c = JSON.parse(Deno.readTextFileSync(f));
+c.port = ${CHOSEN_PORT};
+c.simHz = ${CHOSEN_SIMHZ};
+c.maxPlayers = ${CHOSEN_MAXPLAYERS};
+c.enableDebug = ${CHOSEN_DEBUG};
+Deno.writeTextFileSync(f, JSON.stringify(c, null, 2) + '\n');
+"
+echo "  Set port=${CHOSEN_PORT}, simHz=${CHOSEN_SIMHZ}, maxPlayers=${CHOSEN_MAXPLAYERS}, enableDebug=${CHOSEN_DEBUG} in ${APP_DIR}/config.json."
 
 # ---------------------------------------------------------------------------
-# 5. Install production npm deps (ws) inside APP_DIR.
+# 5. Build the Rust server and install the binary. Debug symbols are
+#    stripped by the release profile; the binary is a couple of MB and
+#    depends only on libc. On a small instance (e2-micro) the first build
+#    takes a while (all dependencies compile once); re-runs only rebuild
+#    what changed.
 # ---------------------------------------------------------------------------
-echo "[5/9] Installing npm dependencies..."
-( cd "${APP_DIR}" && npm install --omit=dev --no-audit --no-fund )
+echo "[5/9] Building the game server from source (cargo build --release)..."
+( cd "${SRC}/server-rust" && cargo build --release )
+install -m 0755 "${SRC}/server-rust/target/release/multisnake-server" "${APP_DIR}/multisnake-server"
+echo "  Installed ${APP_DIR}/multisnake-server."
 
 # ---------------------------------------------------------------------------
 # 6. Service account and ownership. System user, no login shell, no home.

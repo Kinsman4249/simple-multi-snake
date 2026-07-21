@@ -147,15 +147,18 @@ async function startServer(configOverrides, extraEnv) {
   await Deno.writeTextFile(destPath, JSON.stringify(merged));
   const env = Object.assign({}, Deno.env.toObject(), { SNAKE_CONFIG: name }, extraEnv || {});
 
+  // The server is the compiled Rust binary (server-rust/). Build it once
+  // with: cargo build --release (run inside server-rust/). Falls back to
+  // the legacy JS server via deno only if the binary is absent.
+  const binPath = repoRoot + "server-rust/target/release/multisnake-server";
   let child;
-  try {
-    child = new Deno.Command("node", {
-      args: ["server.js"], cwd: repoRoot, env,
-      stdout: "piped", stderr: "piped"
+  let haveBin = false;
+  try { haveBin = (await Deno.stat(binPath)).isFile; } catch (_) { /* not built */ }
+  if (haveBin) {
+    child = new Deno.Command(binPath, {
+      cwd: repoRoot, env, stdout: "piped", stderr: "piped"
     }).spawn();
-    await sleep(300);
-    if ((await Promise.race([child.status, sleep(50).then(() => null)])) != null) throw new Error("node exited immediately");
-  } catch (_) {
+  } else {
     child = new Deno.Command("deno", {
       args: ["run", "--allow-net", "--allow-read", "--allow-write", "--allow-run", "--allow-env", "--unstable-detect-cjs", "server.js"],
       cwd: repoRoot, env, stdout: "piped", stderr: "piped"

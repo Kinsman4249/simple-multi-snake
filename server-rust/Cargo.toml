@@ -1,0 +1,28 @@
+[package]
+name = "multisnake-server"
+version = "3.8.2"
+edition = "2021"
+
+[dependencies]
+# Async runtime + HTTP/WebSocket stack. axum's "ws" feature carries the
+# WebSocket upgrade; hyper/hyper-util/tower are only here for the manual
+# accept loop in main.rs (we need per-socket TCP_NODELAY, which
+# axum::serve does not expose).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "sync"] }
+axum = { version = "0.8", features = ["ws"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
+tower = { version = "0.5", features = ["util"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+# preserve_order keeps JSON object key order (the JS server's object
+# literals had meaningful insertion order, e.g. powerupInfo).
+serde_json = { version = "1", features = ["preserve_order"] }
+rand = "0.9"
+
+[profile.release]
+# Thin LTO instead of fat: near-identical speed here, but much lower peak
+# memory at link time -- the deploy target (e2-micro, 1GB RAM) builds this
+# on the server itself via install.sh.
+lto = "thin"
+strip = true

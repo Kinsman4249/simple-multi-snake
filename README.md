@@ -1,7 +1,8 @@
 # simple-multi-snake
 
-Browser-based multiplayer Snake. One authoritative Node.js process holds the
-game state and serves the client. Apache reverse-proxies a hostname you choose
+Browser-based multiplayer Snake. One authoritative server process (a compiled
+Rust binary, built from `server-rust/`) holds the game state and serves the
+client. Apache reverse-proxies a hostname you choose
 to it, with TLS from Let's Encrypt. Up to eight live players share one board by
 default -- the cap (maxPlayers) is configurable to taste and to the hardware you
 run it on; extra connections wait in a spectator queue and are promoted when a
@@ -138,9 +139,12 @@ slot frees.
 
 ## Install (one command)
 
-Run this on the server as root. It installs Node.js, deploys the app to
-/opt/multisnake, creates a systemd service, adds a single Apache vhost, and by
-default obtains a Let's Encrypt certificate. Existing sites are not modified.
+Run this on the server as root. It installs the Rust toolchain (self-contained
+under /opt/multisnake-toolchain) and Deno, builds the server binary and the
+WASM renderer from source, deploys the app to /opt/multisnake, creates a
+systemd service, adds a single Apache vhost, and by default obtains a Let's
+Encrypt certificate. Existing sites are not modified. Node.js is no longer
+used; a leftover install from an older version is ignored.
 
 curl -fsSL https://raw.githubusercontent.com/Kinsman4249/simple-multi-snake/main/install.sh | sudo bash
 
@@ -163,10 +167,10 @@ curl -fsSL https://raw.githubusercontent.com/Kinsman4249/simple-multi-snake/main
 
 ## Port selection
 
-The Node app binds a loopback TCP port that Apache proxies to. The default is
+The app binds a loopback TCP port that Apache proxies to. The default is
 8080. If that port is already taken (common on a host that already runs other
 services) the installer automatically picks the next free port and points both
-server.js and the Apache vhosts at it. The chosen port is saved to
+config.json ("port") and the Apache vhosts at it. The chosen port is saved to
 /etc/multisnake/last-port and reused on later runs.
 
 - Force a specific port with the PORT environment variable.
@@ -391,8 +395,9 @@ Keys:
   needed). A player can also override per-session with ?renderer=2d in the
   URL. See "The WASM renderer" below.
 
-The listening port is not in config.json; it is chosen at install time and
-written into server.js. To change it, re-run the installer with PORT set.
+The listening port IS in config.json ("port", default 8080), written at
+install time; the PORT environment variable overrides it at runtime. To
+change it, re-run the installer with PORT set.
 
 ## The WASM renderer
 
@@ -417,12 +422,10 @@ base64 inside a plain JS file) is deliberately NOT committed to the repo:
 serves is verifiably compiled from the sources in the tree. Rebuild it any
 time with either runtime:
 
-    node tools/build-wasm.mjs
-    # or
     deno run -A tools/build-wasm.mjs
 
-(The pinned AssemblyScript compiler is fetched through npx / deno's npm
-support on first run.) A checkout WITHOUT the artifact still works: the
+(The pinned AssemblyScript compiler is fetched through deno's npm support on
+first run.) A checkout WITHOUT the artifact still works: the
 render facade (`public/js/render.js`) detects the missing file and falls
 back to the complete pre-wasm 2D renderer (`public/js/render2d.js`).
 Verification lives in `tools/bench/`: `run-bench.js` (frame-time benchmark),
@@ -463,52 +466,48 @@ hostname selection, sim rate, free-port selection, the systemd service, the
 Apache vhost, and TLS. This section is for doing it by hand or understanding
 what the installer does. Replace YOUR_HOST with your hostname throughout.
 
-### 1. Node.js 22
+### 1. Toolchains (Rust to build the server, Deno to build the renderer)
 
 sudo apt update
-sudo apt install -y curl git ca-certificates
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt install -y nodejs
-node --version
+sudo apt install -y curl git ca-certificates build-essential unzip
+curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
+source "$HOME/.cargo/env"
+curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh -s -- -y
 
-### 2. Deploy the app
+### 2. Build and deploy the app
 
-node tools/build-wasm.mjs
+deno run -A tools/build-wasm.mjs
+( cd server-rust && cargo build --release )
 sudo mkdir -p /opt/multisnake/public
-sudo cp server.js config.json package.json /opt/multisnake/
+sudo cp server-rust/target/release/multisnake-server /opt/multisnake/
+sudo cp config.json package.json /opt/multisnake/
 sudo cp -r public/. /opt/multisnake/public/
-sudo cp -r powerups/. /opt/multisnake/powerups/
-sudo cp -r server/. /opt/multisnake/server/
-cd /opt/multisnake
-sudo npm install --omit=dev
 
 The first line compiles the WASM renderer from source into
 `public/js/render-wasm.js` (see "The WASM renderer") BEFORE the `public/`
 copy, so the artifact deploys with the rest of the client. Skipping it is
 not fatal -- the client falls back to the plain 2D renderer -- but it is the
-intended, faster draw path.
+intended, faster draw path. The second line compiles the game server itself;
+all the game logic is inside the resulting `multisnake-server` binary, so
+there are no server-side JS trees or npm dependencies to deploy.
 
 Use `cp -r public/.` (everything under `public/`), not `cp public/index.html`
 alone. The client is split across `public/index.html` and `public/js/*.js`
 (`net.js`, `predict.js`, `render.js`, `ui.js`, `main.js`); copying only
 `index.html` leaves the game unable to load and every module 404ing in the
-browser console, even though the Node process itself comes up fine.
+browser console, even though the server process itself comes up fine.
 
-Likewise copy the whole `powerups/` directory (`base.js`, `index.js`, and one
-file per powerup) AND the whole `server/` directory (the server core split
-into modules in v3.2.0 -- config.js, state.js, sim.js, lifecycle.js, net.js,
-highscores.js, captcha.js): `server.js` is a thin entry point that requires
-both trees at startup, so a missing one crashes the service on boot with
-`Cannot find module` before it ever listens.
+package.json is still copied: the server reads its "version" field for the
+build stamp (it is data now, not a Node manifest).
 
 ### 3. Choose the listening port
 
-The app ships with a default of 8080 (`const PORT = 8080;` in
-server/config.js). If 8080 is already used by another service, check what
-holds it and pick a free port:
+The app defaults to 8080; the "port" key in config.json (or a PORT
+environment variable on the service) overrides it. If 8080 is already used
+by another service, check what holds it and pick a free port:
 
 sudo ss -ltnp | grep ':8080'
-sudo sed -i 's/const PORT = 8080;/const PORT = 8091;/' /opt/multisnake/server/config.js
+# then set "port": 8091 in /opt/multisnake/config.json
 
 Use the same port everywhere below in place of 8080.
 
@@ -530,7 +529,7 @@ before Apache and TLS are set up:
 curl -sI http://127.0.0.1:8080/            # expect HTTP/1.1 200 OK
 curl -sI http://127.0.0.1:8080/js/main.js  # expect HTTP/1.1 200 OK
 
-Check both. The first only proves the Node process is up and index.html is in
+Check both. The first only proves the server process is up and index.html is in
 place; it will return 200 even if the public/js files from step 2 never made
 it onto disk, which is exactly the failure mode that produces a working-looking
 service with a broken game in every browser. The installer runs this same
@@ -614,7 +613,8 @@ committed to the repo.
 
 ## External references
 
-- Node.js on Debian via NodeSource: https://github.com/nodesource/distributions
+- Rust installation via rustup: https://rustup.rs
+- Deno installation: https://docs.deno.com/runtime/getting_started/installation/
 - Apache WebSocket proxying (mod_proxy_wstunnel):
   https://httpd.apache.org/docs/2.4/mod/mod_proxy_wstunnel.html
 - Cloudflare WebSocket support:

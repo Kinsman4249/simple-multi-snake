@@ -91,10 +91,12 @@ if [ -f "${APP_DIR}/highscores.json" ]; then
   echo "  Saved ${BACKUP}"
 fi
 
-# 5. Remove the app directory and the installer state.
+# 5. Remove the app directory, the installer state, and the self-contained
+#    Rust toolchain the installer set up for building the server binary.
 echo "[5/6] Removing application files and installer state..."
 rm -rf "${APP_DIR}"
 rm -rf "${STATE_DIR}"
+rm -rf "${RUSTUP_DIR:-/opt/multisnake-toolchain}"
 
 # 6. Optionally remove the service user.
 echo "[6/6] Service user cleanup..."
@@ -109,5 +111,5 @@ fi
 
 echo
 echo "== Done =="
-echo "Node.js, Apache modules, and the certbot renewal timer were left in place;"
+echo "Deno, Apache modules, and the certbot renewal timer were left in place;"
 echo "other services may depend on them."
