@@ -26,7 +26,7 @@
 //   24 nPickups   i32
 //   28 nShells    i32
 //   32 nWalls     i32   (grid decay / anti-turtling obstacles, v3.8.0)
-//   36 pad
+//   36 nPortals   i32   (wormhole portal markers, 2026-07-20 -- was pad)
 //   40 players[MAX_PLAYERS] stride 64:
 //        0 present i32, 4 alive i32, 8 colorHead u32 (ABGR byte order:
 //        r=low byte), 12 colorBody u32, 16 dirX i32, 20 dirY i32,
@@ -43,6 +43,8 @@
 //   +pickups: shells, MAX_SHELLS stride 8: {x:i32, y:i32}
 //   +shells: walls, MAX_WALLS stride 16: {x:i32, y:i32, state:i32 (0 warn/
 //        1 solid/2 fading), id:i32 (seeds the pulse phase, like pickups)}
+//   +walls: portals, MAX_PORTALS stride 12: {x:i32, y:i32, id:i32} --
+//        wormhole entry/exit markers (2026-07-20 rework)
 //
 // Frame-input region (written every frame BEFORE render()):
 //   0  interpolate i32, 4 boostTrail i32, 8 slideDust i32, 12 foodHidden i32
@@ -77,6 +79,7 @@ const MAX_TRAILS: i32 = 8192;
 const MAX_PICKUPS: i32 = 32;
 const MAX_SHELLS: i32 = 16;
 const MAX_WALLS: i32 = 32;
+const MAX_PORTALS: i32 = 16;
 const MAX_FLASHES: i32 = 8;
 const MAX_GLIDES: i32 = 8;
 const MAX_EXPLOSIONS: i32 = 16;
@@ -90,6 +93,7 @@ const INSTANCE_CAP: i32 = 40960;
 // snapshot-internal offsets. Player stride 64: fields 0..52 as before, plus
 // +56 wormholeCharge i32 (and 4 bytes of pad to stay 8-aligned).
 const SNAP_NWALLS: i32 = 32;
+const SNAP_NPORTALS: i32 = 36; // wormhole portals count (was pad)
 const SNAP_PLAYERS: i32 = 40; // was 32; +8 for nWalls + pad (v3.8.0)
 const PLAYER_STRIDE: i32 = 64;
 const SNAP_BODY: i32 = SNAP_PLAYERS + MAX_PLAYERS * PLAYER_STRIDE;
@@ -97,7 +101,8 @@ const SNAP_TRAILS: i32 = SNAP_BODY + MAX_SEGS * 4;
 const SNAP_PICKUPS: i32 = SNAP_TRAILS + MAX_TRAILS * 8;
 const SNAP_SHELLS: i32 = SNAP_PICKUPS + MAX_PICKUPS * 16;
 const SNAP_WALLS: i32 = SNAP_SHELLS + MAX_SHELLS * 8;
-const SNAP_SIZE: i32 = SNAP_WALLS + MAX_WALLS * 16;
+const SNAP_PORTALS: i32 = SNAP_WALLS + MAX_WALLS * 16;
+const SNAP_SIZE: i32 = SNAP_PORTALS + MAX_PORTALS * 12;
 
 // frame-input offsets
 const FR_FLAGS: i32 = 0;
@@ -608,6 +613,26 @@ export function render(now: f64, which: i32): i32 {
       }
       break;
     }
+  }
+  // Wormhole portals (2026-07-20 rework): purple pulsing ring + soft core
+  // at each entry/exit cell, emitted after the player loop (portals sit ON
+  // TOP of threading bodies) and before dust -- must match render2d.js
+  // drawPortals exactly (same pulse/geometry formulas, id-seeded phase,
+  // core ellipse first then KIND_RING) for parity. Color = the wormhole
+  // pickup purple, pickupColor(0).
+  const nPortals = min(load<i32>(curr, SNAP_NPORTALS), MAX_PORTALS);
+  const poBase = curr + SNAP_PORTALS;
+  for (let i = 0; i < nPortals; i++) {
+    const o = poBase + <usize>(i * 12);
+    const pox = load<i32>(o), poy = load<i32>(o, 4), poid = load<i32>(o, 8);
+    const cx = <f32>pox * cs + cell / 2;
+    const cy = <f32>poy * cs + cell / 2;
+    const pulse = <f32>(0.5 + 0.5 * Math.sin(now / 180.0 + <f64>poid));
+    const outer = cs * (<f32>0.55 + <f32>0.1 * pulse);
+    const inner = outer - max<f32>(2, cs * <f32>0.12);
+    const portalColor = pickupColor(0);
+    inst(cx - cs * <f32>0.3, cy - cs * <f32>0.3, cs * <f32>0.6, cs * <f32>0.6, portalColor, <f32>0.25 + <f32>0.25 * pulse, KIND_ELLIPSE, 0, 0);
+    inst(cx - outer, cy - outer, outer * 2, outer * 2, portalColor, <f32>0.9, KIND_RING, 0, inner / outer);
   }
   // Drift dust (v3.4.0): one fading square per cell a segment slid through,
   // emitted AFTER the player loop -- must match render2d.js drawDust exactly

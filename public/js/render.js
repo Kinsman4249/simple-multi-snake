@@ -24,7 +24,7 @@
 //
 // Display scaling (fitCanvas) is CSS-only and identical for both paths.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-19.1 (wasm facade)";
+(window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-20.1 (wasm facade)";
 const Render = (() => {
   const canvas = document.getElementById("game");
   const POWERUP_STYLE = Render2D.POWERUP_STYLE;
@@ -34,7 +34,7 @@ const Render = (() => {
   const PLAYER_STRIDE_I32 = 16;   // 64 bytes (activeIdx i32 + activePct f32, then wormholeCharge i32 + pad)
   const PLAYER_STRIDE_B = PLAYER_STRIDE_I32 * 4;
   const SNAP_PLAYERS_I32 = 10;    // header is 40 bytes (v3.8.0: +nWalls +pad)
-  const MAX_PLAYERS = 8, MAX_SEGS = 16384, MAX_TRAILS = 8192, MAX_PICKUPS = 32, MAX_SHELLS = 16, MAX_WALLS = 32;
+  const MAX_PLAYERS = 8, MAX_SEGS = 16384, MAX_TRAILS = 8192, MAX_PICKUPS = 32, MAX_SHELLS = 16, MAX_WALLS = 32, MAX_PORTALS = 16;
   const MAX_FLASHES = 8, MAX_GLIDES = 8, MAX_EXPLOSIONS = 16, MAX_PFLASHES = 8, MAX_DUST = 256, MAX_LOCALS = 4, MAX_LOCAL_SEGS = 16384, MAX_FOODS = 32;
   // Foods live in the frame-input region (re-encoded per frame so per-frame
   // predicted-eat hiding is trivial), appended after the local body pool.
@@ -50,6 +50,9 @@ const Render = (() => {
   const SNAP_PICKUPS = SNAP_TRAILS + MAX_TRAILS * 8;
   const SNAP_SHELLS = SNAP_PICKUPS + MAX_PICKUPS * 16;
   const SNAP_WALLS = SNAP_SHELLS + MAX_SHELLS * 8;
+  // Wormhole portals (2026-07-20): appended after walls; the count rides in
+  // the header's old pad slot (i32[base+9]) so nothing else shifts.
+  const SNAP_PORTALS = SNAP_WALLS + MAX_WALLS * 16;
   const WALL_STATE_INDEX = { warn: 0, solid: 1, fading: 2 };
 
   let wasm = null;          // instantiated exports, or null
@@ -219,6 +222,17 @@ const Render = (() => {
       i32[wallBase32 + (i << 2) + 1] = wobj.y;
       i32[wallBase32 + (i << 2) + 2] = WALL_STATE_INDEX[wobj.state] != null ? WALL_STATE_INDEX[wobj.state] : 1;
       i32[wallBase32 + (i << 2) + 3] = wobj.id | 0;
+    }
+    // Wormhole portals (2026-07-20): {x, y, id} stride 12; id seeds the
+    // pulse phase in the wasm, mirroring render2d.js drawPortals.
+    const portals = snap.portalFx || [];
+    const nPo = Math.min(portals.length, MAX_PORTALS);
+    i32[base + 9] = nPo;
+    const poBase32 = (wasm.snapPtr(w) + SNAP_PORTALS) >>> 2;
+    for (let i = 0; i < nPo; i++) {
+      i32[poBase32 + i * 3] = portals[i].x;
+      i32[poBase32 + i * 3 + 1] = portals[i].y;
+      i32[poBase32 + i * 3 + 2] = portals[i].id | 0;
     }
   }
 

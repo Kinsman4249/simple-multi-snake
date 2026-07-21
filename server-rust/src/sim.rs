@@ -12,7 +12,7 @@ use crate::powerups::{
     attempt_wormhole, food_growth_multiplier, kill_bonus_growth_bonus, segments_lost,
     speed_multiplier, PowerupType, POWERUP_TYPES,
 };
-use crate::state::{hits_body, BlueShell, Cell, Game, Pickup, Trail, Wall};
+use crate::state::{hits_body, BlueShell, Cell, Game, Pickup, PortalFx, Trail, Wall};
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
 
@@ -212,6 +212,37 @@ fn maybe_spawn_wall(game: &mut Game, now: i64) -> bool {
     true
 }
 
+// Wormhole portal lifecycle: a portal pair stays open while its owner's
+// tail is still threading through (teleport_drain > 0). The moment the
+// drain finishes -- or the owner died / left the slot -- a short linger
+// window is stamped so the closing is visible, then the portal is
+// dropped. Returns true if any portal was removed (forces a broadcast so
+// clients see them disappear even on an otherwise quiet tick).
+const PORTAL_LINGER_MS: i64 = 600;
+fn sweep_portal_fx(game: &mut Game, now: i64) -> bool {
+    if game.portal_fx.is_empty() {
+        return false;
+    }
+    // Stamp expiry on portals whose owner is done draining (immutable
+    // peek at the slot per portal, then mutate the portal).
+    for k in 0..game.portal_fx.len() {
+        if game.portal_fx[k].expires_ms.is_some() {
+            continue;
+        }
+        let owner = game.portal_fx[k].owner_slot;
+        let draining = matches!(
+            game.slots.get(owner).and_then(|s| s.as_ref()),
+            Some(s) if s.alive && s.teleport_drain > 0
+        );
+        if !draining {
+            game.portal_fx[k].expires_ms = Some(now + PORTAL_LINGER_MS);
+        }
+    }
+    let before = game.portal_fx.len();
+    game.portal_fx.retain(|p| p.expires_ms.map_or(true, |e| now < e));
+    game.portal_fx.len() != before
+}
+
 // Drops walls past their despawn time; true if any were removed.
 fn sweep_walls(game: &mut Game, now: i64) -> bool {
     if game.walls.is_empty() {
@@ -254,7 +285,8 @@ pub fn sim_tick(game: &mut Game) {
     game.advance_global_speed(dt);
     game.ensure_foods();
     maybe_spawn_powerup_pickup(game, now);
-    let walls_changed = maybe_spawn_wall(game, now) | sweep_walls(game, now);
+    let walls_changed =
+        maybe_spawn_wall(game, now) | sweep_walls(game, now) | sweep_portal_fx(game, now);
     game.advance_food_rate_timers(dt);
     let interval = game.current_move_interval_ms();
 
@@ -457,19 +489,21 @@ fn try_wormhole_or_die(
 ) {
     let armed = matches!(&game.slots[idx], Some(s) if s.wormhole_charge);
     if armed {
-        let (own_dir, fallback_head) = {
+        let (own_dir, own_head) = {
             let s = game.slots[idx].as_ref().unwrap();
             (s.dir, s.head())
         };
         // A split-step head-on can kill a snake not moving this step: its
         // fatal contact point is its own stationary head cell.
-        let fatal_head = new_heads.get(&idx).copied().unwrap_or(fallback_head);
+        let fatal_head = new_heads.get(&idx).copied().unwrap_or(own_head);
+        // Directional phasing (2026-07-20 rework): one spatial lookahead
+        // walks the movement vector through board edges (wrap), dynamic
+        // walls, own body, and other snakes alike -- see powerups.rs.
         let result = attempt_wormhole(
-            idx,
+            game,
             own_dir,
+            own_head,
             fatal_head,
-            &game.slots,
-            &game.cfg.grid,
             game.cfg.powerups.wormhole.lookahead_depth,
         );
         game.slots[idx].as_mut().unwrap().wormhole_charge = false;
@@ -485,8 +519,26 @@ fn try_wormhole_or_die(
             s.teleported_this_tick = true;
             s.teleport_drain = s.body.len().saturating_sub(1);
             stalled.insert(idx); // normal movement/food skipped this step
+            // Purple portal markers at both ends of the phase. They stay
+            // up until this snake's tail finishes threading through
+            // (sweep_portal_fx watches teleport_drain), so the entry
+            // visibly "swallows" the whole body before closing.
+            for c in [r.entry_portal, r.exit_portal] {
+                let id = game.next_powerup_id;
+                game.next_powerup_id += 1;
+                game.portal_fx.push(PortalFx {
+                    id,
+                    x: c.x,
+                    y: c.y,
+                    owner_slot: idx,
+                    expires_ms: None,
+                });
+            }
             let landing = r.landing;
-            game.dlog(&format!("wormhole fired slot={} landing=({},{})", idx, landing.x, landing.y));
+            game.dlog(&format!(
+                "wormhole fired slot={} entry=({},{}) landing=({},{})",
+                idx, r.entry_portal.x, r.entry_portal.y, landing.x, landing.y
+            ));
             return;
         }
         game.dlog(&format!("wormhole fizzled, no landing slot={}", idx));

@@ -1,9 +1,15 @@
-// Wormhole e2e test: pickup arms the independent charge, then a fatal wall
-// collision auto-fires it (teleport, no death, charge consumed) instead of
-// killing the snake. Also covers SELF-collision rescues (plain and while
-// boosting), staged deterministically with SNAKE_TEST_SPAWNS + testHook
-// (maintainer-confirmed 2026-07-16: the charge must save you from your own
-// body exactly like it saves you from a wall). Run:
+// Wormhole e2e test (2026-07-20 directional-phasing rework): pickup arms
+// the independent charge, then a fatal collision auto-fires it instead of
+// killing the snake. New mechanics under test:
+//   - board edges wrap to the opposite edge on the same axis, vector kept
+//   - dynamic walls / own body / other snakes are phased straight through
+//     (multi-segment runs included) to the first escapable cell beyond,
+//     and cramped pockets right behind an obstacle are bypassed too
+//   - purple portal markers (state.portalFx) appear at entry+exit and stay
+//     until the tail finishes threading through (then a short linger)
+// Also still covers SELF-collision rescues (plain and while boosting) and
+// the per-segment threading drain, staged deterministically with
+// SNAKE_TEST_SPAWNS + testHook. Run:
 // deno run --allow-net --allow-read --allow-write --allow-run --allow-env
 // tests/pw_wormhole.js
 import { connectClient, myPlayer, assert, sleep, startServer, stopServer, collectNextPickup, runTest, testHook } from "./helpers.js";
@@ -94,6 +100,174 @@ async function transitionSurvivalScenario() {
   }
 }
 
+// Shared config for the staged geometry scenarios below: fixed cadence, no
+// random walls/pickups/food interfering with exact-cell assertions.
+function stagedCfg(extra) {
+  return Object.assign({
+    maxPlayers: 4,
+    grid: { cols: 40, rows: 20, cellSize: 20 },
+    move: { startIntervalMs: 100, minIntervalMs: 100, rampIntervalSec: 3600, rampStepMs: 0 },
+    boost: { enabled: true, rampMs: 0, holdGraceMs: 0 },
+    minSnakeLength: 3,
+    enableDebug: false,
+    maxConcurrentFood: 0,
+    walls: { enabled: false }, // spawnWall testHook still works when disabled
+    powerups: { spawnIntervalMs: 3600000, maxConcurrentPickups: 8 }
+  }, extra || {});
+}
+
+// Scenario B (board edge): hitting the left edge must exit at the RIGHT
+// edge on the same row, vector preserved, with portal markers at both
+// boundary cells.
+async function edgeWrapScenario() {
+  const server = await startServer(stagedCfg(), {
+    SNAKE_TEST_HOOKS: "1",
+    SNAKE_TEST_SPAWNS: JSON.stringify([{ x: 5, y: 10, dir: "left", len: 4 }])
+  });
+  try {
+    const c1 = await connectClient();
+    await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
+    testHook(c1, "grantPowerup", { slot: 0, ptype: "wormhole" });
+    await c1.waitFor(s => myPlayer(s, 0).wormholeCharge === true, 3000);
+    // No steering: the snake drives itself into the left edge.
+    const fired = await c1.waitFor(s => {
+      const p = myPlayer(s, 0);
+      return p && (p.teleport === true || p.alive === false);
+    }, 8000);
+    const p = myPlayer(fired, 0);
+    assert(p.alive === true, "edge hit must teleport, not kill");
+    assert(p.body[0].x === 39 && p.body[0].y === 10,
+      "edge wrap must land on the opposite edge, same row (got " + p.body[0].x + "," + p.body[0].y + ")");
+    assert(p.dir.x === -1 && p.dir.y === 0, "movement vector must be preserved through the edge wrap");
+    const cells = (fired.portalFx || []).map(q => q.x + "," + q.y);
+    assert(cells.includes("0,10"), "entry portal must sit on the edge cell (0,10); got " + cells.join(" "));
+    assert(cells.includes("39,10"), "exit portal must sit on the landing cell (39,10); got " + cells.join(" "));
+    console.log("PASS: board-edge wormhole wraps to the opposite edge with portals at both ends.");
+    c1.close();
+  } finally {
+    await stopServer(server);
+  }
+}
+
+// Dynamic walls + the pocket-bypass rule: a two-cell wall block directly
+// ahead, then a spike-walled pocket right behind it. The phase must skip
+// the whole block AND the enclosed pocket cell (28,10) -- "not realistic
+// to get out" -- and exit at the first open cell (30,10).
+async function dynamicWallScenario() {
+  const server = await startServer(stagedCfg(), {
+    SNAKE_TEST_HOOKS: "1",
+    SNAKE_TEST_SPAWNS: JSON.stringify([{ x: 20, y: 10, dir: "right", len: 4 }])
+  });
+  try {
+    const c1 = await connectClient();
+    await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
+    // Wall block ahead of the snake...
+    testHook(c1, "spawnWall", { x: 26, y: 10 });
+    testHook(c1, "spawnWall", { x: 27, y: 10 });
+    // ...then a pocket behind it: (28,10) is free but boxed in ahead/above/
+    // below, so it must be bypassed.
+    testHook(c1, "spawnWall", { x: 28, y: 9 });
+    testHook(c1, "spawnWall", { x: 28, y: 11 });
+    testHook(c1, "spawnWall", { x: 29, y: 10 });
+    testHook(c1, "grantPowerup", { slot: 0, ptype: "wormhole" });
+    await c1.waitFor(s => myPlayer(s, 0).wormholeCharge === true, 3000);
+    const fired = await c1.waitFor(s => {
+      const p = myPlayer(s, 0);
+      return p && (p.teleport === true || p.alive === false);
+    }, 8000);
+    const p = myPlayer(fired, 0);
+    assert(p.alive === true, "solid wall hit must teleport, not kill");
+    assert(p.body[0].x === 30 && p.body[0].y === 10,
+      "phase must skip the wall block AND the enclosed pocket, landing at (30,10); got (" +
+      p.body[0].x + "," + p.body[0].y + ")");
+    assert(p.dir.x === 1 && p.dir.y === 0, "movement vector must be preserved through the wall");
+    const cells = (fired.portalFx || []).map(q => q.x + "," + q.y);
+    assert(cells.includes("26,10"), "entry portal must sit on the first wall cell (26,10); got " + cells.join(" "));
+    assert(cells.includes("30,10"), "exit portal must sit on the landing cell (30,10); got " + cells.join(" "));
+    console.log("PASS: dynamic-wall phase pierces the block, bypasses the pocket, portals at entry/exit.");
+    c1.close();
+  } finally {
+    await stopServer(server);
+  }
+}
+
+// Portal lifecycle: the pair stays in the broadcast while the tail is
+// still threading through the entry, then clears (drain + linger).
+async function portalLifecycleScenario() {
+  const LEN = 8;
+  const server = await startServer(stagedCfg({ grid: { cols: 40, rows: 20, cellSize: 20 } }), {
+    SNAKE_TEST_HOOKS: "1",
+    SNAKE_TEST_SPAWNS: JSON.stringify([{ x: 6, y: 10, dir: "left", len: LEN }])
+  });
+  try {
+    const c1 = await connectClient();
+    await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
+    testHook(c1, "grantPowerup", { slot: 0, ptype: "wormhole" });
+    await c1.waitFor(s => myPlayer(s, 0).wormholeCharge === true, 3000);
+    const fired = await c1.waitFor(s => myPlayer(s, 0) && myPlayer(s, 0).teleport === true, 8000);
+    assert((fired.portalFx || []).length === 2, "exactly one entry+exit portal pair after fire");
+    // Mid-drain (a couple of steps in) the portals must still be there.
+    const mid = await c1.waitFor(s => s.seq >= fired.seq + 2, 5000);
+    assert((mid.portalFx || []).length === 2, "portals must persist while the tail is threading through");
+    // After the full drain (LEN-1 steps) plus the 600ms linger, gone.
+    await c1.waitFor(s => s.seq >= fired.seq + LEN + 2, 8000);
+    await sleep(900);
+    assert((c1.state.portalFx || []).length === 0, "portals must close after the drain + linger");
+    console.log("PASS: portals persist through the threading drain, then close.");
+    c1.close();
+  } finally {
+    await stopServer(server);
+  }
+}
+
+// Scenario D (another player's body): driving into an opponent's snake
+// with a charge must phase through to the safe cell on the far side,
+// vector preserved, with portals at the entry and exit. Staged as a
+// perpendicular crossing of a LONG horizontal opponent so the contact
+// cell stays occupied under either tick alignment: slot 0 climbs up
+// column 34, slot 1's 20-segment body sweeps right along row 14 and
+// covers x=34 for many ticks around the collision window.
+async function opponentPierceScenario() {
+  const server = await startServer(stagedCfg({ grid: { cols: 60, rows: 30, cellSize: 20 } }), {
+    SNAKE_TEST_HOOKS: "1",
+    SNAKE_TEST_SPAWNS: JSON.stringify([
+      { x: 34, y: 20, dir: "up", len: 3 },
+      // Opponent: head (46,14) moving right, body trailing back through
+      // (27..46,14). By the time slot 0 reaches row 14 (6 steps), the body
+      // still covers x=34 with a wide margin either side.
+      { x: 46, y: 14, dir: "right", len: 20 }
+    ])
+  });
+  try {
+    const c1 = await connectClient();
+    await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
+    const c2 = await connectClient();
+    await c2.waitFor(s => myPlayer(s, 0) != null, 5000);
+    testHook(c1, "grantPowerup", { slot: 0, ptype: "wormhole" });
+    await c1.waitFor(s => myPlayer(s, 0).wormholeCharge === true, 3000);
+    const fired = await c1.waitFor(s => {
+      const p = myPlayer(s, 0);
+      return p && (p.teleport === true || p.alive === false);
+    }, 8000);
+    const p = myPlayer(fired, 0);
+    assert(p.alive === true, "opponent body hit must teleport, not kill");
+    assert(p.dir.x === 0 && p.dir.y === -1, "movement vector must be preserved through the opponent");
+    assert(p.body[0].x === 34 && p.body[0].y === 13,
+      "must exit at the first safe cell past the opponent, (34,13); got (" + p.body[0].x + "," + p.body[0].y + ")");
+    const opp = myPlayer(c2.state, 0) || fired.players[1];
+    assert(!opp.body.some(seg => seg.x === p.body[0].x && seg.y === p.body[0].y),
+      "landing must not overlap the opponent's body");
+    const cells = (fired.portalFx || []).map(q => q.x + "," + q.y);
+    assert(cells.includes("34,14"), "entry portal must sit on the contact cell (34,14); got " + cells.join(" "));
+    assert(cells.includes("34,13"), "exit portal must sit on the landing cell (34,13); got " + cells.join(" "));
+    console.log("PASS: opponent-body phase exits clean on the far side, vector preserved.");
+    c1.close();
+    c2.close();
+  } finally {
+    await stopServer(server);
+  }
+}
+
 async function main() {
   const server = await startServer({
     grid: { cols: 12, rows: 12, cellSize: 20 },
@@ -152,6 +326,10 @@ async function main() {
   await selfCollisionScenario(false);
   await selfCollisionScenario(true);
   await transitionSurvivalScenario();
+  await edgeWrapScenario();
+  await dynamicWallScenario();
+  await portalLifecycleScenario();
+  await opponentPierceScenario();
 }
 
 runTest(main);

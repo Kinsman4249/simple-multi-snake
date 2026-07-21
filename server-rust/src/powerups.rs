@@ -7,7 +7,7 @@
 // trailColor). New types are always APPENDED.
 // ============================================================
 use crate::config::{Grid, PowerupsCfg};
-use crate::state::{Cell, Snake};
+use crate::state::{Cell, Game, Snake};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PowerupType {
@@ -84,8 +84,9 @@ impl PowerupType {
         match self {
             PowerupType::Wormhole => {
                 "You do not use a button for this one. It waits, held in reserve. The moment \
-                 a move would kill you, it fires on its own -- teleporting you to the nearest safe spot, \
-                 or clear across the board, whichever is safer. One-time use, then it is gone."
+                 a move would kill you, it fires on its own -- you phase straight through whatever \
+                 you hit and come out the other side, still moving the same way. Board edges wrap \
+                 you to the opposite side. One-time use, then it is gone."
             }
             PowerupType::GrowthSpurt => {
                 "For a short time, food makes you grow twice as much, and killing another \
@@ -178,90 +179,187 @@ pub fn segments_lost(body_length: usize, percent: f64, floor: usize) -> usize {
 }
 
 // ---------------------------------------------------------------
-// Wormhole landing algorithm (port of powerups/wormhole.js). Pure: reads
-// the board, returns the chosen landing or None.
+// Wormhole landing algorithm (reworked 2026-07-20 to the maintainer's
+// diagram spec; replaces the old "nearest safe spot in any direction"
+// port of powerups/wormhole.js).
+//
+// The new model is DIRECTIONAL PHASING: the snake keeps its movement
+// vector and phases straight through whatever it hit, coming out at the
+// first realistically-escapable free cell on the far side. One walk
+// handles every obstacle kind the same way:
+//
+//   - Board edge (scenario B): the walk wraps to the opposite edge on the
+//     same axis (torus-style), so hitting the left wall exits at the right
+//     wall on the same row, vector preserved.
+//   - Dynamic solid walls (grid-decay obstacles), own body (scenarios
+//     A / C), and other players' bodies (scenario D): each occupied cell
+//     along the vector is simply skipped ("phased through"), including
+//     runs of several consecutive segments, until a free cell appears.
+//   - Stacked obstacles ("an obstacle on the other side of the wall"):
+//     because the walk just keeps stepping, a wall right behind a board
+//     edge, or a second snake right behind the first, is phased through
+//     by the same loop with no special casing.
+//
+// "Realistically escapable" (the maintainer's gap rule): a free cell
+// wedged between two obstacle runs is a death trap, so a candidate cell
+// only counts as the landing if the player has somewhere to go from it --
+// at least `lookahead_depth` consecutive free cells in the travel
+// direction or one of the two perpendiculars (never the reverse: the
+// tail is still threading through the entry portal behind the head).
+// If no cell on the whole wrapped line passes that bar, the best-scoring
+// free cell seen is used; if the line is fully occupied, a whole-board
+// search picks the escapable free cell nearest the entry.
+//
+// Pure: reads the board (snakes + walls + grid), returns the chosen
+// landing plus the two portal-effect cells, or None (board truly full).
 // ---------------------------------------------------------------
 pub struct WormholeResult {
     pub dir: Cell,
     pub landing: Cell,
+    // Portal visual anchors: where the snake went in and where it comes
+    // out (the exit portal is always the landing cell).
+    pub entry_portal: Cell,
+    pub exit_portal: Cell,
 }
 
-const CARDINAL_DIRS: [Cell; 4] = [
-    Cell { x: 1, y: 0 },
-    Cell { x: -1, y: 0 },
-    Cell { x: 0, y: 1 },
-    Cell { x: 0, y: -1 },
-];
-
-fn is_cell_safe(x: i32, y: i32, grid: &Grid, slots: &[Option<Snake>], ignore: usize) -> bool {
-    if x < 0 || x >= grid.cols || y < 0 || y >= grid.rows {
-        return false;
-    }
-    for (k, other) in slots.iter().enumerate() {
-        let Some(other) = other else { continue };
-        if k == ignore {
-            continue;
-        }
-        if other.body.iter().any(|seg| seg.x == x && seg.y == y) {
-            return false;
-        }
-    }
-    true
+// Wrap a possibly out-of-bounds coordinate onto the board torus-style
+// (exiting the left edge re-enters on the right, etc). rem_euclid keeps
+// negatives correct: -1 wraps to cols-1, not to -1.
+fn wrap_cell(c: Cell, grid: &Grid) -> Cell {
+    Cell { x: c.x.rem_euclid(grid.cols), y: c.y.rem_euclid(grid.rows) }
 }
 
-// From the fatal head cell, scan a shallow lookahead in every cardinal
-// direction (reversing included -- an emergency rescue may need it), score
-// each by consecutive safe cells, and also consider teleporting to the
-// board cell reflected through the center. Highest score wins; landing is
-// the FIRST safe cell along the winning path.
+// A cell the wormhole must phase THROUGH (or must not land on): any
+// snake segment (own body included -- that is exactly scenarios A/C) or
+// any dynamic wall. Walls count in EVERY display state, not just solid:
+// a telegraphing wall is about to become spikes, so landing on it would
+// trade one death for another a moment later.
+fn cell_occupied(game: &Game, c: Cell) -> bool {
+    if game.walls.iter().any(|w| w.x == c.x && w.y == c.y) {
+        return true;
+    }
+    for slot in game.slots.iter() {
+        let Some(s) = slot else { continue };
+        if s.body.iter().any(|seg| seg.x == c.x && seg.y == c.y) {
+            return true;
+        }
+    }
+    false
+}
+
+// Escape score for a candidate landing: the longest run of consecutive
+// free, IN-BOUNDS cells (no wrap here -- the charge is spent, the edges
+// are deadly again) along the travel direction or either perpendicular,
+// capped at `depth`. depth itself means "comfortably escapable".
+fn escape_score(game: &Game, from: Cell, dir: Cell, depth: i32) -> i32 {
+    // dir, then the two perpendiculars (never the reverse -- the snake's
+    // own tail is threading in through the entry portal behind it).
+    let tries = [dir, Cell { x: -dir.y, y: -dir.x }, Cell { x: dir.y, y: dir.x }];
+    let mut best = 0;
+    for d in tries {
+        let mut run = 0;
+        let mut c = from;
+        for _ in 0..depth {
+            c = Cell { x: c.x + d.x, y: c.y + d.y };
+            if c.x < 0 || c.x >= game.cfg.grid.cols || c.y < 0 || c.y >= game.cfg.grid.rows {
+                break;
+            }
+            if cell_occupied(game, c) {
+                break;
+            }
+            run += 1;
+        }
+        if run > best {
+            best = run;
+        }
+    }
+    best
+}
+
+// The unified spatial lookahead: walk the movement vector from the fatal
+// contact cell, wrapping at board edges and skipping every occupied cell,
+// until a free cell that passes the escape bar appears. `own_head` is the
+// snake's current (still in-bounds) head cell, used to anchor the entry
+// portal when the contact point itself is off the board (edge hits).
 pub fn attempt_wormhole(
-    slot_index: usize,
+    game: &Game,
     own_dir: Cell,
+    own_head: Cell,
     fatal_head: Cell,
-    slots: &[Option<Snake>],
-    grid: &Grid,
     lookahead_depth: i32,
 ) -> Option<WormholeResult> {
-    let mut best: Option<(Cell, Cell, i32)> = None; // (dir, landing, score)
-    for dir in CARDINAL_DIRS {
-        let mut x = fatal_head.x;
-        let mut y = fatal_head.y;
-        let mut score = 0;
-        let mut landing: Option<Cell> = None;
-        for _ in 0..lookahead_depth {
-            x += dir.x;
-            y += dir.y;
-            if !is_cell_safe(x, y, grid, slots, slot_index) {
-                break;
-            }
-            score += 1;
-            if landing.is_none() {
-                landing = Some(Cell { x, y });
-            }
+    let grid = &game.cfg.grid;
+    // Entry portal: the cell the snake visibly dives into. For wall /
+    // body hits that is the contact cell itself; for a board-edge hit the
+    // contact cell is off the board, so the portal sits on the head's
+    // last in-bounds cell right at the edge (matches the diagram, where
+    // the edge portals hug the boundary).
+    let in_bounds = fatal_head.x >= 0
+        && fatal_head.x < grid.cols
+        && fatal_head.y >= 0
+        && fatal_head.y < grid.rows;
+    let entry_portal = if in_bounds { fatal_head } else { own_head };
+
+    // Walk the full wrapped line once (cols*rows steps upper-bounds a
+    // line that wraps both axes before revisiting its start).
+    let max_steps = (grid.cols * grid.rows).max(1);
+    let mut pos = fatal_head;
+    let mut best_fallback: Option<(Cell, i32)> = None;
+    for _ in 0..max_steps {
+        pos = wrap_cell(pos, grid);
+        if cell_occupied(game, pos) {
+            // Inside an obstacle run (wall block, own coil, another
+            // snake's chain) -- keep phasing through it.
+            pos = Cell { x: pos.x + own_dir.x, y: pos.y + own_dir.y };
+            continue;
         }
-        if let Some(l) = landing {
-            if best.map_or(true, |b| score > b.2) {
-                best = Some((dir, l, score));
-            }
+        let score = escape_score(game, pos, own_dir, lookahead_depth);
+        if score >= lookahead_depth {
+            // First comfortably-escapable free cell past the obstacle(s):
+            // this is the landing, vector unchanged.
+            return Some(WormholeResult {
+                dir: own_dir,
+                landing: pos,
+                entry_portal,
+                exit_portal: pos,
+            });
         }
+        // A cramped gap (e.g. one free cell before another run of
+        // segments): remember the roomiest one seen, but keep walking --
+        // the maintainer's rule is to pass gaps the player can't
+        // realistically get out of.
+        if best_fallback.map_or(true, |(_, s)| score > s) {
+            best_fallback = Some((pos, score));
+        }
+        pos = Cell { x: pos.x + own_dir.x, y: pos.y + own_dir.y };
     }
-    let opp_x = grid.cols - 1 - fatal_head.x;
-    let opp_y = grid.rows - 1 - fatal_head.y;
-    if is_cell_safe(opp_x, opp_y, grid, slots, slot_index) {
-        let mut score = 0;
-        let mut x = opp_x;
-        let mut y = opp_y;
-        for _ in 0..lookahead_depth {
-            if !is_cell_safe(x + own_dir.x, y + own_dir.y, grid, slots, slot_index) {
-                break;
+
+    // No cell on the line met the escape bar. Prefer the best cramped gap
+    // on the line; failing even that (line fully occupied), scan the
+    // whole board for the escapable free cell nearest the entry -- "the
+    // player should come out into a safe location".
+    let landing = best_fallback.map(|(c, _)| c).or_else(|| {
+        let mut best: Option<(Cell, i32, i32)> = None; // (cell, score, dist)
+        for y in 0..grid.rows {
+            for x in 0..grid.cols {
+                let c = Cell { x, y };
+                if cell_occupied(game, c) {
+                    continue;
+                }
+                let score = escape_score(game, c, own_dir, lookahead_depth).min(lookahead_depth);
+                let dist = (c.x - entry_portal.x).abs() + (c.y - entry_portal.y).abs();
+                // Higher escape score wins; among equals, nearest to the
+                // entry portal.
+                let better = match best {
+                    None => true,
+                    Some((_, bs, bd)) => score > bs || (score == bs && dist < bd),
+                };
+                if better {
+                    best = Some((c, score, dist));
+                }
             }
-            x += own_dir.x;
-            y += own_dir.y;
-            score += 1;
         }
-        if best.map_or(true, |b| score > b.2) {
-            best = Some((own_dir, Cell { x: opp_x, y: opp_y }, score));
-        }
-    }
-    best.map(|(dir, landing, _)| WormholeResult { dir, landing })
+        best.map(|(c, _, _)| c)
+    });
+    landing.map(|l| WormholeResult { dir: own_dir, landing: l, entry_portal, exit_portal: l })
 }

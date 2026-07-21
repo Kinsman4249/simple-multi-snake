@@ -51,7 +51,7 @@
 // to "2d". The 2D context is acquired lazily on the first draw (NOT at load
 // time): a canvas can only ever hold one context type, so grabbing "2d"
 // eagerly would poison the facade's wasm path before it could decide.
-(window.__BUILDS__ = window.__BUILDS__ || {}).render2d = "render2d 2026-07-19.1";
+(window.__BUILDS__ = window.__BUILDS__ || {}).render2d = "render2d 2026-07-20.1";
 const Render2D = (() => {
   const canvas = document.getElementById("game");
   let ctx = null;
@@ -244,6 +244,42 @@ const Render2D = (() => {
         alpha = 0.5 + 0.5 * pulse;
       }
       drawSpikeTile(w.x, w.y, alpha);
+    }
+  }
+  // Wormhole portals (2026-07-20 rework): a purple pulsing ring with a soft
+  // core at each entry/exit cell of a fired wormhole. The server owns the
+  // lifecycle (portalFx appears in the broadcast while a snake is threading
+  // through, plus a short linger); this just draws whatever is in the
+  // snapshot. Color is the wormhole powerup purple (#a3f) so the effect
+  // reads as "that powerup did this". Pulse is keyed off the portal id,
+  // exactly like pickups/walls, and the ring geometry mirrors the wasm
+  // core's KIND_RING math (mid-radius stroke of width outer-inner) so the
+  // two renderers stay pixel-parity.
+  function drawPortals(portalList, now) {
+    if (!portalList) return;
+    const cs = grid.cellSize, cell = cs - cellGap;
+    for (const p of portalList) {
+      const cx = p.x * cs + cell / 2, cy = p.y * cs + cell / 2;
+      const pulse = 0.5 + 0.5 * Math.sin(now / 180 + p.id);
+      const outer = cs * (0.55 + 0.1 * pulse);       // breathing outer radius
+      const inner = outer - Math.max(2, cs * 0.12);  // ring thickness
+      ctx.save();
+      // Soft core glow first (under the ring), alpha breathing with the
+      // same pulse.
+      ctx.globalAlpha = 0.25 + 0.25 * pulse;
+      ctx.fillStyle = POWERUP_STYLE.wormhole;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, cs * 0.3, cs * 0.3, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // The ring: stroked at the mid-radius with lineWidth = outer-inner,
+      // the same composition the wasm executor uses for KIND_RING.
+      ctx.globalAlpha = 0.9;
+      ctx.strokeStyle = POWERUP_STYLE.wormhole;
+      ctx.lineWidth = outer - inner;
+      ctx.beginPath();
+      ctx.arc(cx, cy, (outer + inner) / 2, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
     }
   }
   // A single pixel-art banana on tile (cx,cy). Pixel edges are round(i*cell/5)
@@ -530,6 +566,11 @@ const Render2D = (() => {
       const pflash = powerFlashes.find(f => f.slot === i);
       if (pflash) drawPowerFlash(body, POWERUP_STYLE[pflash.type] || "#fff", pflash.age);
     });
+    // Wormhole portals draw ON TOP of bodies: a snake threading through the
+    // entry portal should visibly pass "into" the ring, not cover it. The
+    // wasm path emits portal instances at the same point (after the player
+    // loop, before dust) -- draw order must match for parity.
+    drawPortals(currSnap.portalFx, now);
     // Drift dust last (on top of bodies): the vacated cells sit under/behind
     // the sliding snake, and the wasm path emits its dust instances after
     // the player loop too -- draw order must match for parity.

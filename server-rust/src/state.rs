@@ -240,6 +240,20 @@ pub struct Wall {
     pub solid_until: i64,
 }
 
+// Wormhole portal visual (2026-07-20 rework): a purple portal marker at
+// the entry and exit cells of a fired wormhole. Gameplay-inert -- pure
+// render metadata. Portals stay up while their owner's tail is still
+// threading through (teleport_drain > 0); once the drain finishes (or the
+// owner dies/despawns) expires_ms is stamped and the portal lingers
+// briefly so the closing reads on screen, then sweep_portal_fx drops it.
+pub struct PortalFx {
+    pub id: i64, // seeds the client-side pulse phase, like wall/pickup ids
+    pub x: i32,
+    pub y: i32,
+    pub owner_slot: usize,
+    pub expires_ms: Option<i64>, // None while the owner is still draining
+}
+
 pub struct KillEvent {
     pub victim: String,
     pub victim_color: Option<usize>,
@@ -267,6 +281,7 @@ pub struct Game {
     pub blue_shells: Vec<BlueShell>,
     pub explosions: Vec<Explosion>,
     pub walls: Vec<Wall>,
+    pub portal_fx: Vec<PortalFx>,
     pub next_powerup_id: i64,
     pub last_powerup_spawn_at: Option<i64>,
     pub last_wall_spawn_at: Option<i64>,
@@ -329,6 +344,7 @@ impl Game {
             blue_shells: Vec::new(),
             explosions: Vec::new(),
             walls: Vec::new(),
+            portal_fx: Vec::new(),
             next_powerup_id: 1,
             last_powerup_spawn_at: None,
             last_wall_spawn_at: None,

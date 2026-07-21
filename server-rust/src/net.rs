@@ -94,6 +94,18 @@ struct WallView {
     state: &'static str,
 }
 
+// Wormhole portal marker (2026-07-20 rework): pure render metadata. The
+// id seeds the client's pulse phase (like wall/pickup ids); ownerSlot
+// lets a client associate the portal with a snake if it ever needs to.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PortalView {
+    id: i64,
+    x: i32,
+    y: i32,
+    owner_slot: usize,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct KillView<'a> {
@@ -173,6 +185,7 @@ struct StateMsg<'a> {
     blue_shells: Vec<ShellView>,
     explosions: &'a [Explosion],
     walls: Vec<WallView>,
+    portal_fx: Vec<PortalView>,
     kills: Vec<KillView<'a>>,
     players: Vec<Option<PlayerView<'a>>>,
     high_scores: HighScoresView<'a>,
@@ -239,6 +252,12 @@ pub fn broadcast_state(game: &mut Game) {
             };
             WallView { id: w.id, x: w.x, y: w.y, state }
         })
+        .collect();
+
+    let portal_fx: Vec<PortalView> = game
+        .portal_fx
+        .iter()
+        .map(|p| PortalView { id: p.id, x: p.x, y: p.y, owner_slot: p.owner_slot })
         .collect();
 
     let kills: Vec<KillView> = game
@@ -310,6 +329,7 @@ pub fn broadcast_state(game: &mut Game) {
             .collect(),
         explosions: &game.explosions,
         walls,
+        portal_fx,
         kills,
         players,
         high_scores: HighScoresView { local: board("local"), networked: board("networked") },

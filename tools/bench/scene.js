@@ -90,9 +90,16 @@
       { id: 102, x: 9, y: Math.floor(rows / 2) + 3, state: "solid" },
       { id: 103, x: 12, y: Math.floor(rows / 2) + 3, state: "fading" }
     ];
+    // Wormhole portals (2026-07-20): an entry/exit pair with different ids
+    // (the id seeds the pulse phase) so the parity diff exercises the
+    // portal ring + core in both renderers.
+    const portalFx = [
+      { id: 201, x: 4, y: Math.floor(rows / 2) + 6, ownerSlot: 0 },
+      { id: 202, x: 14, y: Math.floor(rows / 2) + 6, ownerSlot: 0 }
+    ];
     const curr = {
       seq: 1000, tickMs: 100, grid, food: foods[0], foods, powerupPickups, trails, blueShells,
-      walls, players, recvTime: 0
+      walls, portalFx, players, recvTime: 0
     };
     const prev = Object.assign({}, curr, { seq: 999, players: prevPlayers });
     // Slot 0 is the "local predicted" body (skips interpolation, like real
