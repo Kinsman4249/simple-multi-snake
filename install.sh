@@ -547,9 +547,25 @@ apt-get install -y curl git ca-certificates build-essential unzip
 export RUSTUP_HOME="${RUSTUP_DIR}/rustup"
 export CARGO_HOME="${RUSTUP_DIR}/cargo"
 export PATH="${CARGO_HOME}/bin:${DENO_INSTALL_DIR}/bin:${PATH}"
+# NOTE: `command -v cargo` succeeding does NOT prove a working compiler.
+# rustup drops its proxy shims into ${CARGO_HOME}/bin BEFORE it downloads
+# the actual toolchain, so an interrupted first install (network drop,
+# ctrl-C, OOM) leaves cargo/rustc proxies on PATH with no default
+# toolchain configured. Every proxy call then fails with "rustup could
+# not choose a version of rustc to run", and under `set -e` the bare
+# `rustc --version` below aborted the whole install -- a half-deployed
+# box that no re-run could heal. Probe THROUGH the proxy and repair
+# instead of assuming: `rustup default stable` both downloads stable (if
+# missing) and sets it as the default, exactly the state a fresh
+# rustup-init would have produced.
 if command -v cargo >/dev/null 2>&1; then
-  echo "[2/9] Rust toolchain already present ($(rustc --version)); updating..."
-  rustup update stable >/dev/null 2>&1 || true
+  if rustc --version >/dev/null 2>&1; then
+    echo "[2/9] Rust toolchain already present ($(rustc --version)); updating..."
+    rustup update stable >/dev/null 2>&1 || true
+  else
+    echo "[2/9] Rust toolchain half-installed (rustup proxies without a default toolchain); repairing..."
+    rustup default stable
+  fi
 else
   echo "[2/9] Installing the Rust toolchain (rustup, stable, minimal profile)..."
   mkdir -p "${RUSTUP_DIR}"
