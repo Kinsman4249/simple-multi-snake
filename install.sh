@@ -564,7 +564,20 @@ if command -v cargo >/dev/null 2>&1; then
     rustup update stable >/dev/null 2>&1 || true
   else
     echo "[2/9] Rust toolchain half-installed (rustup proxies without a default toolchain); repairing..."
-    rustup default stable
+    # Cheap fix first: set (and download if absent) the default toolchain.
+    # But an interrupted download can also leave a CORRUPT partial
+    # toolchain directory -- `rustup default stable` then reports "using
+    # existing install" and errors with "Missing manifest in toolchain
+    # 'stable-...'" while rustc stays broken. So verify through the proxy
+    # afterward and, if it still fails, remove the corrupt toolchain and
+    # reinstall it from scratch before setting the default again.
+    rustup default stable || true
+    if ! rustc --version >/dev/null 2>&1; then
+      echo "  Toolchain directory is corrupt (missing manifest); reinstalling stable from scratch..."
+      rustup toolchain uninstall stable >/dev/null 2>&1 || true
+      rustup toolchain install stable --profile minimal
+      rustup default stable
+    fi
   fi
 else
   echo "[2/9] Installing the Rust toolchain (rustup, stable, minimal profile)..."
