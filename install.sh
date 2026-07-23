@@ -38,6 +38,14 @@
 #
 # Re-running is safe. It updates the app in place and preserves highscores.json.
 #
+# Build cache: the curl|bash one-liner has no local checkout, so past runs
+# cloned into a fresh mktemp dir every time, throwing away server-rust/target/
+# and forcing cargo to recompile every dependency from scratch on every run.
+# It now clones into a persistent SRC_CACHE_DIR instead and re-fetches on
+# later runs, so cargo's incremental build state survives and only changed
+# crates rebuild. Force a different location with SRC_CACHE_DIR, or skip
+# reuse entirely with SRC_CACHE=no (falls back to a throwaway mktemp clone).
+#
 # Low-memory hosts: below 2GiB RAM (e.g. a 1GB e2-micro), the installer
 # switches to low-resource build settings (single-job cargo build, LTO off)
 # and offers to add a swap file so the Rust compiler does not get OOM-killed.
@@ -76,6 +84,11 @@ RUSTUP_DIR="${RUSTUP_DIR:-/opt/multisnake-toolchain}"
 # Deno is installed only to build the WASM renderer (tools/build-wasm.mjs);
 # Node.js is no longer needed at all.
 DENO_INSTALL_DIR="${DENO_INSTALL_DIR:-/usr/local}"
+# Persistent clone reused across curl|bash runs so cargo's target/ dir (and
+# thus already-compiled dependencies) survives between installs. See the
+# "Build cache" note above.
+SRC_CACHE_DIR="${SRC_CACHE_DIR:-/opt/multisnake-build}"
+SRC_CACHE="${SRC_CACHE:-yes}"                # set to "no" to force a throwaway clone instead
 STATE_DIR="${STATE_DIR:-/etc/multisnake}"    # holds installer state between runs
 STATE_FILE="${STATE_DIR}/last-domain"        # the hostname used on the last run
 PORT_FILE="${STATE_DIR}/last-port"           # the port used on the last run
@@ -290,18 +303,40 @@ fi
 deno --version | head -n1
 
 # ---------------------------------------------------------------------------
-# 3. Get the source. If run from inside a checkout, use it. Otherwise clone
-#    to a temp dir. The curl | bash one-liner always takes the clone path.
+# 3. Get the source. If run from inside a checkout, use it as-is (nothing to
+#    cache: it is already persistent). Otherwise reuse or create the
+#    persistent clone at SRC_CACHE_DIR, so server-rust/target/ (cargo's
+#    compiled dependencies) survives between curl | bash runs instead of
+#    being thrown away with a fresh mktemp dir each time. Set SRC_CACHE=no to
+#    opt back into a one-shot throwaway clone.
 # ---------------------------------------------------------------------------
 CLEANUP_SRC=0
 if [ -d "./server-rust" ] && [ -f "./deploy/multisnake.service" ]; then
   SRC="$(pwd)"
   echo "[3/9] Using local checkout at ${SRC}."
-else
+elif ! truthy "${SRC_CACHE}"; then
   SRC="$(mktemp -d)"
   CLEANUP_SRC=1
   echo "[3/9] Cloning ${REPO_URL} (branch ${REPO_BRANCH})..."
   git clone --depth 1 --branch "${REPO_BRANCH}" "${REPO_URL}" "${SRC}"
+else
+  SRC="${SRC_CACHE_DIR}"
+  if [ -d "${SRC}/.git" ] \
+     && git -C "${SRC}" remote get-url origin 2>/dev/null | grep -qxF "${REPO_URL}"; then
+    echo "[3/9] Reusing build cache at ${SRC}; fetching ${REPO_BRANCH}..."
+    if ! ( git -C "${SRC}" fetch --depth 1 origin "${REPO_BRANCH}" \
+             && git -C "${SRC}" reset --hard FETCH_HEAD \
+             && git -C "${SRC}" clean -fdx -e server-rust/target ); then
+      echo "  WARNING: fetch/reset failed; re-cloning from scratch." >&2
+      rm -rf "${SRC}"
+    fi
+  fi
+  if [ ! -d "${SRC}/.git" ]; then
+    echo "[3/9] No usable build cache at ${SRC}; cloning ${REPO_URL} (branch ${REPO_BRANCH})..."
+    rm -rf "${SRC}"
+    mkdir -p "$(dirname "${SRC}")"
+    git clone --depth 1 --branch "${REPO_BRANCH}" "${REPO_URL}" "${SRC}"
+  fi
 fi
 
 # Build the WASM renderer from the sources just obtained (tools/build-wasm.mjs
