@@ -37,6 +37,23 @@
 # entirely (for example if you use a Cloudflare Origin Certificate instead).
 #
 # Re-running is safe. It updates the app in place and preserves highscores.json.
+#
+# Low-memory hosts: below 2GiB RAM (e.g. a 1GB e2-micro), the installer
+# switches to low-resource build settings (single-job cargo build, LTO off)
+# and offers to add a swap file so the Rust compiler does not get OOM-killed.
+# Force this behavior with LOW_RESOURCE=yes/no; decline the swap file offer
+# non-interactively with CREATE_SWAP=no. If the source build still fails (or
+# you'd rather skip compiling entirely), set USE_PREBUILT=yes to fetch a
+# prebuilt server binary from the latest GitHub Release instead.
+#
+# The installer only marks itself "succeeded" (a flag file under STATE_DIR)
+# once every step below has completed. A re-run that finds no such flag from
+# a previous attempt says so, since it means that attempt did not finish.
+#
+# This script is intentionally just the orchestrator: hostname/simHz/
+# maxPlayers/debug prompts, port + stale-vhost detection, low-RAM handling,
+# and TLS setup all live in install-lib/*.sh (sourced below) to keep this
+# file short. See install-lib/README.md for what's in each file.
 
 set -euo pipefail
 
@@ -63,6 +80,7 @@ EMAIL_FILE="${STATE_DIR}/last-email"         # the Let's Encrypt notice email us
 SIMHZ_FILE="${STATE_DIR}/last-simhz"         # the sim rate (Hz) used on the last run
 MAXPLAYERS_FILE="${STATE_DIR}/last-maxplayers" # the max player count used last run
 DEBUG_FILE="${STATE_DIR}/last-debug"         # the enableDebug choice (yes/no) used last run
+INSTALL_OK_FILE="${STATE_DIR}/install-ok"    # timestamp written only when a run fully succeeds
 PREFERRED_PORT="${PORT:-}"                   # optional explicit port override
 DEFAULT_PORT=8080                            # starting point for the free-port scan
 TEMPLATE_NAME="fillmeout.example.com.conf"   # placeholder vhost shipped in deploy/
@@ -75,6 +93,10 @@ CF_PROPAGATION="${CF_PROPAGATION:-30}"       # seconds to wait for DNS propagati
 DEFAULT_SIMHZ=60                             # default server simulation rate in Hz
 DEFAULT_MAXPLAYERS=8                         # default board capacity (~16 is the e2-micro ceiling)
 DEFAULT_DEBUG=yes                            # ship with the debug panel + on-page version stamp on
+GITHUB_API_REPO="Kinsman4249/simple-multi-snake" # owner/repo for the prebuilt-binary fallback lookup
+LOW_RAM_THRESHOLD_MB=2048                    # below this, switch to low-resource build settings
+SWAP_FILE="/swapfile"                        # created only if offered/accepted and none exists
+SWAP_SIZE_MB=2048
 
 # ---------------------------------------------------------------------------
 # Must run as root: it writes to /opt, /etc/systemd, and /etc/apache2.
@@ -87,12 +109,58 @@ fi
 echo "== simple-multi-snake installer =="
 
 # ---------------------------------------------------------------------------
-# Hostname resolution. Order of precedence:
-#   1. DOMAIN environment variable, if set (non-interactive path).
-#   2. Interactive prompt on the terminal, defaulting to the last used
-#      hostname if this installer has been run before.
-#   3. If there is no terminal, no DOMAIN, and no saved hostname, stop.
-# The chosen hostname is validated and saved for next time near the end.
+# Load helper functions (see install-lib/README.md for what's in each file).
+# If running from a checkout (either invocation form documented at the top),
+# the install-lib/ directory sitting next to this script is used directly.
+# The curl | bash one-liner has no local checkout, so BASH_SOURCE[0] is not a
+# real file in that case -- it fetches the same files from the same branch
+# instead. Either way these are plain function definitions; nothing here
+# touches the system.
+# ---------------------------------------------------------------------------
+INSTALL_LIB_FILES="common prompts network resources tls"
+INSTALL_LIB_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+  SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+  if [ -d "${SELF_DIR}/install-lib" ]; then
+    INSTALL_LIB_DIR="${SELF_DIR}/install-lib"
+  fi
+fi
+if [ -z "$INSTALL_LIB_DIR" ]; then
+  INSTALL_LIB_DIR="$(mktemp -d)"
+  for lib in $INSTALL_LIB_FILES; do
+    curl -fsSL "https://raw.githubusercontent.com/${GITHUB_API_REPO}/${REPO_BRANCH}/install-lib/${lib}.sh" \
+      -o "${INSTALL_LIB_DIR}/${lib}.sh"
+  done
+fi
+for lib in $INSTALL_LIB_FILES; do
+  # shellcheck source=/dev/null
+  source "${INSTALL_LIB_DIR}/${lib}.sh"
+done
+
+# ---------------------------------------------------------------------------
+# Low-resource detection (install-lib/resources.sh). Below LOW_RAM_THRESHOLD_MB
+# the compiler is prone to being OOM-killed on a single-core/1GB box, so the
+# build switches to a single cargo job with LTO off and offers a swap file
+# further down. Override with LOW_RESOURCE=yes/no.
+# ---------------------------------------------------------------------------
+detect_low_resource
+
+# A prior run that never reached the end left no success flag. That is worth
+# surfacing before this run clears it, since a build that keeps failing on a
+# tight box is exactly when USE_PREBUILT=yes is the fastest way forward.
+if [ -r "$STATE_FILE" ] && [ ! -r "$INSTALL_OK_FILE" ]; then
+  echo "NOTICE: a previous install attempt on this host did not finish successfully"
+  echo "(no completed run recorded at ${INSTALL_OK_FILE})."
+  echo "If the Rust build keeps failing, re-run with USE_PREBUILT=yes to skip"
+  echo "compiling and fetch a prebuilt server binary from the latest GitHub Release."
+fi
+mkdir -p "${STATE_DIR}"
+rm -f "${INSTALL_OK_FILE}"
+
+# ---------------------------------------------------------------------------
+# Hostname/simHz/maxPlayers/debug resolution (install-lib/prompts.sh). Each
+# reads its saved value from *_FILE below, offers it as the interactive
+# default, and can be forced non-interactively via its env var.
 # ---------------------------------------------------------------------------
 LAST_DOMAIN=""
 if [ -r "$STATE_FILE" ]; then
@@ -115,417 +183,39 @@ if [ -r "$DEBUG_FILE" ]; then
   LAST_DEBUG="$(cat "$DEBUG_FILE" 2>/dev/null || true)"
 fi
 
-valid_hostname() {
-  # Letters, digits, dots, and hyphens, must contain at least one dot, and
-  # must not start or end with a dot or hyphen.
-  printf "%s" "$1" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$' \
-    && printf "%s" "$1" | grep -q '\.'
-}
-
-resolve_domain() {
-  # 1. Explicit DOMAIN wins.
-  if [ -n "${DOMAIN:-}" ]; then
-    if ! valid_hostname "$DOMAIN"; then
-      echo "ERROR: DOMAIN='${DOMAIN}' is not a valid hostname." >&2
-      exit 1
-    fi
-    CHOSEN_DOMAIN="$DOMAIN"
-    return
-  fi
-
-  # 2. Interactive prompt, if a terminal is attached.
-  if [ -r /dev/tty ]; then
-    local prompt reply
-    if [ -n "$LAST_DOMAIN" ]; then
-      prompt="Hostname to serve the game on [${LAST_DOMAIN}]: "
-    else
-      prompt="Hostname to serve the game on (e.g. snek.example.com): "
-    fi
-    while :; do
-      printf "%s" "$prompt" > /dev/tty
-      read -r reply < /dev/tty || reply=""
-      # Empty input reuses the saved hostname, when there is one.
-      if [ -z "$reply" ] && [ -n "$LAST_DOMAIN" ]; then
-        reply="$LAST_DOMAIN"
-      fi
-      if valid_hostname "$reply"; then
-        CHOSEN_DOMAIN="$reply"
-        return
-      fi
-      printf "Please enter a valid hostname (letters, digits, dots, hyphens).\n" > /dev/tty
-    done
-  fi
-
-  # 3. Nothing to go on.
-  echo "ERROR: no hostname provided and no saved hostname to reuse." >&2
-  echo "Re-run with DOMAIN set, e.g. sudo DOMAIN=snek.example.com bash install.sh" >&2
-  exit 1
-}
 resolve_domain
 VHOST_FILE="${CHOSEN_DOMAIN}.conf"
 LE_SSL_FILE="/etc/apache2/sites-available/${CHOSEN_DOMAIN}-le-ssl.conf"
 CF_CREDS_FILE="/etc/letsencrypt/cloudflare-${CHOSEN_DOMAIN}.ini"
 echo "Using hostname: ${CHOSEN_DOMAIN}"
 
-# ---------------------------------------------------------------------------
-# Simulation rate resolution. Order of precedence:
-#   1. SIM_HZ environment variable, if set (non-interactive path).
-#   2. Interactive prompt, defaulting to the last used value, else 60.
-#   3. If there is no terminal, the last saved value, else 60.
-# The value is validated (positive integer, 1..1000) and saved near the end.
-# Higher = finer input sampling; it does NOT change snake speed.
-# ---------------------------------------------------------------------------
-resolve_simhz() {
-  local def="${SIM_HZ:-${LAST_SIMHZ:-$DEFAULT_SIMHZ}}"
-  if [ -n "${SIM_HZ:-}" ]; then
-    CHOSEN_SIMHZ="$SIM_HZ"
-  elif [ -r /dev/tty ]; then
-    printf "Server simulation rate in Hz [%s]: " "$def" > /dev/tty
-    local reply
-    read -r reply < /dev/tty || reply=""
-    [ -z "$reply" ] && reply="$def"
-    CHOSEN_SIMHZ="$reply"
-  else
-    CHOSEN_SIMHZ="$def"
-  fi
-  case "$CHOSEN_SIMHZ" in
-    ''|*[!0-9]*)
-      echo "ERROR: simHz must be a positive integer." >&2
-      exit 1
-      ;;
-  esac
-  if [ "$CHOSEN_SIMHZ" -lt 1 ] || [ "$CHOSEN_SIMHZ" -gt 1000 ]; then
-    echo "ERROR: simHz out of range (1-1000)." >&2
-    exit 1
-  fi
-}
 resolve_simhz
 echo "Using simHz: ${CHOSEN_SIMHZ}"
 
-# ---------------------------------------------------------------------------
-# Max player count resolution (board capacity). Same precedence as simHz:
-#   1. MAX_PLAYERS environment variable, if set (non-interactive path).
-#   2. Interactive prompt, defaulting to the last used value, else 8.
-#   3. No terminal: last saved value, else 8.
-# Validated (positive integer, 1..64). ~16 is the realistic ceiling on a
-# Google Cloud e2-micro free-tier instance -- above that, network fan-out
-# (each client receives state scaling with every player's segments) and the
-# 0.25 vCPU sustained baseline become the limit, not RAM. Patched into
-# config.json near the end so no application code needs editing.
-# ---------------------------------------------------------------------------
-resolve_maxplayers() {
-  local def="${MAX_PLAYERS:-${LAST_MAXPLAYERS:-$DEFAULT_MAXPLAYERS}}"
-  if [ -n "${MAX_PLAYERS:-}" ]; then
-    CHOSEN_MAXPLAYERS="$MAX_PLAYERS"
-  elif [ -r /dev/tty ]; then
-    printf "Max simultaneous players on the board [%s]: " "$def" > /dev/tty
-    local reply
-    read -r reply < /dev/tty || reply=""
-    [ -z "$reply" ] && reply="$def"
-    CHOSEN_MAXPLAYERS="$reply"
-  else
-    CHOSEN_MAXPLAYERS="$def"
-  fi
-  case "$CHOSEN_MAXPLAYERS" in
-    ''|*[!0-9]*)
-      echo "ERROR: maxPlayers must be a positive integer." >&2
-      exit 1
-      ;;
-  esac
-  if [ "$CHOSEN_MAXPLAYERS" -lt 1 ] || [ "$CHOSEN_MAXPLAYERS" -gt 64 ]; then
-    echo "ERROR: maxPlayers out of range (1-64; ~16 is the e2-micro free-tier ceiling)." >&2
-    exit 1
-  fi
-}
 resolve_maxplayers
 echo "Using maxPlayers: ${CHOSEN_MAXPLAYERS}"
 
-# ---------------------------------------------------------------------------
-# Debug switch resolution (config.json "enableDebug"). Same precedence as the
-# others:
-#   1. ENABLE_DEBUG environment variable (yes/no/true/false/1/0), if set.
-#   2. Interactive prompt, defaulting to the last used value, else yes.
-#   3. No terminal: last saved value, else yes.
-# When on, the client renders the DEBUG panel and an on-page build/version
-# stamp (bottom-right) so an operator can confirm which build a browser has
-# actually loaded -- invaluable for spotting a stale cached deploy. When off,
-# none of that is constructed (zero-resource gate, see server/config.js) and
-# players never see it. Patched into config.json alongside simHz/maxPlayers.
-# ---------------------------------------------------------------------------
-resolve_debug() {
-  local def="${ENABLE_DEBUG:-${LAST_DEBUG:-$DEFAULT_DEBUG}}"
-  local raw
-  if [ -n "${ENABLE_DEBUG:-}" ]; then
-    raw="$ENABLE_DEBUG"
-  elif [ -r /dev/tty ]; then
-    printf "Enable the debug panel + on-page version stamp? (yes/no) [%s]: " "$def" > /dev/tty
-    local reply
-    read -r reply < /dev/tty || reply=""
-    [ -z "$reply" ] && reply="$def"
-    raw="$reply"
-  else
-    raw="$def"
-  fi
-  case "$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')" in
-    y|yes|true|1|on)  CHOSEN_DEBUG=true ;;
-    n|no|false|0|off) CHOSEN_DEBUG=false ;;
-    *)
-      echo "ERROR: enableDebug must be yes/no (got '${raw}')." >&2
-      exit 1
-      ;;
-  esac
-}
 resolve_debug
 echo "Using enableDebug: ${CHOSEN_DEBUG}"
 
 # ---------------------------------------------------------------------------
-# Old-install / alt-port-config check.
-#
-# The "retire the previous hostname's vhost" step further down only knows
-# about ONE previous hostname (whatever is in last-domain), so it misses
-# vhosts that predate the installer being used at all, or that were left
-# behind by hand-editing outside of it. This scans every enabled Apache site
-# for the distinctive "/ws" WebSocket ProxyPass line our own template writes,
-# which is specific enough that an unrelated vhost is very unlikely to match
-# it, and reports any such vhost that is not the one we are about to manage
-# for CHOSEN_DOMAIN. This is where a stale hostname pointed at a now-dead
-# port would show up (an "alt port config"), since nothing is listening
-# there once the app has moved to a different port.
+# Port + stale-vhost detection (install-lib/network.sh).
 # ---------------------------------------------------------------------------
-detect_stale_vhosts() {
-  local sites_dir="/etc/apache2/sites-available"
-  [ -d "$sites_dir" ] || return 0
-
-  local found=0
-  local f host port listening
-  for f in "$sites_dir"/*.conf; do
-    [ -f "$f" ] || continue
-    case "$(basename "$f")" in
-      "$VHOST_FILE"|"${CHOSEN_DOMAIN}-le-ssl.conf") continue ;;
-    esac
-    # Our template's signature line, tolerant of the port having been edited.
-    port="$(grep -oE 'ProxyPass[[:space:]]+/ws[[:space:]]+ws://127\.0\.0\.1:[0-9]+/ws' "$f" \
-      | grep -oE '[0-9]+' | head -n1 || true)"
-    [ -n "$port" ] || continue
-    host="$(grep -oE 'ServerName[[:space:]]+\S+' "$f" | awk '{print $2}' | head -n1 || true)"
-    if [ "$found" -eq 0 ]; then
-      echo
-      echo "NOTICE: found other multisnake-managed Apache site(s):"
-      found=1
-    fi
-    if port_is_free "$port"; then
-      listening="nothing listening on ${port}, this vhost is dead"
-    else
-      listening="something is listening on ${port}"
-    fi
-    echo "  ${f} -> host ${host:-unknown}, port ${port} (${listening})"
-  done
-  [ "$found" -eq 1 ] || return 0
-
-  echo "These are left alone by default since they may be a separate,"
-  echo "intentionally-running instance on another hostname/port."
-  if [ -r /dev/tty ]; then
-    printf "Disable and remove the dead ones listed above? [y/N]: " > /dev/tty
-    local ans
-    read -r ans < /dev/tty || ans=""
-    case "$ans" in
-      [Yy]*)
-        for f in "$sites_dir"/*.conf; do
-          [ -f "$f" ] || continue
-          case "$(basename "$f")" in
-            "$VHOST_FILE"|"${CHOSEN_DOMAIN}-le-ssl.conf") continue ;;
-          esac
-          port="$(grep -oE 'ProxyPass[[:space:]]+/ws[[:space:]]+ws://127\.0\.0\.1:[0-9]+/ws' "$f" \
-            | grep -oE '[0-9]+' | head -n1 || true)"
-          [ -n "$port" ] || continue
-          if port_is_free "$port"; then
-            local base; base="$(basename "$f")"
-            [ -f "/etc/apache2/sites-enabled/${base}" ] && a2dissite "${base}" >/dev/null || true
-            rm -f "$f"
-            echo "  Removed ${f}."
-          fi
-        done
-        systemctl reload apache2 || true
-        ;;
-    esac
-  fi
-}
-
-# ---------------------------------------------------------------------------
-# Port helpers and selection.
-#
-# port_is_free: true when nothing is listening on the given TCP port. It looks
-# at every listening socket regardless of bind address, which is deliberately
-# conservative: if any process holds the port on any interface, we avoid it.
-#
-# detect_prior_failure (recovery catch): if an earlier install left the service
-# crash-looping (classically EADDRINUSE from a port already in use), this makes
-# that visible and, when interactive, asks before applying the fix. It is
-# distinct from the proactive selection below, whose whole job is to prevent
-# the clash in the first place. This path exists because a prior run may have
-# already written a bad port into server.js and the vhosts, then reported
-# success while the service quietly failed, producing a confusing 404.
-#
-# resolve_port (initial catch): stop our own service so it releases any port it
-# holds, then choose a port: the PORT override, else the last saved port, else
-# the default, scanning upward until a free port is found.
-# ---------------------------------------------------------------------------
-port_is_free() {
-  local p="$1"
-  if ss -ltnH 2>/dev/null | awk '{print $4}' | sed 's/.*://' | grep -qx "$p"; then
-    return 1
-  fi
-  return 0
-}
-
-detect_prior_failure() {
-  # Only relevant if a prior install exists on this host.
-  [ -f /etc/systemd/system/multisnake.service ] || return 0
-
-  local failed=0
-  if systemctl is-failed --quiet multisnake 2>/dev/null; then
-    failed=1
-  elif journalctl -u multisnake -n 50 --no-pager 2>/dev/null | grep -qE 'EADDRINUSE|Address already in use'; then
-    failed=1
-  fi
-  [ "$failed" -eq 1 ] || return 0
-
-  # Work out which port the failed install was trying to use.
-  local prior_port=""
-  # The port lives in config.json ("port") since the Rust rewrite; before
-  # that it was a const in server/config.js or server.js. Check all three so
-  # upgrades from any shape are diagnosed.
-  if [ -r "${APP_DIR}/config.json" ]; then
-    prior_port="$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "${APP_DIR}/config.json" | grep -oE '[0-9]+' | head -n1 || true)"
-  fi
-  local port_file_candidate
-  for port_file_candidate in "${APP_DIR}/server/config.js" "${APP_DIR}/server.js"; do
-    if [ -z "$prior_port" ] && [ -r "$port_file_candidate" ]; then
-      prior_port="$(grep -oE 'const PORT = [0-9]+' "$port_file_candidate" | grep -oE '[0-9]+' | head -n1 || true)"
-    fi
-  done
-  if [ -z "$prior_port" ] && [ -r "$PORT_FILE" ]; then
-    prior_port="$(cat "$PORT_FILE" 2>/dev/null || true)"
-  fi
-
-  echo
-  echo "NOTICE: a previous multisnake install is present but its service is failing."
-  if [ -n "$prior_port" ]; then
-    local holder
-    holder="$(ss -ltnpH 2>/dev/null | awk -v pat=":${prior_port}\$" '$4 ~ pat {print $NF}' | head -n1)"
-    echo "Port ${prior_port} appears to have been in use already (EADDRINUSE), so the"
-    echo "game never came up. Requests then return 404 from whatever else owns that"
-    echo "port. This is almost certainly why the site shows 404 after the cert step."
-    if [ -n "$holder" ]; then
-      echo "Current listener on port ${prior_port}: ${holder}"
-    fi
-  fi
-  echo "This run will select a free port and re-point the app and the Apache vhosts"
-  echo "(including the certbot SSL vhost) to fix it."
-
-  if [ -r /dev/tty ]; then
-    printf "Proceed with the automatic port fix? [Y/n]: " > /dev/tty
-    local ans
-    read -r ans < /dev/tty || ans=""
-    case "$ans" in
-      [Nn]*)
-        echo "Stopping at your request. No changes were made this run." >&2
-        exit 1
-        ;;
-    esac
-  fi
-}
-
-resolve_port() {
-  # Release our own port first so a re-run does not treat it as a conflict.
-  systemctl stop multisnake >/dev/null 2>&1 || true
-
-  local preferred=""
-  if [ -n "$PREFERRED_PORT" ]; then
-    preferred="$PREFERRED_PORT"
-  elif [ -r "$PORT_FILE" ]; then
-    preferred="$(cat "$PORT_FILE" 2>/dev/null || true)"
-  fi
-  case "$preferred" in
-    ''|*[!0-9]*) preferred="$DEFAULT_PORT" ;;
-  esac
-  if [ "$preferred" -lt 1 ] || [ "$preferred" -gt 65535 ]; then
-    preferred="$DEFAULT_PORT"
-  fi
-
-  local p="$preferred" tries=0
-  while ! port_is_free "$p"; do
-    p=$((p + 1))
-    tries=$((tries + 1))
-    if [ "$p" -gt 65535 ]; then p=1025; fi
-    if [ "$tries" -gt 500 ]; then
-      echo "ERROR: could not find a free TCP port to bind to." >&2
-      exit 1
-    fi
-  done
-  CHOSEN_PORT="$p"
-  if [ "$CHOSEN_PORT" != "$preferred" ]; then
-    echo "Port ${preferred} is in use; the app will use ${CHOSEN_PORT} instead."
-  else
-    echo "Using port ${CHOSEN_PORT} for the app."
-  fi
-}
-
 detect_stale_vhosts
 detect_prior_failure
 resolve_port
 
 # ---------------------------------------------------------------------------
-# TLS inputs (only when ENABLE_TLS=yes).
-#   Email: CERTBOT_EMAIL wins; else optional prompt; blank registers without.
-#   Cloudflare token: CF_API_TOKEN wins; else reuse an existing creds file if
-#   one is already on disk from a previous run; else prompt (hidden). Without a
-#   token and without an existing creds file, DNS-01 cannot proceed.
+# TLS inputs (install-lib/tls.sh), gathered before any package installs so a
+# missing token fails fast rather than after apt/cargo/deno work.
 # ---------------------------------------------------------------------------
-resolve_tls_inputs() {
-  if [ "$ENABLE_TLS" != "yes" ]; then
-    return
-  fi
-
-  # Email. Reused across runs the same way the hostname is: an explicit
-  # CERTBOT_EMAIL always wins, otherwise the prompt offers the last saved
-  # address as its default and an empty reply reuses it. This is the email
-  # Let's Encrypt (and, if you provide one, Cloudflare renewal-related mail)
-  # sends certificate expiry / renewal notices to, so it is worth persisting
-  # rather than re-typing on every re-run.
-  if [ -z "$CERTBOT_EMAIL" ] && [ -r /dev/tty ]; then
-    if [ -n "$LAST_EMAIL" ]; then
-      printf "Email for Let's Encrypt renewal notices [%s]: " "$LAST_EMAIL" > /dev/tty
-    else
-      printf "Email for Let's Encrypt renewal notices (blank to skip): " > /dev/tty
-    fi
-    read -r CERTBOT_EMAIL < /dev/tty || CERTBOT_EMAIL=""
-    if [ -z "$CERTBOT_EMAIL" ] && [ -n "$LAST_EMAIL" ]; then
-      CERTBOT_EMAIL="$LAST_EMAIL"
-    fi
-  fi
-
-  # Cloudflare token
-  if [ -n "$CF_API_TOKEN" ]; then
-    return
-  fi
-  if [ -r "$CF_CREDS_FILE" ]; then
-    echo "  Reusing existing Cloudflare credentials at ${CF_CREDS_FILE}."
-    return
-  fi
-  if [ -r /dev/tty ]; then
-    printf "Cloudflare API token (Zone:DNS:Edit), input hidden: " > /dev/tty
-    read -rs CF_API_TOKEN < /dev/tty || CF_API_TOKEN=""
-    printf "\n" > /dev/tty
-  fi
-  if [ -z "$CF_API_TOKEN" ]; then
-    echo "ERROR: TLS is enabled but no Cloudflare API token was provided and no" >&2
-    echo "existing credentials file was found at ${CF_CREDS_FILE}." >&2
-    echo "Provide CF_API_TOKEN, or set ENABLE_TLS=no to skip TLS." >&2
-    exit 1
-  fi
-}
 resolve_tls_inputs
+
+# ---------------------------------------------------------------------------
+# Swap file for low-resource hosts (install-lib/resources.sh). No-op unless
+# detect_low_resource set IS_LOW_RESOURCE=1 above.
+# ---------------------------------------------------------------------------
+maybe_add_swap
 
 # ---------------------------------------------------------------------------
 # 1. Base tools. curl and git fetch the toolchain and the repo; gcc (from
@@ -704,11 +394,50 @@ echo "  Set port=${CHOSEN_PORT}, simHz=${CHOSEN_SIMHZ}, maxPlayers=${CHOSEN_MAXP
 #    depends only on libc. On a small instance (e2-micro) the first build
 #    takes a while (all dependencies compile once); re-runs only rebuild
 #    what changed.
+#
+#    Low-resource mode (see IS_LOW_RESOURCE above) forces a single cargo
+#    build job and disables LTO: parallel codegen threads and cross-crate
+#    LTO are what actually blow past ~1GB of RSS on a 1-vCPU/1GB box, more
+#    so than the compile simply taking longer. niced/ioniced so a concurrent
+#    SSH session stays responsive. USE_PREBUILT=yes skips the build
+#    entirely; on any other build failure, fetch_prebuilt_binary
+#    (install-lib/resources.sh) is offered automatically rather than
+#    leaving the host with no server binary.
 # ---------------------------------------------------------------------------
 echo "[5/9] Building the game server from source (cargo build --release)..."
-( cd "${SRC}/server-rust" && cargo build --release )
-install -m 0755 "${SRC}/server-rust/target/release/multisnake-server" "${APP_DIR}/multisnake-server"
-echo "  Installed ${APP_DIR}/multisnake-server."
+BUILD_PREFIX=()
+if [ "$IS_LOW_RESOURCE" -eq 1 ]; then
+  echo "  Low-resource mode: single build job, LTO disabled."
+  export CARGO_BUILD_JOBS=1
+  export CARGO_PROFILE_RELEASE_LTO=off
+  export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+  BUILD_PREFIX=(nice -n 19)
+  if command -v ionice >/dev/null 2>&1; then
+    BUILD_PREFIX=(ionice -c3 nice -n 19)
+  fi
+fi
+
+BUILT=0
+if ! truthy "${USE_PREBUILT:-}"; then
+  if ( cd "${SRC}/server-rust" && "${BUILD_PREFIX[@]}" cargo build --release ); then
+    install -m 0755 "${SRC}/server-rust/target/release/multisnake-server" "${APP_DIR}/multisnake-server"
+    echo "  Installed ${APP_DIR}/multisnake-server (built from source)."
+    BUILT=1
+  else
+    echo "  WARNING: building from source failed (common on very low-memory hosts)." >&2
+  fi
+else
+  echo "  USE_PREBUILT set; skipping the source build."
+fi
+
+if [ "$BUILT" -eq 0 ]; then
+  if ! fetch_prebuilt_binary; then
+    echo "ERROR: no server binary could be built or downloaded." >&2
+    echo "Try again with more RAM/swap, or check ${GITHUB_API_REPO} releases for" >&2
+    echo "a matching prebuilt asset." >&2
+    exit 1
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # 6. Service account and ownership. System user, no login shell, no home.
@@ -808,79 +537,11 @@ apache2ctl configtest
 systemctl reload apache2
 
 # ---------------------------------------------------------------------------
-# 9. TLS via certbot using the DNS-01 challenge (Cloudflare), with the Apache
-#    installer writing the :443 vhost and the 80->443 redirect.
-#    Guardrails:
-#      - certbot and the two plugins are installed only if certbot is not
-#        already present, so an existing certbot and its renewal schedule are
-#        left alone. We never edit certbot.timer or /etc/cron.d/certbot;
-#        installing the Debian package already provides a twice-daily renewal
-#        timer covering every cert in /etc/letsencrypt/renewal/, including this
-#        one. Renewal reuses the saved DNS-01 method, so no port 80 is needed.
-#      - If a certificate for this hostname already exists,
-#        --keep-until-expiring reuses it instead of requesting a new one.
-#      - DNS-01 needs no inbound port 80, so the record can stay proxied
-#        through Cloudflare (orange cloud).
-#    Skip this whole step with ENABLE_TLS=no.
+# 9. TLS (install-lib/tls.sh). Skipped entirely with ENABLE_TLS=no.
 # ---------------------------------------------------------------------------
 if [ "$ENABLE_TLS" = "yes" ]; then
   echo "[9/9] Setting up TLS for ${CHOSEN_DOMAIN} (Let's Encrypt, DNS-01 via Cloudflare)..."
-
-  if ! command -v certbot >/dev/null 2>&1; then
-    echo "  Installing certbot, the Apache installer, and the Cloudflare DNS plugin..."
-    apt-get install -y certbot python3-certbot-apache python3-certbot-dns-cloudflare
-  else
-    echo "  certbot already present ($(certbot --version 2>/dev/null || echo unknown)); reusing it."
-    # Ensure the plugins we rely on are present without reinstalling certbot.
-    apt-get install -y python3-certbot-apache python3-certbot-dns-cloudflare || true
-  fi
-
-  # Make sure the renewal timer is active without altering its schedule. This
-  # is a no-op if it is already enabled, and it does not touch any override.
-  if systemctl list-unit-files 2>/dev/null | grep -q '^certbot.timer'; then
-    systemctl enable --now certbot.timer >/dev/null 2>&1 || true
-  fi
-
-  # Write the Cloudflare credentials file if we were given a token. If we are
-  # reusing an existing file, leave it as-is. Certbot records this path for
-  # renewal but does not copy the contents, so the file must persist.
-  if [ -n "$CF_API_TOKEN" ]; then
-    mkdir -p /etc/letsencrypt
-    umask 077
-    printf "# Cloudflare API token used by Certbot for DNS-01\ndns_cloudflare_api_token = %s\n" \
-      "$CF_API_TOKEN" > "$CF_CREDS_FILE"
-    chmod 600 "$CF_CREDS_FILE"
-  fi
-
-  # Build the email argument: a real address if provided, otherwise register
-  # without one (certbot requires an explicit choice in non-interactive mode).
-  if [ -n "$CERTBOT_EMAIL" ]; then
-    EMAIL_ARG=( -m "$CERTBOT_EMAIL" )
-  else
-    EMAIL_ARG=( --register-unsafely-without-email )
-  fi
-
-  # DNS-01 authenticator with the Apache installer. The authenticator creates
-  # the _acme-challenge TXT record via the Cloudflare API; the installer writes
-  # the :443 vhost and redirect. --key-type ecdsa keeps modern defaults.
-  certbot --authenticator dns-cloudflare --installer apache \
-    --dns-cloudflare-credentials "$CF_CREDS_FILE" \
-    --dns-cloudflare-propagation-seconds "$CF_PROPAGATION" \
-    -d "$CHOSEN_DOMAIN" \
-    --non-interactive --agree-tos \
-    --keep-until-expiring \
-    --redirect \
-    --key-type ecdsa \
-    "${EMAIL_ARG[@]}"
-
-  # certbot may have (re)written the SSL vhost; make sure its proxy port is
-  # correct, then test and reload.
-  if [ -f "$LE_SSL_FILE" ]; then
-    sed -i "s#127\.0\.0\.1:[0-9]\+#127.0.0.1:${CHOSEN_PORT}#g" "$LE_SSL_FILE"
-  fi
-  apache2ctl configtest
-  systemctl reload apache2
-  echo "  TLS is configured. The game is served on https://${CHOSEN_DOMAIN}"
+  setup_tls
 else
   echo "[9/9] ENABLE_TLS=no, skipping certbot. Serving plain HTTP on port 80."
 fi
@@ -908,6 +569,13 @@ fi
 if [ "${CLEANUP_SRC}" -eq 1 ]; then
   rm -rf "${SRC}"
 fi
+
+# Only written here, after every step above has succeeded, so its presence
+# (or absence, on the next run) reliably tells install.sh -- and you --
+# whether the last attempt actually finished. See the NOTICE check near the
+# top of the script.
+date -u +"%Y-%m-%dT%H:%M:%SZ" > "${INSTALL_OK_FILE}"
+chmod 0644 "${INSTALL_OK_FILE}"
 
 echo
 echo "== Done =="

@@ -1,16 +1,23 @@
 # =============================================================================
 # Release workflow for simple-multi-snake
 # =============================================================================
-# This project ships source plus ONE built artifact: the WASM renderer
-# (public/js/render-wasm.js), compiled here from wasm/renderer.ts via
-# tools/build-wasm.mjs rather than committed to the repo -- so what a release
-# contains is verifiably built from the tagged sources. Everything else is
-# source (Rust server sources, static client, deploy files, shell scripts;
-# install.sh compiles the server binary on the target host). On a
-# version tag this workflow builds that artifact, packages the tagged tree
-# PLUS the artifact into .tar.gz and .zip snapshots, and attaches both to a
-# GitHub Release. (install.sh performs the same build on the target host, so
-# a release archive is a convenience, not the only trusted path.)
+# This project ships source plus built artifacts: the WASM renderer
+# (public/js/render-wasm.js) and a Linux x86_64 server binary
+# (multisnake-server-linux-x86_64), both compiled here from tagged source
+# rather than committed to the repo -- so what a release contains is
+# verifiably built from the tagged sources. Everything else is source (Rust
+# server sources, static client, deploy files, shell scripts; install.sh
+# compiles the server binary on the target host by default). On a version tag
+# this workflow builds both artifacts, packages the tagged tree PLUS the wasm
+# artifact into .tar.gz and .zip snapshots, and attaches the archives AND the
+# standalone server binary to a GitHub Release.
+#
+# The standalone binary exists for install.sh's low-resource fallback: on a
+# host too small to compile Rust (see LOW_RESOURCE/USE_PREBUILT in
+# install.sh), the installer downloads multisnake-server-linux-x86_64 from
+# the latest release instead of building it. Keep the asset name in sync
+# with the `asset_name` value in install.sh's fetch_prebuilt_binary if it
+# ever changes -- the installer matches on that exact filename.
 # -----------------------------------------------------------------------------
 # LLM / AI ASSISTANT DIRECTIVE (read before modifying or packaging this file)
 # -----------------------------------------------------------------------------
@@ -93,6 +100,24 @@ jobs:
       - name: Build the WASM renderer
         run: node tools/build-wasm.mjs
 
+      # Self-contained rustup install, same command install.sh uses, so the
+      # release binary is built the identical way a target host would build
+      # it -- no third-party Rust-setup Action needed for this one step.
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # Standalone Linux x86_64 server binary, for install.sh's prebuilt
+      # fallback on hosts too small to compile Rust themselves. Same release
+      # profile (thin LTO, stripped) as a normal install.sh build.
+      - name: Build the server binary (linux x86_64)
+        run: |
+          mkdir -p dist
+          ( cd server-rust && cargo build --release )
+          cp server-rust/target/release/multisnake-server dist/multisnake-server-linux-x86_64
+
       # Build .tar.gz and .zip snapshots of the tagged tree PLUS the built
       # wasm artifact. git archive only packs tracked files, so the tree is
       # staged first and render-wasm.js copied in. A prefix folder keeps the
@@ -101,7 +126,7 @@ jobs:
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           PREFIX="simple-multi-snake-${TAG}"
-          mkdir -p dist stage
+          mkdir -p stage
           git archive --format=tar --prefix="${PREFIX}/" "${TAG}" | tar -x -C stage
           cp public/js/render-wasm.js "stage/${PREFIX}/public/js/render-wasm.js"
           tar -czf "dist/simple-multi-snake-${TAG}.tar.gz" -C stage "${PREFIX}"
@@ -152,3 +177,4 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.zip
+            dist/multisnake-server-linux-x86_64
