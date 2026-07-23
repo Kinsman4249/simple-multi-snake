@@ -183,9 +183,45 @@
   body.mobile-hidden #keymapPanel,
   body.mobile-hidden #initialsPanel,
   body.mobile-hidden #killFeed { display: none !important; }
+  /* Boot loading screen (js/loading.js): everything else stays fully wired
+     up but invisible behind it (visibility:hidden, not display:none, so
+     layout/canvas sizing isn't skipped) until every boot task -- /api/config,
+     /api/captcha -- has resolved. Avoids the piecemeal "captcha text pops
+     in, tips collapse, legend fills in" flash on a slow connection. */
+  body.app-loading #layout,
+  body.app-loading .panel,
+  body.app-loading #overlay,
+  body.app-loading #killFeed,
+  body.app-loading #powerupRef,
+  body.app-loading #versionStamp { visibility: hidden; }
+  #loadingScreen {
+    position: fixed; inset: 0; z-index: 99999;
+    background: #111; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px;
+    opacity: 1; transition: opacity 0.25s;
+  }
+  #loadingScreen.done { opacity: 0; pointer-events: none; }
+  #loadingSpinner {
+    width: 40px; height: 40px; border-radius: 50%;
+    border: 4px solid #333; border-top-color: #6f6;
+    animation: loadingSpin 0.8s linear infinite;
+  }
+  @keyframes loadingSpin { to { transform: rotate(360deg); } }
+  #loadingBarTrack {
+    width: 200px; height: 6px; background: #222; border: 1px solid #444;
+    overflow: hidden;
+  }
+  #loadingBar { height: 100%; width: 0%; background: #6f6; transition: width 0.2s; }
+  #loadingLabel { color: #999; font-size: 12px; font-family: monospace; }
 </style>
 </head>
-<body>
+<body class="app-loading">
+
+<div id="loadingScreen">
+  <div id="loadingSpinner"></div>
+  <div id="loadingBarTrack"><div id="loadingBar"></div></div>
+  <div id="loadingLabel">Loading...</div>
+</div>
 
 <div id="layout">
   <div id="status">connecting...</div>
@@ -320,9 +356,12 @@
 <div id="versionStamp" style="display:none;position:fixed;right:6px;bottom:5px;z-index:9999;font-family:monospace;font-size:10px;color:#666;pointer-events:none;white-space:pre;"></div>
 <!-- index.html build stamp (mirrors the per-file __BUILDS__ stamps the JS
      modules self-register); bump on any change to this file. -->
-<script>(window.__BUILDS__ = window.__BUILDS__ || {}).index = "index 2026-07-19.4";</script>
+<script>(window.__BUILDS__ = window.__BUILDS__ || {}).index = "index 2026-07-22.1";</script>
 
-<!-- Load order matters: main.js references everything before it. -->
+<!-- Load order matters: main.js references everything before it. loading.js
+     comes first of all so Loading.begin()/step() exist before any other
+     script's top-level code wants to call them. -->
+<script src="js/loading.js"></script>
 <script src="js/net.js"></script>
 <script src="js/predict.js"></script>
 <!-- render-wasm.js is a BUILT artifact (tools/build-wasm.mjs), not committed;

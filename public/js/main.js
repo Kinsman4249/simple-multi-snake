@@ -23,11 +23,12 @@
 //     debug button/panel/recording are never created at all -- the only
 //     residue is one boolean test at startup.
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-18.3";
+(window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-22.1";
 let CLIENT_FX = { inputFlash: true, inputFlashMs: 90, correctionGlide: true, correctionGlideMs: 90, boostTrail: true, slideDust: true, heldGlow: true, powerupFx: true };
 let CLIENT_RENDER = { interpolate: true, renderer: "auto" };
 let BOOST_CFG = { enabled: true, boostSpeed: 2.0, driftMs: 250, rampMs: 400, holdGraceMs: 120, decelMs: 250, driftThreshold: 0.3 };
 let POWERUPS_CFG = {};
+Loading.begin(1); // boot task: config must be in before the UI is revealed
 fetch("/api/config").then(r => r.json()).then(cfg => {
   if (cfg && cfg.clientFx) CLIENT_FX = Object.assign({}, CLIENT_FX, cfg.clientFx);
   if (cfg && cfg.clientRender) CLIENT_RENDER = Object.assign({}, CLIENT_RENDER, cfg.clientRender);
@@ -48,9 +49,11 @@ fetch("/api/config").then(r => r.json()).then(cfg => {
     UI.initDebug(window.__DEBUG_SOURCE__, on => myPlayers.forEach(p => p.setDebug(on)));
     UI.showVersionStamp(true, cfg && cfg.build);
   }
+  Loading.step();
 }).catch(() => {
   UI.initDebug(window.__DEBUG_SOURCE__, on => myPlayers.forEach(p => p.setDebug(on)));
   UI.showVersionStamp(true, null);
+  Loading.step();
 });
 
 // Keybind remap (Phase 4): 100% client-side, localStorage-persisted, never

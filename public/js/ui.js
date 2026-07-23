@@ -3,7 +3,7 @@
 // prompt with countdown, spectator overlay, explicit JOIN offer button,
 // and a DEBUG button/panel (recording enabled only while open).
 // ============================================================
-(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-19.4";
+(window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-22.1";
 const UI = (() => {
   const statusEl = document.getElementById("status");
   let captchaId = null;
@@ -17,11 +17,18 @@ const UI = (() => {
     return String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 3);
   }
 
-  async function loadCaptcha() {
-    const res = await fetch("/api/captcha");
-    const data = await res.json();
-    captchaId = data.id;
-    document.getElementById("captchaQuestion").textContent = data.a + " + " + data.b + " = ?";
+  // The very first loadCaptcha() call (from initCaptchaGate) is a boot task
+  // gating the loading screen; retries after a wrong answer are not -- the
+  // screen is long gone by then. isBootTask tells the two apart.
+  async function loadCaptcha(isBootTask) {
+    try {
+      const res = await fetch("/api/captcha");
+      const data = await res.json();
+      captchaId = data.id;
+      document.getElementById("captchaQuestion").textContent = data.a + " + " + data.b + " = ?";
+    } finally {
+      if (isBootTask) Loading.step();
+    }
   }
   // Persisted show/hide state for the captcha/gate screen's static explainer
   // blocks (boost/slide, piñata, grid-decay -- every ".tip" -- plus the
@@ -188,7 +195,8 @@ const UI = (() => {
   // counts as an active text entry until it is dismissed, so no keystroke
   // typed here can reach the game's key handlers.
   function initCaptchaGate(onSuccess) {
-    loadCaptcha();
+    Loading.begin(1); // boot task: the captcha question must be in before reveal
+    loadCaptcha(true);
     initTipToggles();
     initPowerupInfo();
     textEntryCount++;
