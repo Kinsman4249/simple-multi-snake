@@ -165,14 +165,33 @@ const COLOR_BLACK: u32 = rgba(0, 0, 0, 255);
 const COLOR_BANANA_BODY: u32 = rgba(0xff, 0xdd, 0x44, 255); // #fd4
 const COLOR_BANANA_TIP: u32 = rgba(0xaa, 0x77, 0x00, 255);  // #a70
 const COLOR_BANANA_SPOT: u32 = rgba(0x66, 0x33, 0x00, 255); // #630 ripeness speckle
-// Grid decay / anti-turtling obstacles (v3.8.1): must mirror render2d.js
-// WALL_WARN_COLOR (#f60) exactly; the solid state is a pixel-art spike trap
-// (see spikeVal/spikeColor below), not a flat fill -- a plain gray square
-// read as just another powerup pickup (maintainer feedback on v3.8.0).
-const WALL_WARN: u32 = rgba(0xff, 0x66, 0x00, 255);
+// Grid decay / anti-turtling obstacles (v3.8.1): the solid state is a
+// pixel-art spike trap (see spikeVal/spikeColor below), not a flat fill --
+// a plain gray square read as just another powerup pickup (maintainer
+// feedback on v3.8.0). The warn (telegraph) state was a translucent flat
+// orange full-tile fill; recolored/reshaped to a small red "!"
+// (see warnVal/warnColor below) since the flat orange read too close to the
+// speedBoost powerup tint (#f50). Must mirror render2d.js WALL_WARN_COLORS
+// exactly.
+const WALL_WARN_1: u32 = rgba(0xff, 0x33, 0x33, 255); // bright core
+const WALL_WARN_2: u32 = rgba(0x99, 0x00, 0x00, 255); // dark shade
 const WALL_SPIKE_1: u32 = rgba(0x9a, 0x9a, 0x9a, 255); // mid-gray body
 const WALL_SPIKE_2: u32 = rgba(0xee, 0xee, 0xee, 255); // bright tip highlight
 const WALL_SPIKE_3: u32 = rgba(0x4a, 0x4a, 0x4a, 255); // dark shadow/gap
+// "!" pixel-art (5x5 sub-grid): 3-wide shaded stem (cols 1-3) for rows
+// 0-2, blank gap row 3, dot on row 4. Outer columns (0, 4) stay empty so
+// the glyph reads as a narrow mark, not a block. Must mirror render2d.js
+// warnVal()/WALL_WARN_COLORS exactly for parity.
+@inline
+function warnVal(r: i32, c: i32): i32 {
+  if (r == 3) return 0;
+  if (c == 0 || c == 4) return 0;
+  return c == 2 ? 1 : 2;
+}
+@inline
+function warnColor(v: i32): u32 {
+  return v == 1 ? WALL_WARN_1 : WALL_WARN_2;
+}
 // Spike pixel-art (5x5 sub-grid): three spike columns (0/2/4) alternate
 // tip-then-body down the cell, same rect-composition technique as
 // bananaVal() above -- must mirror render2d.js spikeVal()/SPIKE_COLORS
@@ -336,10 +355,12 @@ export function render(now: f64, which: i32): i32 {
     }
   }
   // Grid decay / anti-turtling obstacles (v3.8.1): "warn" (telegraph, not
-  // yet collidable) pulses low-alpha hazard orange; "solid" is the pixel-art
-  // spike trap at full alpha; "fading" (despawn cue) is the same spikes
-  // pulsing faster/deeper. Must mirror render2d.js drawWalls/drawSpikeTile
-  // exactly (same pulse formulas, keyed off wall id like pickups) for parity.
+  // yet collidable) shows a slow-throbbing pixel-art red "!" (only the
+  // glyph pixels flash, not the whole tile -- keeps this well clear of
+  // photosensitive-flash territory); "solid" is the pixel-art spike trap
+  // at full alpha; "fading" (despawn cue) is the same spikes pulsing
+  // faster/deeper. Must mirror render2d.js drawWalls/drawSpikeTile exactly
+  // (same pulse formulas, keyed off wall id like pickups) for parity.
   const nWalls = min(load<i32>(curr, SNAP_NWALLS), MAX_WALLS);
   const wallBase = curr + SNAP_WALLS;
   for (let i = 0; i < nWalls; i++) {
@@ -347,9 +368,20 @@ export function render(now: f64, which: i32): i32 {
     const wx = load<i32>(o), wy = load<i32>(o, 4);
     const wstate = load<i32>(o, 8), wid = load<i32>(o, 12);
     if (wstate == 0) {
-      const pulse = <f32>(0.5 + 0.5 * Math.sin(now / 150.0 + <f64>wid));
-      const alpha = <f32>0.35 + <f32>0.35 * pulse;
-      inst(<f32>wx * cs, <f32>wy * cs, cell, cell, WALL_WARN, alpha, KIND_RECT, 0, 0);
+      const pulse = <f32>(0.5 + 0.5 * Math.sin(now / 220.0 + <f64>wid));
+      const alpha = <f32>0.55 + <f32>0.45 * pulse;
+      const wbx0 = <f32>wx * cs, wby0 = <f32>wy * cs;
+      for (let r = 0; r < 5; r++) {
+        for (let c = 0; c < 5; c++) {
+          const v = warnVal(r, c);
+          if (v == 0) continue;
+          const x0 = <f32>(<i32>Math.round(<f64>c * <f64>cell / 5.0));
+          const x1 = <f32>(<i32>Math.round(<f64>(c + 1) * <f64>cell / 5.0));
+          const y0 = <f32>(<i32>Math.round(<f64>r * <f64>cell / 5.0));
+          const y1 = <f32>(<i32>Math.round(<f64>(r + 1) * <f64>cell / 5.0));
+          inst(wbx0 + x0, wby0 + y0, x1 - x0, y1 - y0, warnColor(v), alpha, KIND_RECT, 0, 0);
+        }
+      }
       continue;
     }
     let alpha: f32 = 1;

@@ -83,13 +83,30 @@ const Render2D = (() => {
     bananaTrail: "#fd4",
     helloWorld: "#0ff"
   };
-  // Grid decay / anti-turtling obstacles (v3.8.1): a telegraphed cell pulses
-  // hazard orange for the warning window, then becomes a pixel-art SPIKE
-  // trap once solid (not a flat block -- v3.8.0's plain gray square read as
-  // just another powerup pickup, maintainer feedback), pulsing again
-  // (faster) during its despawn-telegraph tail. Colors chosen to read as
-  // distinct from every powerup/trail/food tint on the board.
-  const WALL_WARN_COLOR = "#f60";
+  // Grid decay / anti-turtling obstacles (v3.8.1): a telegraphed cell shows
+  // a pixel-art red "!" for the warning window, then becomes a pixel-art
+  // SPIKE trap once solid (not a flat block -- v3.8.0's plain gray square
+  // read as just another powerup pickup, maintainer feedback), pulsing
+  // again (faster) during its despawn-telegraph tail. The warn glyph was
+  // recolored/reshaped from a translucent flat-orange full-tile fill
+  // (v3.8.1) to a small red "!" -- the flat orange read too close
+  // to the speedBoost powerup tint (#f50) at a glance (maintainer
+  // feedback). Only the glyph pixels flash (not the whole tile), and the
+  // pulse period is kept slow (~1.3s) with a bounded alpha floor -- no
+  // full-tile strobing, so this stays well clear of photosensitive-flash
+  // territory. Colors chosen to read as distinct from every powerup/trail/
+  // food tint on the board.
+  const WALL_WARN_COLORS = { 1: "#f33", 2: "#900" };
+  // "!" pixel-art (5x5 sub-grid): a 3-wide shaded stem (cols 1-3, dark-
+  // bright-dark) for rows 0-2, a blank gap row, then the dot on row 4.
+  // Outer columns (0, 4) stay empty so the glyph reads as a narrow mark,
+  // not a block. Must mirror wasm/renderer.ts warnVal()/warnColor()
+  // exactly for parity.
+  function warnVal(r, c) {
+    if (r === 3) return 0;
+    if (c === 0 || c === 4) return 0;
+    return c === 2 ? 1 : 2;
+  }
   // Spike pixel-art (5x5 sub-grid), same rect-composition technique as
   // BANANA_ART below: 1 = mid-gray body, 2 = bright tip highlight, 3 = dark
   // shadow/gap. Three spike columns (0/2/4) alternate tip-then-body down the
@@ -231,11 +248,24 @@ const Render2D = (() => {
     const cs = grid.cellSize;
     for (const w of wallList) {
       if (w.state === "warn") {
-        const pulse = 0.5 + 0.5 * Math.sin(now / 150 + w.id);
+        // Slow throb (~1.3s period), alpha floor kept well above 0 so this
+        // never reads as a hard strobe.
+        const pulse = 0.5 + 0.5 * Math.sin(now / 220 + w.id);
+        const alpha = 0.55 + 0.45 * pulse;
+        const cell = cs - cellGap;
+        const ox = w.x * cs, oy = w.y * cs;
         ctx.save();
-        ctx.globalAlpha = 0.35 + 0.35 * pulse;
-        ctx.fillStyle = WALL_WARN_COLOR;
-        ctx.fillRect(w.x * cs, w.y * cs, cs - cellGap, cs - cellGap);
+        ctx.globalAlpha = alpha;
+        for (let r = 0; r < 5; r++) {
+          for (let c = 0; c < 5; c++) {
+            const v = warnVal(r, c);
+            if (v === 0) continue;
+            const x0 = Math.round(c * cell / 5), x1 = Math.round((c + 1) * cell / 5);
+            const y0 = Math.round(r * cell / 5), y1 = Math.round((r + 1) * cell / 5);
+            ctx.fillStyle = WALL_WARN_COLORS[v];
+            ctx.fillRect(ox + x0, oy + y0, x1 - x0, y1 - y0);
+          }
+        }
         ctx.restore();
         continue;
       }

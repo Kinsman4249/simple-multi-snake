@@ -44,13 +44,14 @@ const UI = (() => {
   // #boostTip/#pinataTip/#wallsTip, each now a `.tip` with a `.tip-head`
   // containing a `.tip-toggle` button and a `.tip-body`). Keyed by the
   // block's own element id so each tip remembers independently; defaults to
-  // shown the first time (matches the pre-toggle behavior where every tip
-  // was always visible).
+  // collapsed the first time, same as the powerup info popup below -- the
+  // captcha form itself always stays visible, only these info blurbs start
+  // hidden behind a Show button.
   function initTipToggles() {
     document.querySelectorAll(".tip").forEach(el => {
       const btn = el.querySelector(".tip-toggle");
       if (!btn) return;
-      let shown = loadTipShown(el.id, true);
+      let shown = loadTipShown(el.id, false);
       const apply = () => { el.classList.toggle("collapsed", !shown); btn.textContent = shown ? "Hide" : "Show"; };
       apply();
       btn.onclick = () => { shown = !shown; saveTipShown(el.id, shown); apply(); };
