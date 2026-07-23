@@ -5,8 +5,8 @@
 // AT MOST one cell ahead using the OLDEST unacknowledged turn (the one the
 // server is about to process next, since the server applies queued turns in
 // the order they were received). If that turn would carry the head out of
-// bounds, mirror the server's wall-grace lookahead (server.js
-// consumeInboundsTurn): scan the remaining queued turns in order for the
+// bounds, mirror the server's wall-grace lookahead (server-rust/src/sim.rs
+// consume_inbounds_turn): scan the remaining queued turns in order for the
 // first one that stays in bounds and use that instead. If none of the queued
 // turns stay in bounds, render no movement (mirrors the server's stall) and
 // do not log a debug correction for that tick, since whether the server
@@ -200,8 +200,8 @@ class LocalPlayerPredictor {
       return;
     }
     // The oldest queued turn would leave the grid. Mirror the server's
-    // wall-grace lookahead (consumeInboundsTurn in server.js): scan the
-    // remaining queued turns, skipping any that reverse the current
+    // wall-grace lookahead (consume_inbounds_turn in server-rust/src/sim.rs):
+    // scan the remaining queued turns, skipping any that reverse the current
     // authoritative direction, for the first one that stays in bounds.
     let saved = null;
     for (let k = 0; k < this.inputBuffer.length; k++) {

@@ -1,8 +1,8 @@
 // Shared test harness for the powerup e2e scripts (tests/pw_*.js). Deno
 // WebSocket clients driving the LIVE, unmodified server -- no mocks, per
 // this project's proven test method (see round ten/eleven's boost/slide and
-// high-score-flush scripts). Run `node server.js` (or the deno-compatible
-// equivalent) before running any of these.
+// high-score-flush scripts). Build the server first: `cd server-rust &&
+// cargo build --release`. startServer() launches the resulting binary.
 const BASE = "http://127.0.0.1:8080";
 const WS_BASE = "ws://127.0.0.1:8080/ws";
 
@@ -130,7 +130,7 @@ async function startServer(configOverrides, extraEnv) {
   if (configOverrides && configOverrides.powerups) {
     merged.powerups = Object.assign({}, base.powerups, configOverrides.powerups);
   }
-  // SNAKE_CONFIG is resolved by server.js relative to __dirname (the repo
+  // SNAKE_CONFIG is resolved by the server relative to its cwd (the repo
   // root), so the temp config must live there. Give it a recognizable,
   // gitignored prefix (.test-config-*.json) so that if a test is killed
   // before stopServer() cleans up, the leaked file is obviously a test
@@ -148,22 +148,19 @@ async function startServer(configOverrides, extraEnv) {
   const env = Object.assign({}, Deno.env.toObject(), { SNAKE_CONFIG: name }, extraEnv || {});
 
   // The server is the compiled Rust binary (server-rust/). Build it once
-  // with: cargo build --release (run inside server-rust/). Falls back to
-  // the legacy JS server via deno only if the binary is absent.
+  // with: cargo build --release (run inside server-rust/).
   const binPath = repoRoot + "server-rust/target/release/multisnake-server";
-  let child;
-  let haveBin = false;
-  try { haveBin = (await Deno.stat(binPath)).isFile; } catch (_) { /* not built */ }
-  if (haveBin) {
-    child = new Deno.Command(binPath, {
-      cwd: repoRoot, env, stdout: "piped", stderr: "piped"
-    }).spawn();
-  } else {
-    child = new Deno.Command("deno", {
-      args: ["run", "--allow-net", "--allow-read", "--allow-write", "--allow-run", "--allow-env", "--unstable-detect-cjs", "server.js"],
-      cwd: repoRoot, env, stdout: "piped", stderr: "piped"
-    }).spawn();
+  try {
+    if (!(await Deno.stat(binPath)).isFile) throw new Error("not a file");
+  } catch (_) {
+    throw new Error(
+      "multisnake-server binary not found at " + binPath +
+      " -- build it first: (cd server-rust && cargo build --release)"
+    );
   }
+  const child = new Deno.Command(binPath, {
+    cwd: repoRoot, env, stdout: "piped", stderr: "piped"
+  }).spawn();
   // Poll /api/config until the server is actually accepting connections.
   for (let i = 0; i < 50; i++) {
     try { await fetch(BASE + "/api/config"); return { child, configPath: destPath, highscoresPath: repoRoot + merged.highscoresFile }; }

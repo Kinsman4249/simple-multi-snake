@@ -14,20 +14,18 @@ const outDir = repoRoot + "tools/bench/out";
 await Deno.mkdir(outDir, { recursive: true });
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// --- start the game server (same fallback logic as tests/helpers.js:
-// prefer the compiled Rust binary, fall back to the legacy JS server) ---
-let server;
+// --- start the game server (the compiled Rust binary; see tests/helpers.js) ---
 const binPath = repoRoot + "/server-rust/target/release/multisnake-server";
-let haveBin = false;
-try { haveBin = (await Deno.stat(binPath)).isFile; } catch (_) { /* not built */ }
-if (haveBin) {
-  server = new Deno.Command(binPath, { cwd: repoRoot, stdout: "null", stderr: "null" }).spawn();
-} else {
-  server = new Deno.Command("deno", {
-    args: ["run", "--allow-net", "--allow-read", "--allow-write", "--allow-run", "--allow-env", "--unstable-detect-cjs", "server.js"],
-    cwd: repoRoot, stdout: "null", stderr: "null"
-  }).spawn();
+try {
+  if (!(await Deno.stat(binPath)).isFile) throw new Error("not a file");
+} catch (_) {
+  console.error(
+    "multisnake-server binary not found at " + binPath +
+    " -- build it first: (cd server-rust && cargo build --release)"
+  );
+  Deno.exit(1);
 }
+const server = new Deno.Command(binPath, { cwd: repoRoot, stdout: "null", stderr: "null" }).spawn();
 let ready = false;
 for (let i = 0; i < 50 && !ready; i++) {
   try { await (await fetch(BASE + "/api/config")).body?.cancel(); ready = true; } catch (_) { await sleep(100); }

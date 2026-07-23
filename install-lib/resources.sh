@@ -3,9 +3,10 @@
 # install-lib/resources.sh - everything specific to low-RAM hosts. All of
 # this is optional in the sense that on a normal-sized host none of it does
 # anything: detect_low_resource just sets IS_LOW_RESOURCE=0, maybe_add_swap
-# returns immediately, and fetch_prebuilt_binary is only ever called after a
-# source build has already failed (or USE_PREBUILT was requested outright).
-# Requires falsy (common.sh), and LOW_RAM_THRESHOLD_MB/SWAP_FILE/
+# and maybe_remove_swap return immediately, and fetch_prebuilt_binary is only
+# ever called after a source build has already failed (or USE_PREBUILT was
+# requested outright).
+# Requires falsy/truthy (common.sh), and LOW_RAM_THRESHOLD_MB/SWAP_FILE/
 # SWAP_SIZE_MB/GITHUB_API_REPO/APP_DIR from install.sh's config section.
 
 # Sets IS_LOW_RESOURCE (0/1) and TOTAL_RAM_MB. Below LOW_RAM_THRESHOLD_MB the
@@ -30,9 +31,17 @@ detect_low_resource() {
 # well above 1GB of RAM even with the low-resource build settings; on a box
 # with no swap that means the OOM killer takes out rustc instead of the
 # build just running slower. Skipped entirely on hosts above the RAM
-# threshold, and left alone if swap is already configured. Override with
-# CREATE_SWAP=yes/no; the interactive prompt defaults to yes.
+# threshold, and left alone if swap is already configured (that swap is not
+# ours to manage, so maybe_remove_swap below will not touch it either).
+# Override with CREATE_SWAP=yes/no; the interactive prompt defaults to yes.
+#
+# Sets SWAP_MANAGED_BY_US=1 iff this call is the one that activates swap
+# (i.e. none was active when it started) -- that is the signal
+# maybe_remove_swap uses to know it is safe to tear back down after the
+# build, rather than ripping out swap the host already had for its own
+# reasons.
 maybe_add_swap() {
+  SWAP_MANAGED_BY_US=0
   [ "$IS_LOW_RESOURCE" -eq 1 ] || return 0
 
   if swapon --show 2>/dev/null | grep -q .; then
@@ -72,7 +81,34 @@ maybe_add_swap() {
   if ! grep -qsF "$SWAP_FILE " /etc/fstab; then
     printf "%s none swap sw 0 0\n" "$SWAP_FILE" >> /etc/fstab
   fi
+  SWAP_MANAGED_BY_US=1
   echo "  Swap enabled ($(free -h | awk '/Swap:/{print $2}') total)."
+}
+
+# Tears the swap file back down once the build is done, since it exists only
+# to get the Rust compiler through a low-RAM box without being OOM-killed --
+# there is no reason to leave 2GB of disk (and an active swap device) behind
+# permanently on a box that is short on both. A no-op unless maybe_add_swap
+# set SWAP_MANAGED_BY_US=1 above (never removes swap that predates this
+# install run, or swap the operator declined to let us manage). Override
+# with KEEP_SWAP=yes to keep it around for a future run instead.
+maybe_remove_swap() {
+  [ "${SWAP_MANAGED_BY_US:-0}" -eq 1 ] || return 0
+
+  if truthy "${KEEP_SWAP:-}"; then
+    echo "Leaving the swap file at ${SWAP_FILE} in place (KEEP_SWAP=yes)."
+    return 0
+  fi
+
+  echo "Removing the swap file created for this install (${SWAP_FILE})..."
+  swapoff "$SWAP_FILE" 2>/dev/null || true
+  rm -f "$SWAP_FILE"
+  if [ -f /etc/fstab ]; then
+    # Exact-line match, same string maybe_add_swap wrote, so an unrelated
+    # swap entry a host admin added by hand is never touched.
+    sed -i "\#^${SWAP_FILE} none swap sw 0 0\$#d" /etc/fstab
+  fi
+  echo "  Swap file removed."
 }
 
 # Last resort when compiling from source fails (or when USE_PREBUILT=yes

@@ -42,8 +42,11 @@
 # switches to low-resource build settings (single-job cargo build, LTO off)
 # and offers to add a swap file so the Rust compiler does not get OOM-killed.
 # Force this behavior with LOW_RESOURCE=yes/no; decline the swap file offer
-# non-interactively with CREATE_SWAP=no. If the source build still fails (or
-# you'd rather skip compiling entirely), set USE_PREBUILT=yes to fetch a
+# non-interactively with CREATE_SWAP=no. The swap file is temporary: once the
+# build finishes it is torn back down (swapoff, deleted, fstab entry
+# removed) unless the installer created it, in which case KEEP_SWAP=yes
+# keeps it around for a future run instead. If the source build still fails
+# (or you'd rather skip compiling entirely), set USE_PREBUILT=yes to fetch a
 # prebuilt server binary from the latest GitHub Release instead.
 #
 # The installer only marks itself "succeeded" (a flag file under STATE_DIR)
@@ -438,6 +441,12 @@ if [ "$BUILT" -eq 0 ]; then
     exit 1
   fi
 fi
+
+# The swap file (if we made one) only exists to get the compile above
+# through without an OOM kill; nothing after this point is memory-hungry
+# enough to need it. Left in place on the error exit above, in case a retry
+# wants it. See install-lib/resources.sh; override with KEEP_SWAP=yes.
+maybe_remove_swap
 
 # ---------------------------------------------------------------------------
 # 6. Service account and ownership. System user, no login shell, no home.

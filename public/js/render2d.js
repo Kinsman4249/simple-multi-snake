@@ -62,7 +62,8 @@ const Render2D = (() => {
   const CANDY_N = 14;
   const CANDY_COLORS = ["#ffcc00", "#ff4499", "#44ccff", "#77ee44"]; // gold / pink / cyan / lime
   // Powerup pickup + trail styling. Purely cosmetic lookups, no gameplay
-  // meaning -- see server.js POWERUPS for the actual config/behavior.
+  // meaning -- see server-rust/src/config.rs PowerupsCfg for the actual
+  // config/behavior.
   const POWERUP_STYLE = {
     wormhole: "#a3f",
     // growthSpurt & speedBoost used to be near-identical warm yellows/oranges

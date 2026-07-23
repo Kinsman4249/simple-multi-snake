@@ -226,7 +226,7 @@ const UI = (() => {
     const locals = curr.you.locals || [];
     const present = locals.filter(e => e);
     // Speed-run / food-rate readout (v3.7.0): best-5-minutes food/min,
-    // provisional until floorMs of play accrues (see server/state.js),
+    // provisional until floorMs of play accrues (see server-rust/src/state.rs),
     // shown for both roles since the accumulator outlives any one life.
     const frText = entry => entry.foodRate
       ? " | " + entry.foodRate.ratePerMin.toFixed(1) + " food/min" + (entry.foodRate.locked ? "" : " (provisional)")
@@ -759,8 +759,9 @@ const UI = (() => {
   }
 
   // ---- Kill feed (v3.6.8) ----------------------------------------------
-  // Server queues one event per death (server/lifecycle.js handleDeath,
-  // one-shot like explosions -- see server/net.js) with cause "body" (a
+  // Server queues one event per death (server-rust/src/lifecycle.rs
+  // handle_death, one-shot like explosions -- see server-rust/src/net.rs)
+  // with cause "body" (a
   // credited kill), "wall"/"obstacle"/"self" (no killer -- "obstacle" is a
   // grid-decay wall, v3.8.0), or "headon" (mutual, credit stripped by
   // clearMutualKills). This turns each into a fading DOM line in

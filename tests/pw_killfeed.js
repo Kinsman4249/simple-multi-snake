@@ -43,7 +43,7 @@ async function testBodyKill() {
     grid: { cols: 21, rows: 19, cellSize: 20 },
     move: { startIntervalMs: INTERVAL, minIntervalMs: INTERVAL, rampIntervalSec: 3600, rampStepMs: 0 },
     // B is parked nose-first against the top wall with a huge grace window,
-    // so it STALLS in place (server.js resolveWallCollisions) instead of
+    // so it STALLS in place (server-rust/src/sim.rs resolve_wall_collisions) instead of
     // dying -- a truly stationary body column at x=10, y=0..9, for as long
     // as this test needs. A then runs a plain open-loop straight line into
     // its flank: a deterministic T-bone, no reactive steering required.

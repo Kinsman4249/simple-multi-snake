@@ -2,5 +2,5 @@
 # Release workflow) substitutes the $Format:...$ placeholders in
 # build-info.json with the tagged commit's describe string and short hash,
 # so every packaged build carries its own version. Live checkouts keep the
-# literal placeholders and server.js falls back to querying git at startup.
+# literal placeholders and the server falls back to querying git at startup.
 build-info.json export-subst

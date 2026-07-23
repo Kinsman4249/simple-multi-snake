@@ -1,7 +1,7 @@
 // Grid decay / anti-turtling obstacles e2e (v3.8.0): a telegraphed cell is a
 // warning only (passable) until its telegraph elapses, then it's a solid,
 // indestructible wall -- lethal to any snake that walks into it, same as the
-// board edge (see server/sim.js resolveWallCollisions), with death cause
+// board edge (see server-rust/src/sim.rs resolve_wall_collisions), with death cause
 // "obstacle" (not "wall", so the kill feed can tell them apart).
 //
 // Deterministic staging via SNAKE_TEST_SPAWNS (a forced snake on a known

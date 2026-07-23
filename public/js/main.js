@@ -172,16 +172,17 @@ function seatInverted(localIdx) {
   return !!(p && p.inverted);
 }
 // Blue Shell explosions: state.explosions is a one-shot list (populated only
-// on the broadcast where an impact happened, per server.js). Each one is
-// stamped with a local start time here and aged out client-side over
-// EXPLOSION_DURATION_MS -- this module is the only place that owns that
-// timing; render.js just draws whatever age it's given.
+// on the broadcast where an impact happened, per server-rust/src/net.rs).
+// Each one is stamped with a local start time here and aged out client-side
+// over EXPLOSION_DURATION_MS -- this module is the only place that owns
+// that timing; render.js just draws whatever age it's given.
 const EXPLOSION_DURATION_MS = 500;
 let activeExplosions = [];
 // Powerup activation flash: state.players[i].activated is a one-shot type
-// (set for exactly the broadcast where a powerup fired, per server.js). Each
-// is stamped with a local start time and aged out over POWERUP_FLASH_MS -- a
-// brief bright pop in the powerup's color on that snake, visible to everyone.
+// (set for exactly the broadcast where a powerup fired, per
+// server-rust/src/net.rs). Each is stamped with a local start time and aged
+// out over POWERUP_FLASH_MS -- a brief bright pop in the powerup's color on
+// that snake, visible to everyone.
 const POWERUP_FLASH_MS = 380;
 let activePowerFlashes = []; // [{ slot, type, startTime }]
 // Drift dust (v3.4.0): one transparent particle per grid cell a body

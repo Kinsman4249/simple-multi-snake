@@ -1,7 +1,7 @@
 // Deterministic synthetic scene generator for the Phase 7 renderer benchmark
 // and parity tests (tools/bench/). Builds prev/curr snapshot objects in the
 // exact shape the live client feeds Render.draw (see main.js frame() and
-// server.js broadcastState), with every effect active: trails, food,
+// server-rust/src/net.rs broadcast_state), with every effect active: trails, food,
 // pulsing pickups, blue shells, explosion rings, interpolating bodies,
 // boost jetstream, slide dust, input flash, correction glide, dead overlay.
 // No randomness -- layouts are arithmetic so 2D and GL render the same scene.

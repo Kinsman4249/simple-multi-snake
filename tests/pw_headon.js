@@ -1,5 +1,5 @@
 // Head-on collision e2e: when two snakes collide head-on, BOTH must die.
-// Covers BOTH tick-alignment shapes (see server.js resolveSnakeCollisions):
+// Covers BOTH tick-alignment shapes (see server-rust/src/sim.rs resolve_snake_collisions):
 //
 //   - SYNCED: both snakes move in the same movementStep. Meeting in the same
 //     cell (even head gap) or trading cells (odd gap / the swap). Regression

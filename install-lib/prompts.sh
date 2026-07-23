@@ -119,7 +119,7 @@ resolve_maxplayers() {
 # renders the DEBUG panel and an on-page build/version stamp (bottom-right)
 # so an operator can confirm which build a browser has actually loaded --
 # invaluable for spotting a stale cached deploy. When off, none of that is
-# constructed (zero-resource gate, see server/config.js) and players never
+# constructed (zero-resource gate, see server-rust/src/config.rs) and players never
 # see it.
 resolve_debug() {
   local def="${ENABLE_DEBUG:-${LAST_DEBUG:-$DEFAULT_DEBUG}}"
