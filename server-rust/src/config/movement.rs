@@ -2,6 +2,9 @@
 // movement-shaped (wormhole teleports, growthSpurt's speed-adjacent growth).
 use serde::{Deserialize, Serialize};
 
+// #[derive(...)] auto-generates code for this struct -- see
+// docs/RUST-CHEATSHEET.md. The #[serde(...)] lines below control how JSON
+// keys map onto these fields, also covered there.
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Grid {
     // Explicit cols/rows always win over a preset (this keeps every test's
@@ -12,25 +15,31 @@ pub struct Grid {
     pub rows: i32,
     #[serde(default = "d_cell_size", rename = "cellSize")]
     pub cell_size: i32,
+    // Option<String>: the preset name is optional (absent = use explicit
+    // cols/rows or the hardcoded fallback in config/mod.rs load()).
     #[serde(default, skip_serializing)]
     pub preset: Option<String>,
 }
 fn d_cell_size() -> i32 {
     20
 }
+// impl blocks hold a type's methods/trait implementations separately from
+// its struct/enum declaration -- see docs/RUST-CHEATSHEET.md.
 impl Default for Grid {
     fn default() -> Self {
         Grid { cols: 0, rows: 0, cell_size: 20, preset: None }
     }
 }
 
+// Snake move-tick tuning: how fast the snake ticks forward and how that
+// speeds up as it grows.
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase", default)]
 pub struct MoveCfg {
-    pub start_interval_ms: f64,
-    pub min_interval_ms: f64,
-    pub length_saturation: f64,
-    pub speed_ease_ms: f64,
+    pub start_interval_ms: f64,  // ms between moves at length 1 (slowest)
+    pub min_interval_ms: f64,    // ms between moves at max length (fastest, floor)
+    pub length_saturation: f64,  // length at which speed maxes out
+    pub speed_ease_ms: f64,      // how long a speed change takes to ease in
 }
 impl Default for MoveCfg {
     fn default() -> Self {
@@ -38,15 +47,16 @@ impl Default for MoveCfg {
     }
 }
 
+// Speed-boost (holding the boost key) tuning.
 #[derive(Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase", default)]
 pub struct BoostCfg {
     pub enabled: bool,
-    pub boost_speed: f64,
-    pub drift_ms: f64,
-    pub ramp_ms: f64,
-    pub hold_grace_ms: f64,
-    pub decel_ms: f64,
+    pub boost_speed: f64,      // speed multiplier while boosting
+    pub drift_ms: f64,         // grace window before boost drains on release
+    pub ramp_ms: f64,          // time to ramp up to full boost speed
+    pub hold_grace_ms: f64,    // how long a boost keypress "sticks" if released briefly
+    pub decel_ms: f64,         // time to decelerate back to normal speed
     pub drift_threshold: f64,
 }
 impl Default for BoostCfg {
@@ -63,7 +73,7 @@ impl Default for BoostCfg {
 #[serde(rename_all = "camelCase", default)]
 pub struct WormholeCfg {
     pub enabled: bool,
-    pub lookahead_depth: i32,
+    pub lookahead_depth: i32,  // how many tiles ahead to scan for a safe teleport exit
 }
 impl Default for WormholeCfg {
     fn default() -> Self {

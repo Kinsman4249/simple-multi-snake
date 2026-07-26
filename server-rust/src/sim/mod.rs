@@ -12,6 +12,8 @@
 // effects.rs (powerup spawn/activation/collection, expiry),
 // blue_shell.rs (in-flight projectile homing + impact).
 // ============================================================
+// `mod` declares a submodule (a sibling .rs file in this folder); see
+// docs/RUST-CHEATSHEET.md "Modules".
 mod blue_shell;
 mod collisions;
 mod effects;
@@ -19,6 +21,8 @@ mod evasion;
 mod movement;
 mod walls;
 
+// Re-export: lets other files write `sim::fire_powerup` instead of the
+// longer `sim::effects::fire_powerup`.
 pub use effects::fire_powerup;
 
 use crate::config::now_ms;
@@ -31,6 +35,10 @@ use crate::state::Game;
 // shells, and the broadcast when anything moved.
 pub fn sim_tick(game: &mut Game) {
     let now = now_ms();
+    // First tick ever has no previous timestamp (None), so fall back to the
+    // configured tick length; otherwise use real elapsed time, clamped to
+    // 250ms so a debugger pause / lag spike can't produce one giant catch-up
+    // step. See RUST-CHEATSHEET.md "match" and "Option<T>".
     let dt = match game.last_sim_at {
         None => game.cfg.sim_ms,
         Some(last) => ((now - last) as f64).min(250.0),
@@ -49,15 +57,29 @@ pub fn sim_tick(game: &mut Game) {
 
     let mut moved = walls_changed;
     let mut guard = 0;
+    // Each snake moves at its own pace: instead of moving every snake every
+    // tick, we accumulate elapsed time per-snake (move_accum_ms) and only
+    // step a snake once it has banked enough time to cover one grid cell
+    // (`interval`). The outer loop repeats so a snake that is far enough
+    // ahead (e.g. after a big dt) can take multiple steps in one sim tick.
     loop {
         let mut movers: Vec<usize> = Vec::new();
         for i in 0..game.slots.len() {
+            // `matches!` is a shorthand for a match that just returns a
+            // bool -- see RUST-CHEATSHEET.md "matches!". `game.slots` is a
+            // `Vec<Option<Snake>>` (fixed player seats, some possibly
+            // empty) -- see the cheatsheet's "Vec<Option<T>>" section.
             let alive = matches!(&game.slots[i], Some(s) if s.alive);
             if !alive {
                 continue;
             }
             if guard == 0 {
                 movement::update_momentum(game, i, now, dt);
+                // `mult` starts at the boost-ramp speed factor, then every
+                // active powerup with a speed effect (e.g. speed boots)
+                // multiplies it further. The `{ ... }` here is a block
+                // expression -- see cheatsheet -- used to keep the borrow
+                // of `game.slots[i]` short-lived.
                 let mut mult = {
                     let s = game.slots[i].as_ref().unwrap();
                     1.0 + (game.cfg.boost.boost_speed - 1.0) * s.ramp_progress

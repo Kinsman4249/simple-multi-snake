@@ -5,12 +5,15 @@ const repoRoot = Deno.args[0];
 const label = Deno.args[1] || repoRoot;
 const CDP_PORT = 9226;
 const BASE = "http://127.0.0.1:8080";
+// Arrow function returning a Promise that resolves after `ms` milliseconds
+// -- lets other code `await sleep(...)` to pause. See docs/JS-CHEATSHEET.md
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // Prefer the checkout's compiled Rust server binary; an older worktree
 // without one (a pre-rewrite baseline) falls back to its JS server.
 const binPath = repoRoot.replace(/\/$/, "") + "/server-rust/target/release/multisnake-server";
 let haveBin = false;
+// await pauses this async script until the Promise from Deno.stat resolves -- see docs/JS-CHEATSHEET.md
 try { haveBin = (await Deno.stat(binPath)).isFile; } catch (_) { /* not built */ }
 const server = haveBin
   ? new Deno.Command(binPath, { cwd: repoRoot, stdout: "null", stderr: "null" }).spawn()
@@ -33,14 +36,20 @@ const chrome = new Deno.Command("flatpak", {
 }).spawn();
 
 let ws, msgId = 0;
+// pending: tracks CDP (Chrome DevTools Protocol) requests awaiting a reply,
+// keyed by message id, so ws.onmessage below can resolve the right Promise.
 const pending = new Map();
+// Sends one CDP command over the WebSocket and returns a Promise that
+// resolves when the matching response arrives (see ws.onmessage below).
 function cdp(method, params, sessionId) {
   const id = ++msgId;
   return new Promise((res, rej) => {
     pending.set(id, { res, rej });
+    // JSON.stringify converts this JS object to a text message for the socket -- see docs/JS-CHEATSHEET.md
     ws.send(JSON.stringify(sessionId ? { id, method, params, sessionId } : { id, method, params }));
   });
 }
+// Runs `expression` as JS code inside the browser tab (via CDP) and returns its value.
 async function evalIn(sessionId, expression) {
   const r = await cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, sessionId);
   if (r.exceptionDetails) throw new Error("page eval failed: " + JSON.stringify(r.exceptionDetails.exception));
@@ -55,6 +64,8 @@ try {
   }
   ws = new WebSocket(version.webSocketDebuggerUrl);
   await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
+  // ws.onmessage: assigning a function to this property is how WebSocket
+  // events are handled here, instead of addEventListener -- see docs/JS-CHEATSHEET.md
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.id && pending.has(msg.id)) {
@@ -83,6 +94,7 @@ try {
   const keys = ["ArrowUp", "ArrowRight", "ArrowDown", "ArrowRight"];
   const t0 = Date.now();
   let presses = 0;
+  // Loops for 45s, cycling through the key sequence above.
   while (Date.now() - t0 < 45000) {
     const key = keys[presses % keys.length];
     for (const type of ["rawKeyDown", "keyUp"]) {

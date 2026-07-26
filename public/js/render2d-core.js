@@ -61,6 +61,11 @@
 // trail, portals, input/power flashes).
 // ============================================================
 (window.__BUILDS__ = window.__BUILDS__ || {}).render2d = "render2d 2026-07-20.1";
+// Render2D is NOT the IIFE-module pattern used elsewhere (see
+// JS-CHEATSHEET.md) -- it's a plain shared object that this file and its
+// two siblings (render2d-art.js, render2d-fx.js) each add functions/
+// constants to via `Object.assign(Render2D, {...})` at the bottom, so all
+// three script tags need to run (in order) before Render2D is complete.
 const Render2D = {};
 
 const canvas = document.getElementById("game");
@@ -100,6 +105,11 @@ function fitCanvas() {
   canvas.style.imageRendering = scale >= 1 ? "pixelated" : "auto";
 }
 window.addEventListener("resize", fitCanvas);
+// Draws one filled square at grid cell `seg` (converting grid x/y into
+// pixel coordinates by multiplying by cellSize), shrunk slightly by
+// cellGap so adjacent cells show a thin gap between them. This is the
+// basic building block most of the board (snake segments, food, trails)
+// is drawn with.
 function drawCell(seg, color) {
   ctx.fillStyle = color;
   ctx.fillRect(seg.x * grid.cellSize, seg.y * grid.cellSize, grid.cellSize - cellGap, grid.cellSize - cellGap);
@@ -164,6 +174,8 @@ function draw(prevSnap, currSnap, localBodies, eatenKeys, fx, opts) {
   if (currSnap.blueShells) currSnap.blueShells.forEach(sh => drawBlueShell(sh, now));
   const explosions = (fx && fx.explosions) || [];
   explosions.forEach(e => drawExplosion(e.x, e.y, e.radius, e.age));
+  // localBodies is a Map (server slot -> predicted body array) passed in
+  // from main.js/bootstrap.js -- see JS-CHEATSHEET.md "Map / Set / WeakMap".
   currSnap.players.forEach((p, i) => {
     if (!p) return;
     const isLocal = localBodies && localBodies.has(i);

@@ -5,6 +5,7 @@
 // pulsing pickups, blue shells, explosion rings, interpolating bodies,
 // boost jetstream, slide dust, input flash, correction glide, dead overlay.
 // No randomness -- layouts are arithmetic so 2D and GL render the same scene.
+// IIFE module -- see docs/JS-CHEATSHEET.md
 (function () {
   const PLAYER_COLORS = [
     { head: "#8f8", body: "#3c3" },
@@ -28,6 +29,7 @@
   }
 
   function makeScene(cfg) {
+    // Destructuring: pulls these fields out of the cfg object -- see docs/JS-CHEATSHEET.md
     const { cols, rows, cellSize, segs, trailCount } = cfg;
     const grid = { cols, rows, cellSize };
     const qw = Math.floor(cols / 2) - 4, qh = Math.floor(rows / 2) - 4;
@@ -61,6 +63,8 @@
     // (follow-the-leader), i.e. prevBody[si] = body[si+1] -- Manhattan
     // distance 1 everywhere, so the smooth-interpolation branch runs for
     // every non-local segment (the worst case).
+    // Object.assign here copies each player's fields into a new object, then
+    // overwrites just `body` -- shallow-clone-with-override -- see docs/JS-CHEATSHEET.md
     const prevPlayers = players.map(p => Object.assign({}, p, {
       body: p.body.map((seg, si) => p.body[Math.min(si + 1, p.body.length - 1)])
     }));
@@ -116,6 +120,8 @@
       // Refresh time-anchored pieces each frame: keeps interpolation t~0.5,
       // flash alpha ~0.5, glide mid-flight -- stable worst-case work. Pass a
       // FROZEN `now` for parity screenshots.
+      // Method shorthand: `tick(now) { ... }` is the same as `tick: function(now) { ... }`.
+      // Called once per frame to refresh time-based effects (flashes, glides, explosions).
       tick(now) {
         curr.recvTime = now - 50;
         scene.fx.flashes = [
@@ -160,5 +166,6 @@
     return scene;
   }
 
+  // Public API of this module, attached to `window` for other scripts to use.
   window.BenchScene = { makeScene };
 })();

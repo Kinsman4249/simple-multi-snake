@@ -18,8 +18,11 @@ function baseConfig(spawns) {
 
 // One food eat via the proven greedy-steer pattern (score must be > 0 to
 // qualify), then a deliberate wall death, then wait for the score to land.
+// async function + await: pauses here until each Promise resolves --
+// see docs/JS-CHEATSHEET.md
 async function eatOnce(client, local) {
   const before = myPlayer(client.state, local).body.length;
+  // arrow function with no args, used as a repeating callback -- see docs/JS-CHEATSHEET.md
   const timer = setInterval(() => {
     const cur = client.state;
     const p = myPlayer(cur, local);
@@ -40,6 +43,8 @@ async function dieOnWall(client, local) {
 }
 
 async function scenarioLocal() {
+  // JSON.stringify converts this array to text to pass as an env var --
+  // see docs/JS-CHEATSHEET.md
   const server = await startServer(baseConfig(), {
     SNAKE_TEST_SPAWNS: JSON.stringify([{ x: 20, y: 15, dir: "right" }])
   });

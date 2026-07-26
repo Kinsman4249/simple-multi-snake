@@ -12,6 +12,8 @@ use axum::extract::{RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
+// `async fn` -- can pause/resume instead of blocking a thread; see
+// docs/RUST-CHEATSHEET.md ("async fn / .await").
 pub(crate) async fn ws_handler(
     State(app): State<App>,
     ws: WebSocketUpgrade,
@@ -20,24 +22,38 @@ pub(crate) async fn ws_handler(
     // One-shot join token, minted by /api/verify.
     let token = query
         .as_deref()
+        // .and_then chains Option-returning steps; see RUST-CHEATSHEET.md (Option<T>).
         .and_then(|q| {
             q.split('&')
                 .find_map(|kv| kv.strip_prefix("token=").map(String::from))
         })
         .unwrap_or_default();
+    // app.captcha is Arc<Mutex<Captcha>>: .lock().unwrap() gets exclusive,
+    // temporary access to the shared captcha state; see RUST-CHEATSHEET.md.
     if !app.captcha.lock().unwrap().consume_token(&token) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    // Hands the upgraded socket off to handle_socket once the HTTP
+    // handshake to WebSocket is complete.
     ws.on_upgrade(move |socket| handle_socket(app, socket))
 }
 
 async fn handle_socket(app: App, socket: WebSocket) {
     use futures_util::{SinkExt, StreamExt};
+    // Split the socket into a write half (sink) and read half (stream) so
+    // they can be driven independently -- the writer task below owns
+    // `sink`, while this function keeps reading from `stream`.
     let (mut sink, mut stream) = socket.split();
+    // An MPSC (multi-producer, single-consumer) channel: any code holding
+    // `tx` can queue an outbound message; only the writer task below reads
+    // them via `rx`, one at a time, in order.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<WsOut>();
     let conn_id = captcha::random_hex(8);
 
-    // Writer task: drains the connection's outbound channel.
+    // Writer task: a separate concurrent async task (spawned onto the
+    // tokio runtime) that drains this connection's outbound channel and
+    // pushes each message onto the real socket. Keeping this in its own
+    // task means a slow/blocked write doesn't stall the reader below.
     let writer = tokio::spawn(async move {
         while let Some(out) = rx.recv().await {
             let res = match out {
@@ -54,15 +70,22 @@ async fn handle_socket(app: App, socket: WebSocket) {
         }
     });
 
+    // Register the new connection and immediately push a state update so
+    // the just-joined client (and everyone else) sees it right away.
     {
         let mut g = app.game.lock().unwrap();
         lifecycle::assign_connection(&mut g, conn_id.clone(), tx);
         broadcast_state(&mut g);
     }
 
+    // Main read loop: blocks (asynchronously) waiting for the next
+    // incoming frame until the client disconnects or sends Close.
     while let Some(Ok(msg)) = stream.next().await {
         match msg {
             Message::Text(raw) => {
+                // let-else: bad JSON just gets skipped (continue to the
+                // next frame) instead of tearing down the connection; see
+                // RUST-CHEATSHEET.md ("let ... else").
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else { continue };
                 let mut g = app.game.lock().unwrap();
                 handle_message(&mut g, &conn_id, &v);
@@ -72,6 +95,9 @@ async fn handle_socket(app: App, socket: WebSocket) {
         }
     }
 
+    // Connection is done (loop exited): tear the seat/slot down and let
+    // everyone else know, then stop the writer task since nothing will
+    // send to it again.
     {
         let mut g = app.game.lock().unwrap();
         lifecycle::remove_connection(&mut g, &conn_id);

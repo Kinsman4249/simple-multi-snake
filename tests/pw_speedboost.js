@@ -23,6 +23,7 @@ async function main() {
   });
   try {
     const c1 = await connectClient();
+    // `s => ...` is an arrow function callback (see docs/JS-CHEATSHEET.md).
     await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
     const baseline = myPlayer(c1.state, 0).moveMs;
     console.log("baseline moveMs =", baseline);

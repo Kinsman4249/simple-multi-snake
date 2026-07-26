@@ -38,6 +38,7 @@ async function main() {
     const server = await boot();
     try {
       const c = await connectClient();
+      // `s => { ... }` is an arrow function callback (see docs/JS-CHEATSHEET.md).
       await c.waitFor(s => { const p = myPlayer(s, 0); return p && p.alive; }, 5000);
       // Second seat: purely to keep the room non-empty; unrelated to the wall.
       c.send({ type: "joinLocal" });
@@ -49,6 +50,8 @@ async function main() {
       const w = solidState.walls.find(w => w.x === 12 && w.y === 15);
       assert(w.state === "solid", "an instantly-telegraphed wall should broadcast as solid (got " + w.state + ")");
       const dead = await c.waitFor(s => { const p = myPlayer(s, 0); return p && !p.alive; }, 6000);
+      // `dead.kills || []` falls back to an empty array if kills is missing --
+      // see docs/JS-CHEATSHEET.md ("Nullish coalescing / defaults `a || b`").
       const kills = dead.kills || [];
       assert(kills.some(k => k.cause === "obstacle"), "death against a solid obstacle wall should carry cause 'obstacle' (got " + JSON.stringify(kills) + ")");
     } finally { await stopServer(server); }

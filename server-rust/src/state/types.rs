@@ -5,6 +5,9 @@ use crate::powerups::PowerupType;
 use rand::Rng;
 use serde::Serialize;
 
+// `struct` bundling named fields, with `#[derive(...)]` auto-generating
+// common trait impls (Clone, comparisons, debug-printing, JSON) above it --
+// see "struct/enum" and "derive" in docs/RUST-CHEATSHEET.md.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Debug)]
 pub struct Cell {
     pub x: i32,
@@ -15,6 +18,7 @@ pub struct Cell {
 pub struct Input {
     pub x: i32,
     pub y: i32,
+    // Option<T>: "maybe present, maybe not" -- see RUST-CHEATSHEET.md.
     pub seq: Option<i64>,
     // Boost ramp progress (0..1) at keypress time; 0 = no drift.
     pub drift: f64,
@@ -27,6 +31,8 @@ pub struct ActivePowerup {
     pub expires_at_tick: i64,
 }
 
+// `enum`: exactly one of these named variants at a time (here, no variant
+// carries extra data -- see WsOut below for one that does).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Player,
@@ -45,13 +51,16 @@ pub struct FoodRateAcc {
     pub cur_food: i64,
     pub cur_play_ms: f64,
     pub closed_count: i64,
-    pub top_buckets: Vec<i64>, // ascending-sorted running top-K
+    // Vec<T>: growable array -- see RUST-CHEATSHEET.md. Ascending-sorted
+    // running top-K here.
+    pub top_buckets: Vec<i64>,
     pub top_sum: i64,
     pub cached_rate: f64,
     pub locked: bool,
 }
 
-// What the writer task can be asked to send.
+// What the writer task can be asked to send. Unlike Role above, these
+// variants carry data per-variant (Text holds a String).
 pub enum WsOut {
     Text(String),
     Ping,
@@ -148,6 +157,8 @@ pub struct KillEvent {
     pub victim_color: Option<usize>,
     pub killer: Option<String>,
     pub killer_color: Option<usize>,
+    // &'static str: lives for the whole program (a literal), never freed --
+    // see RUST-CHEATSHEET.md.
     pub cause: &'static str,
     pub rivalry_count: Option<i64>,
 }
@@ -168,6 +179,8 @@ pub struct PerfCounters {
 }
 
 pub fn dir_vector(name: &str) -> Option<Cell> {
+    // match: pattern-matching switch, every case covered (see the `_`
+    // catch-all below) -- see RUST-CHEATSHEET.md.
     match name {
         "up" => Some(Cell { x: 0, y: -1 }),
         "down" => Some(Cell { x: 0, y: 1 }),
@@ -178,13 +191,19 @@ pub fn dir_vector(name: &str) -> Option<Cell> {
 }
 
 pub(crate) fn rand_below(n: i32) -> i32 {
+    // .max(1): random_range panics on an empty 0..0 range, so a zero/negative
+    // n is clamped up to 0..1 (always returns 0) instead of crashing.
     rand::rng().random_range(0..n.max(1))
 }
 
 // hitsBody: does h land on any segment of body except (optionally) the
 // tail? Free function so callers can borrow one snake while scanning
 // another's body.
+// body: &[Cell] borrows a slice (view into a Vec, no ownership taken) --
+// see "Slices" and "References" in RUST-CHEATSHEET.md.
 pub fn hits_body(body: &[Cell], h: Cell, skip_tail: bool) -> bool {
     let end = if skip_tail { body.len().saturating_sub(1) } else { body.len() };
+    // .any(|c| ...) takes a closure (inline anonymous function) -- see
+    // "Closures" in RUST-CHEATSHEET.md.
     body[..end].iter().any(|c| c.x == h.x && c.y == h.y)
 }

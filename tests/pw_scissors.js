@@ -30,6 +30,8 @@ import { connectClient, myPlayer, assert, startServer, stopServer, runTest, test
 // (pickups only via testHook), every other powerup disabled so nothing
 // stray interferes with a staged scenario.
 function baseConfig(grid, extra) {
+  // Object.assign(...) merges the two config objects together -- see
+  // docs/JS-CHEATSHEET.md.
   return Object.assign({
     maxPlayers: 4,
     grid,
@@ -62,6 +64,8 @@ async function scenarioPickupArms() {
   );
   try {
     const c1 = await connectClient();
+    // `s => ...` is an arrow function -- a short callback passed to waitFor()
+    // (see docs/JS-CHEATSHEET.md, "Arrow functions" and "Playwright basics").
     await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
     const lenBefore = myPlayer(c1.state, 0).body.length;
     const head = myPlayer(c1.state, 0).body[0];
@@ -110,6 +114,8 @@ async function scenarioSelfCut() {
     assert(p.alive === true, "self-cut must survive, not die");
     assert(p.scissorsCharge === false, "charge must be consumed by the self-cut");
     assert(p.body.length < lenBefore, "the severed tail must shorten the body (before " + lenBefore + ", after " + p.body.length + ")");
+    // `after.foods || []` falls back to an empty array if foods is missing --
+    // see docs/JS-CHEATSHEET.md, "Nullish coalescing / defaults `a || b`".
     assert((after.foods || []).some(f => f.bounty), "the severed segments must scatter as bounty food");
     console.log("PASS: self-collision cuts the tail into bounty food (before " + lenBefore + ", after " + p.body.length + ").");
     c1.close(); c2.close();

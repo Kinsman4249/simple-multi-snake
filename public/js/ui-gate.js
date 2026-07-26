@@ -10,10 +10,14 @@
 // gating the loading screen; retries after a wrong answer are not -- the
 // screen is long gone by then. isBootTask tells the two apart.
 let captchaId = null;
+// `async function` + `await` (see docs/JS-CHEATSHEET.md): `fetch` returns a
+// Promise that resolves once the network request completes; `await` pauses
+// this function until that happens, so the code below reads top-to-bottom
+// instead of chaining `.then()` callbacks.
 async function loadCaptcha(isBootTask) {
   try {
     const res = await fetch("/api/captcha");
-    const data = await res.json();
+    const data = await res.json(); // .json() is ALSO async -- another await
     captchaId = data.id;
     document.getElementById("captchaQuestion").textContent = data.a + " + " + data.b + " = ?";
   } finally {
@@ -45,12 +49,17 @@ function saveTipShown(key, shown) {
 // captcha form itself always stays visible, only these info blurbs start
 // hidden behind a Show button.
 function initTipToggles() {
+  // .forEach(el => {...}) runs the arrow function once per element in the
+  // list (see docs/JS-CHEATSHEET.md for arrow function syntax).
   document.querySelectorAll(".tip").forEach(el => {
     const btn = el.querySelector(".tip-toggle");
     if (!btn) return;
     let shown = loadTipShown(el.id, false);
     const apply = () => { el.classList.toggle("collapsed", !shown); btn.textContent = shown ? "Hide" : "Show"; };
     apply();
+    // Assigning a function to `btn.onclick` wires up the click handler
+    // (event-handler-property style, see docs/JS-CHEATSHEET.md) -- simpler
+    // than addEventListener when only one handler is ever needed.
     btn.onclick = () => { shown = !shown; saveTipShown(el.id, shown); apply(); };
   });
 }
@@ -127,6 +136,9 @@ function setPowerupInfo(info, powerupsCfg) {
   // Render is a top-level const (script load order: render.js before ui.js),
   // so it's a global binding but NOT a window property. POWERUP_STYLE holds
   // the exact on-board draw colors -- the single source for every swatch.
+  // `expr || {}` falls back to an empty object when the left side is
+  // falsy/missing (the `x || fallback` default idiom, see
+  // docs/JS-CHEATSHEET.md), so later lookups like `style[type]` never throw.
   const style = (typeof Render !== "undefined" && Render.POWERUP_STYLE) || {};
   // The banana pickup is drawn on-board as the pixel-art banana crescent (not
   // a flat square), so its swatch must be that exact sprite too (v3.6.2) -- a
@@ -202,6 +214,8 @@ function initCaptchaGate(onSuccess) {
       return;
     }
     const answer = document.getElementById("captchaAnswer").value;
+    // JSON.stringify turns the JS object into a JSON text string to send in
+    // the request body (see docs/JS-CHEATSHEET.md); the server parses it back.
     const res = await fetch("/api/verify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -220,4 +234,6 @@ function initCaptchaGate(onSuccess) {
   };
 }
 
+// Publish this file's public functions onto the shared UI object (see
+// docs/JS-CHEATSHEET.md for Object.assign and shorthand property syntax).
 Object.assign(UI, { initCaptchaGate, setPowerupInfo });

@@ -21,19 +21,25 @@ function cfg(powerupOverrides) {
     move: { startIntervalMs: 150, minIntervalMs: 150 },
     enableDebug: false,
     walls: { enabled: false },
+    // Object.assign merges the two objects together; `powerupOverrides || {}`
+    // falls back to an empty object if none was passed -- see
+    // docs/JS-CHEATSHEET.md ("Object.assign" and "Nullish coalescing").
     powerups: Object.assign({ spawnIntervalMs: 200, maxConcurrentPickups: 4 }, powerupOverrides || {})
   };
 }
 
 // Watch broadcasts for `ms`, returning every distinct pickup (type@x,y) seen.
 async function watchPickups(client, ms) {
-  const seen = new Map(); // key -> type
+  const seen = new Map(); // key -> type -- Map is a key/value dictionary,
+  // see docs/JS-CHEATSHEET.md ("Map / Set / WeakMap").
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
     const list = (client.state && client.state.powerupPickups) || [];
     for (const p of list) seen.set(p.type + "@" + p.x + "," + p.y, p.type);
     await sleep(50);
   }
+  // `...` here spreads the Map's values into a plain array -- see
+  // docs/JS-CHEATSHEET.md ("Spread / rest").
   return [...seen.values()];
 }
 

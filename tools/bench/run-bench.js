@@ -15,9 +15,12 @@ const HTTP_PORT = 8099;
 const CDP_PORT = 9223;
 
 const repoRoot = new URL("../..", import.meta.url).pathname;
+// Plain object used as a lookup table: file extension -> Content-Type header value.
 const MIME = { ".html": "text/html", ".js": "application/javascript", ".json": "application/json", ".css": "text/css", ".wasm": "application/wasm" };
 
 // --- tiny static server over the repo root ---
+// Deno.serve takes an async request handler; `await Deno.readFile` below
+// pauses until the file is read from disk before responding -- see docs/JS-CHEATSHEET.md
 const server = Deno.serve({ port: HTTP_PORT, hostname: "127.0.0.1", onListen: () => {} }, async (req) => {
   const pathname = decodeURIComponent(new URL(req.url).pathname);
   const fsPath = repoRoot + pathname.replace(/^\//, "");
@@ -52,6 +55,7 @@ async function cleanup() {
 
 // --- minimal CDP client ---
 let ws, msgId = 0;
+// Map: tracks in-flight CDP requests by id so responses can be matched up -- see docs/JS-CHEATSHEET.md
 const pending = new Map();
 function cdp(method, params, sessionId) {
   const id = ++msgId;
@@ -90,6 +94,7 @@ try {
 
   const deadline = Date.now() + TIMEOUT_S * 1000;
   let result = null;
+  // Poll the page every second until the expected global (e.g. window.__BENCH_RESULTS__) shows up.
   while (Date.now() < deadline) {
     const r = await cdp("Runtime.evaluate", {
       expression: `JSON.stringify(${EXPR} || null)`, returnByValue: true

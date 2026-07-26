@@ -2,6 +2,11 @@
 // foodMultiplier while active -> reverts after durationMs. Run:
 // deno run --allow-net --allow-read --allow-write --allow-run --allow-env
 // tests/pw_growthspurt.js
+//
+// In plain terms: this checks the "growth spurt" power-up -- picking it up
+// should fire immediately (no button press needed), doubling how much the
+// snake grows from eating food for a set duration, then the growth amount
+// should go back to normal once the effect times out.
 import { connectClient, myPlayer, assert, startServer, stopServer, collectNextPickup, stepToward, runTest } from "./helpers.js";
 
 // Steers toward the current food cell on a fixed cadence until the local
@@ -13,6 +18,8 @@ import { connectClient, myPlayer, assert, startServer, stopServer, collectNextPi
 // sidesteps that race entirely.
 async function eatOnceAndMeasureGrowth(client, local) {
   const before = myPlayer(client.state, local).body.length;
+  // setInterval repeats the arrow-function callback every 70ms until
+  // clearInterval stops it below -- see docs/JS-CHEATSHEET.md
   const timer = setInterval(() => {
     const cur = client.state;
     const p = myPlayer(cur, local);

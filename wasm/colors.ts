@@ -4,8 +4,14 @@
 // equivalent palettes for wasm/2D pixel parity -- see the per-constant
 // comments below for which render2d.js const each one mirrors.
 
-// @ts-ignore: decorator valid in AssemblyScript
+// @ts-ignore: decorator valid in AssemblyScript -- see docs/JS-CHEATSHEET.md
+// (@inline asks the compiler to inline this at every call site for speed)
 @inline
+// Packs 4 separate byte values into one u32 in ABGR byte order (red in the
+// lowest byte, alpha in the highest) via bit-shift + OR -- this is the
+// layout a little-endian Uint32Array view over RGBA bytes produces, which is
+// why the JS side can read these colors straight out of WASM memory without
+// re-packing them.
 export function rgba(r: u32, g: u32, b: u32, a: u32): u32 { return r | (g << 8) | (b << 16) | (a << 24); }
 
 export const COLOR_FOOD: u32 = rgba(0xee, 0x33, 0x33, 255);        // #e33
@@ -19,6 +25,8 @@ const CANDY_PINK: u32 = rgba(0xff, 0x44, 0x99, 255); // #ff4499
 const CANDY_CYAN: u32 = rgba(0x44, 0xcc, 0xff, 255); // #44ccff
 const CANDY_LIME: u32 = rgba(0x77, 0xee, 0x44, 255); // #77ee44
 export function candyColor(i: i32): u32 {
+  // `i & 3` keeps only the lowest 2 bits, i.e. i mod 4 -- a fast way to
+  // cycle through 4 colors in order as i counts up (0,1,2,3,0,1,2,3,...).
   const m = i & 3;
   if (m == 0) return CANDY_GOLD;
   if (m == 1) return CANDY_PINK;

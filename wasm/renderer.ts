@@ -47,6 +47,11 @@ import { bananaVal, warnVal, warnColor, spikeVal, spikeColor, scissorsVal, sciss
 import { instBuf, allocInstBuf, resetInstN, getInstN, inst } from "./instbuf";
 import { drawPlayers } from "./draw-players";
 
+// Module-level mutable state (see docs/JS-CHEATSHEET.md's AssemblyScript
+// section for `usize`): these hold the addresses of the two snapshot
+// buffers, the frame-input buffer, and the current grid/cell settings.
+// Nothing here is exported directly -- callers reach it through the getter
+// functions below (snapPtr, frameInputPtr, etc).
 let snapA: usize = 0;
 let snapB: usize = 0;
 let frameIn: usize = 0;
@@ -55,6 +60,11 @@ let gridRows: i32 = 0;
 let cellSize: i32 = 0;
 let cellGap: i32 = 1;
 
+// Called once by the JS side to set up memory. snapA/snapB are a double
+// buffer: JS writes each new snapshot into whichever one ISN'T currently
+// being displayed (see the `which` param of render() below), so the
+// renderer can always compare "current" against "previous" for smooth
+// interpolation without the two ever being the same snapshot mid-write.
 export function init(cols: i32, rows: i32, cs: i32): void {
   if (snapA == 0) {
     snapA = heap.alloc(SNAP_SIZE);
@@ -77,6 +87,8 @@ export function instanceCapacity(): i32 { return INSTANCE_CAP; }
 // snapshot region (the other one is the previous snapshot).
 export function render(now: f64, which: i32): i32 {
   resetInstN();
+  // `cond ? a : b` is a ternary expression -- "a if cond, else b" -- used
+  // throughout this file as a compact if/else that produces a value.
   const curr = which == 0 ? snapA : snapB;
   const prev = which == 0 ? snapB : snapA;
   const cs = <f32>cellSize;

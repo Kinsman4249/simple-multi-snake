@@ -12,12 +12,15 @@ const COLS = 64, ROWS = 32;
 const INTERVAL = 120;
 const BOOST = { enabled: true, boostSpeed: 2, driftMs: 400, rampMs: 200, holdGraceMs: 0, decelMs: 400, driftThreshold: 0.3 };
 
+// async function + await: pauses here until each Promise resolves --
+// see docs/JS-CHEATSHEET.md
 async function ensureHeadingRight(client) {
   let p = myPlayer(client.state, 0);
   if (p.dir.x === 1) return;
   if (p.dir.x === -1) {
     const perp = p.body[0].y > ROWS / 2 ? "up" : "down";
     client.send({ type: "dir", dir: perp, local: 0 });
+    // arrow function passed as a callback -- see docs/JS-CHEATSHEET.md
     await client.waitFor(s => myPlayer(s, 0).dir.x === 0, 3000);
   }
   client.send({ type: "dir", dir: "right", local: 0 });
@@ -30,6 +33,8 @@ async function main() {
     move: { startIntervalMs: INTERVAL, minIntervalMs: INTERVAL, rampIntervalSec: 3600, rampStepMs: 0 },
     boost: BOOST,
     powerups: { spawnIntervalMs: 600000 }
+  // JSON.stringify converts this array to text to pass as an env var --
+  // see docs/JS-CHEATSHEET.md
   }, { SNAKE_TEST_SPAWNS: JSON.stringify([{ x: 8, y: 16, dir: "right" }]) });
   try {
     const c1 = await connectClient();

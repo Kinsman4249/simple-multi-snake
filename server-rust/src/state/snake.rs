@@ -3,11 +3,14 @@ use crate::config::now_ms;
 use crate::powerups::PowerupType;
 
 // One player slot (JS: the object newPlayerSlot builds).
+// A plain `struct` of fields (no derive here) -- see RUST-CHEATSHEET.md.
 pub struct Snake {
     pub conn_id: String,
     // Index into config::COLORS; None for slots past the palette (matches
-    // the JS COLORS[freeIndex] being undefined for slot 4+).
+    // the JS COLORS[freeIndex] being undefined for slot 4+). Option<usize>
+    // -- see "Option<T>" in RUST-CHEATSHEET.md.
     pub color: Option<usize>,
+    // Vec<T>: growable array, here the snake's segments head-to-tail.
     pub body: Vec<Cell>,
     pub dir: Cell,
     pub input_queue: Vec<Input>,
@@ -40,7 +43,13 @@ pub struct Snake {
     pub respawn_at: Option<i64>,
 }
 
+// impl block: Snake's methods, defined apart from its field list above --
+// see "impl blocks" in RUST-CHEATSHEET.md.
 impl Snake {
+    // Constructor convention: a `new` associated function (called as
+    // `Snake::new(...)`, not on an existing instance) that builds and
+    // returns one. Rust has no built-in "constructor" keyword -- this is
+    // just a plain function that happens to be named `new`.
     pub fn new(conn_id: String, color: Option<usize>) -> Snake {
         Snake {
             conn_id,
@@ -74,6 +83,9 @@ impl Snake {
             respawn_at: None,
         }
     }
+    // .map_or(default, closure): if active_powerup is Some, run the closure
+    // on its value; if None, use `false` instead -- see "Option<T>" and
+    // "Closures" in RUST-CHEATSHEET.md.
     pub fn active_powerup_is(&self, t: PowerupType) -> bool {
         self.active_powerup.map_or(false, |a| a.ptype == t)
     }

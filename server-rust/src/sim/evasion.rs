@@ -2,6 +2,9 @@
 // it's the snake's own life on the line) and the scissors self-save/wall-
 // shatter fallback (tried only after wormhole has already failed). Also
 // owns the wormhole portal-marker fx lifecycle.
+// `super::collisions` reaches one level up (this module's parent, sim::)
+// then into the sibling `collisions` module -- see RUST-CHEATSHEET.md
+// "Modules" for `super::` vs `crate::`.
 use super::collisions::DiedMap;
 use crate::lifecycle::KillInfo;
 use crate::powerups::attempt_wormhole;
@@ -27,6 +30,10 @@ pub(crate) fn sweep_portal_fx(game: &mut Game, now: i64) -> bool {
             continue;
         }
         let owner = game.portal_fx[k].owner_slot;
+        // `matches!` -- a match that just returns a bool, see
+        // RUST-CHEATSHEET.md "matches!". `.get(owner)` returns `Option<&_>`
+        // (None if the index is out of range) and `.and_then(...)` chains
+        // another Option-producing step only if the first one was Some.
         let draining = matches!(
             game.slots.get(owner).and_then(|s| s.as_ref()),
             Some(s) if s.alive && s.teleport_drain > 0
@@ -36,6 +43,9 @@ pub(crate) fn sweep_portal_fx(game: &mut Game, now: i64) -> bool {
         }
     }
     let before = game.portal_fx.len();
+    // `.retain(|p| ...)` keeps only the elements where the closure returns
+    // true (see RUST-CHEATSHEET.md "Closures"); `.map_or(true, |e| ...)`
+    // means "if expires_ms is None keep it (true), else check the deadline".
     game.portal_fx.retain(|p| p.expires_ms.map_or(true, |e| now < e));
     game.portal_fx.len() != before
 }
@@ -137,6 +147,8 @@ pub(crate) fn try_wormhole_or_die(
 // steer away from the wall it just broke through.
 fn safer_perpendicular(game: &Game, from: Cell, dir: Cell, depth: i32) -> Option<Cell> {
     let now = crate::config::now_ms();
+    // A closure stored in a variable so it can be called twice below (once
+    // per candidate direction) instead of duplicating this loop.
     let clear_run = |d: Cell| -> i32 {
         let mut run = 0;
         let mut c = from;
@@ -152,6 +164,8 @@ fn safer_perpendicular(game: &Game, from: Cell, dir: Cell, depth: i32) -> Option
         }
         run
     };
+    // Rotating a direction vector 90 degrees is just swapping x/y and
+    // flipping one sign; doing it both ways gives "left" and "right".
     let left = Cell { x: dir.y, y: -dir.x };
     let right = Cell { x: -dir.y, y: dir.x };
     let (lr, rr) = (clear_run(left), clear_run(right));
@@ -179,6 +193,8 @@ pub(crate) fn try_scissors_self_save(
     }
     game.slots[idx].as_mut().unwrap().scissors_charge = false;
     let fatal_head = new_heads[&idx];
+    // Matching directly on string literals ("self"/"obstacle") -- see
+    // RUST-CHEATSHEET.md "match".
     match cause {
         "self" => {
             let min_len = game.cfg.min_snake_length;

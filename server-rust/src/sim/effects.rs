@@ -1,6 +1,8 @@
 // Powerup pickup spawning + activation, food/pickup collection during a
 // movement step (trails, growth, kill bonuses), and sim-clock expiry.
 use super::collisions::DiedMap;
+// `PowerupType` is an enum -- see RUST-CHEATSHEET.md "struct and enum" --
+// listing every kind of powerup pickup in the game.
 use crate::powerups::{food_growth_multiplier, kill_bonus_growth_bonus, PowerupType, POWERUP_TYPES};
 use crate::state::{BlueShell, Cell, Game, Pickup, Trail};
 use rand::Rng;
@@ -12,6 +14,10 @@ pub(crate) fn maybe_spawn_powerup_pickup(game: &mut Game, now: i64) {
     if game.last_powerup_spawn_at.is_none() {
         game.last_powerup_spawn_at = Some(now);
     }
+    // `.iter()` on the fixed POWERUP_TYPES array gives `&PowerupType`
+    // references; `.copied()` turns each into an owned `PowerupType`
+    // (cheap since it's a small Copy type -- see cheatsheet's `#[derive]`
+    // section). `.collect()` gathers the filtered iterator back into a Vec.
     let mut enabled: Vec<PowerupType> = POWERUP_TYPES
         .iter()
         .copied()
@@ -71,6 +77,12 @@ pub(crate) fn maybe_spawn_powerup_pickup(game: &mut Game, now: i64) {
     let weight = |t: PowerupType| if t == PowerupType::BlueShell { shell_weight } else { 1.0 };
     let total_w: f64 = enabled.iter().map(|t| weight(*t)).sum();
     let mut rng = rand::rng();
+    // "Roulette wheel" weighted pick: roll a random point along the total
+    // weight, then walk the list subtracting each type's weight until the
+    // roll goes negative -- lands on a type with probability proportional
+    // to its weight. `enabled.last()` is the fallback in case of a
+    // floating-point rounding edge case where the loop finishes without
+    // going negative.
     let mut roll = rng.random::<f64>() * total_w;
     let mut ptype = *enabled.last().unwrap();
     for t in &enabled {
@@ -124,6 +136,9 @@ pub fn fire_powerup(game: &mut Game, slot_index: usize, ptype: PowerupType) {
         });
         game.dlog(&format!("blueShell launched slot={} x={} y={}", slot_index, head.x, head.y));
     } else {
+        // Durations are tracked in move-ticks (move_seq), not wall-clock
+        // ms, so a buff lasts a consistent number of "moves" even if the
+        // global move speed changes while it's active.
         let duration_ms = game.cfg.powerups.duration_ms(ptype);
         let total = (duration_ms / game.current_move_interval_ms()).ceil() as i64;
         let s = game.slots[slot_index].as_mut().unwrap();
@@ -155,7 +170,13 @@ pub(crate) fn apply_movement_and_food(
         if died.has(i) || stalled.contains(&i) {
             continue;
         }
+        // Indexing a HashMap with `[&key]` panics if the key is missing (use
+        // `.get(&key)` for a safe `Option` lookup instead) -- fine here
+        // since every mover is guaranteed an entry in new_heads.
         let h = new_heads[&i];
+        // Body is stored head-first; `insert(0, h)` pushes the new head on
+        // the front. Whether the tail gets popped later (see `grew` below)
+        // is what decides "grow by one" vs "just move forward".
         game.slots[i].as_mut().unwrap().body.insert(0, h);
         let mut grew = false;
         // Multi-food: remove the eaten cell; ensureFoods tops back up.
@@ -323,6 +344,9 @@ pub(crate) fn apply_movement_and_food(
     }
 }
 
+// Grow by one segment by duplicating the current tail cell -- it starts
+// stacked on top of the real tail, then visibly "unstacks" as the snake
+// moves and the duplicate becomes its own trailing cell.
 fn grow_segment(game: &mut Game, i: usize) {
     let s = game.slots[i].as_mut().unwrap();
     if let Some(tail) = s.body.last().copied() {

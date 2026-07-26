@@ -66,6 +66,10 @@
 //   alpha high byte), 20 kind f32 (0 rect / 1 ellipse / 2 ring), 24 rot f32,
 //   28 param f32 (ring: inner radius as fraction of outer)
 
+// `export const NAME: i32 = value` -- a typed constant declaration (see
+// docs/JS-CHEATSHEET.md's TypeScript section: `foo: number` annotates the
+// type). These MAX_* caps size the fixed memory regions above -- nothing
+// can grow past them at runtime since there's no garbage-collected heap.
 export const MAX_PLAYERS: i32 = 8;
 export const MAX_SEGS: i32 = 16384;
 export const MAX_TRAILS: i32 = 8192;
@@ -90,6 +94,10 @@ export const SNAP_NWALLS: i32 = 32;
 export const SNAP_NPORTALS: i32 = 36; // wormhole portals count (was pad)
 export const SNAP_PLAYERS: i32 = 40; // was 32; +8 for nWalls + pad (v3.8.0)
 export const PLAYER_STRIDE: i32 = 64;
+// Each SNAP_X below is "where the previous region ends": start offset of the
+// prior section plus (how many entries it holds x bytes per entry). This
+// chains the regions back-to-back in memory with no gaps, matching the byte
+// layout documented in the big comment at the top of this file.
 export const SNAP_BODY: i32 = SNAP_PLAYERS + MAX_PLAYERS * PLAYER_STRIDE;
 export const SNAP_TRAILS: i32 = SNAP_BODY + MAX_SEGS * 4;
 export const SNAP_PICKUPS: i32 = SNAP_TRAILS + MAX_TRAILS * 8;

@@ -5,6 +5,8 @@
 use crate::state::{Cell, Game, Wall};
 use rand::Rng;
 use std::collections::HashSet;
+// `use crate::...` imports a type from another file in this crate --
+// see docs/RUST-CHEATSHEET.md "Modules".
 
 // The 12 free pentominoes, each as 5 (x,y) offsets normalized to a
 // non-negative bounding box. Letter labels are a loose mnemonic, not a
@@ -12,6 +14,9 @@ use std::collections::HashSet;
 // pentomino is the same piece, and transform_pentomino() below covers all 8
 // (see the leaderBias/wall-density prompt: user picked "rotations +
 // reflections" for full shape variety).
+// `#[rustfmt::skip]` tells the auto-formatter to leave this table's manual
+// alignment alone. The type `[[(i32, i32); 5]; 12]` reads inside-out: 12
+// entries, each a fixed-size array of 5 (x, y) coordinate pairs.
 #[rustfmt::skip]
 const PENTOMINOES: [[(i32, i32); 5]; 12] = [
     [(0, 0), (0, 1), (0, 2), (0, 3), (0, 4)],             // I
@@ -32,6 +37,9 @@ const PENTOMINOES: [[(i32, i32); 5]; 12] = [
 // pentomino and renormalizes to a non-negative bounding box. `variant` 0-3
 // are the plain rotations, 4-7 are the same rotations of the mirrored piece.
 fn transform_pentomino(shape: &[(i32, i32); 5], variant: u8) -> [(i32, i32); 5] {
+    // `variant` packs two things into one number: bit 2 (value 4) says
+    // "mirror or not", bits 0-1 (0..=3) say "how many 90-degree turns".
+    // `&` here is bitwise AND, checking/extracting those bits.
     let mut pts = *shape;
     if variant & 4 != 0 {
         for p in pts.iter_mut() {
@@ -63,6 +71,10 @@ fn transform_pentomino(shape: &[(i32, i32); 5], variant: u8) -> [(i32, i32); 5] 
 // tick for the shrink check below), nowhere near CPU-heavy at these sizes.
 pub(crate) fn wall_cell_budget(game: &Game) -> usize {
     let w = &game.cfg.walls;
+    // Iterator chain: `.flatten()` drops the `None` slots and unwraps the
+    // `Some(snake)` ones, `.filter(...)` keeps only living snakes, `.map(...)`
+    // converts each snake to a number, `.sum()` adds them up. The `|s| ...`
+    // bits are closures -- see RUST-CHEATSHEET.md "Closures".
     let total_snake_len: usize = game.slots.iter().flatten().filter(|s| s.alive).map(|s| s.body.len()).sum();
     let extra_pieces: usize = game
         .slots
@@ -148,6 +160,9 @@ pub(crate) fn maybe_spawn_wall(game: &mut Game, now: i64) -> bool {
     if game.walls.len() + 5 > wall_cell_budget(game) {
         return false;
     }
+    // `Option::map` transforms the value inside a Some without unwrapping
+    // it first -- if there's no leader (nobody alive), `target` just stays
+    // None. See RUST-CHEATSHEET.md "Option<T>".
     let target = game
         .current_leader_index()
         .map(|li| game.slots[li].as_ref().unwrap().head());
@@ -160,6 +175,12 @@ pub(crate) fn maybe_spawn_wall(game: &mut Game, now: i64) -> bool {
     let shape_w = shape.iter().map(|p| p.0).max().unwrap() + 1;
     let shape_h = shape.iter().map(|p| p.1).max().unwrap() + 1;
     let mut chosen: Option<[Cell; 5]> = None;
+    // Rejection sampling: try up to 200 random placements and keep the
+    // first one that passes every rule below (in-bounds, unoccupied,
+    // not sealing off space, far enough from heads, roughly toward the
+    // leader). Cheap and simple compared to solving placement exactly,
+    // and 200 tries is enough that failure (no `chosen`) is rare even on
+    // a crowded board.
     if shape_w <= game.cfg.grid.cols && shape_h <= game.cfg.grid.rows {
         for _ in 0..200 {
             if chosen.is_some() {
@@ -212,6 +233,8 @@ pub(crate) fn maybe_spawn_wall(game: &mut Game, now: i64) -> bool {
         }
     }
     game.last_wall_spawn_at = Some(now);
+    // "let-else": unwrap `chosen` into `cells`, or bail out (no valid spot
+    // found in 200 tries) -- see RUST-CHEATSHEET.md "let ... else".
     let Some(cells) = chosen else { return false };
     let id = game.next_powerup_id;
     game.next_powerup_id += 1;

@@ -6,24 +6,26 @@
 const BASE = "http://127.0.0.1:8080";
 const WS_BASE = "ws://127.0.0.1:8080/ws";
 
+// "async function" + "await": pauses each line until the Promise before it
+// resolves, so this reads top-to-bottom like sync code; see docs/JS-CHEATSHEET.md
 async function getToken() {
   const cap = await (await fetch(BASE + "/api/captcha")).json();
   const answer = cap.a + cap.b;
   const res = await fetch(BASE + "/api/verify", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: cap.id, answer })
+    body: JSON.stringify({ id: cap.id, answer }) // JSON.stringify: object -> JSON text for the request body; see docs/JS-CHEATSHEET.md
   });
   if (!res.ok) throw new Error("captcha verify failed");
-  const { token } = await res.json();
+  const { token } = await res.json(); // destructuring: pull "token" straight out of the response object; see docs/JS-CHEATSHEET.md
   return token;
 }
 
 // Connects one client. Tracks the latest `state` broadcast (`client.state`)
 // and resolves state-condition waits via waitFor().
 function connectClient() {
-  return getToken().then(token => new Promise((resolve, reject) => {
-    const ws = new WebSocket(WS_BASE + "?token=" + token);
+  return getToken().then(token => new Promise((resolve, reject) => { // arrow function used as the .then() callback; see docs/JS-CHEATSHEET.md
+    const ws = new WebSocket(WS_BASE + "?token=" + token); // WebSocket: opens the connection; behavior below is wired up via ws.onopen/onmessage/onerror properties, not a callback argument; see docs/JS-CHEATSHEET.md
     const client = {
       ws, state: null, waiters: [],
       send(msg) { ws.send(JSON.stringify(msg)); },
@@ -52,7 +54,7 @@ function connectClient() {
     };
     ws.onerror = e => reject(e);
     ws.onmessage = ev => {
-      const msg = JSON.parse(ev.data);
+      const msg = JSON.parse(ev.data); // JSON.parse: turn the incoming text message back into a JS object; see docs/JS-CHEATSHEET.md
       if (msg.type === "state") {
         client.state = msg;
         client.waiters = client.waiters.filter(w => {
@@ -126,7 +128,7 @@ function assert(cond, msg) {
 async function startServer(configOverrides, extraEnv) {
   const repoRoot = new URL("..", import.meta.url).pathname;
   const base = JSON.parse(await Deno.readTextFile(repoRoot + "config.json"));
-  const merged = Object.assign({}, base, configOverrides);
+  const merged = Object.assign({}, base, configOverrides); // Object.assign: shallow-merge configOverrides onto a copy of base; see docs/JS-CHEATSHEET.md
   if (configOverrides && configOverrides.powerups) {
     merged.powerups = Object.assign({}, base.powerups, configOverrides.powerups);
   }
@@ -263,4 +265,6 @@ function runTest(mainFn, opts) {
   })();
 }
 
+// ES module export: lists every name other files can pull in via
+// `import { ... } from "./helpers.js"`.
 export { connectClient, mySlot, myPlayer, sleep, stepToward, assert, BASE, startServer, stopServer, collectNextPickup, runTest, testHook, assertTrailContiguous };

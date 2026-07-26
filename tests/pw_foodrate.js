@@ -7,9 +7,19 @@
 // 5-minute production defaults.
 // Run: deno run --allow-net --allow-read --allow-write --allow-run
 //      --allow-env tests/pw_foodrate.js
+//
+// In plain terms: this checks the "food rate" scoring mode, which measures
+// how fast a player eats over time. Early on the rate is just a rough
+// ("provisional") guess; once the player has played long enough it
+// "locks" in and gets recorded on the leaderboard. The test also checks
+// that dying and respawning doesn't reset the counter, and that being
+// bumped to spectator (someone else took your seat) pauses the clock
+// instead of letting it keep ticking.
 import { connectClient, myPlayer, mySlot, assert, startServer, stopServer, runTest, stepToward, sleep } from "./helpers.js";
 
 function baseConfig(overrides) {
+  // Object.assign copies overrides onto the defaults object -- see
+  // docs/JS-CHEATSHEET.md
   return Object.assign({
     maxPlayers: 4,
     grid: { cols: 40, rows: 30, cellSize: 20 },

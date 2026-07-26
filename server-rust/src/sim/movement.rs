@@ -13,19 +13,37 @@ use std::collections::{HashMap, HashSet};
 // otherwise.
 pub(crate) fn update_momentum(game: &mut Game, i: usize, now: i64, dt: f64) {
     let boost_cfg = &game.cfg.boost;
+    // `game.slots[i]` is `Option<Snake>`; `.as_mut().unwrap()` borrows the
+    // snake mutably, assuming this slot is occupied (checked by the
+    // caller) -- see RUST-CHEATSHEET.md "Vec<Option<T>>".
     let s = game.slots[i].as_mut().unwrap();
+    // Boost only "engages" (starts ramping speed up) after the player has
+    // held it past hold_grace_ms -- a short tap doesn't commit to a full
+    // speed ramp, avoiding accidental boosts from a twitchy key press.
+    // `.map_or(false, ...)` -- see RUST-CHEATSHEET.md "Option<T>": if
+    // boost_since is None (never started boosting) the whole thing is
+    // false; otherwise run the closure on the held value.
     let engaged = boost_cfg.enabled
         && s.boost
         && s.boost_since.map_or(false, |b| (now - b) as f64 > boost_cfg.hold_grace_ms);
     let mut p = s.ramp_progress;
     if engaged {
+        // Ramp speed up linearly over ramp_ms, capped at fully ramped (1.0).
         p = if boost_cfg.ramp_ms > 0.0 { (p + dt / boost_cfg.ramp_ms).min(1.0) } else { 1.0 };
     } else {
+        // Not engaged: decay back down over decel_ms instead of snapping
+        // to normal speed, so releasing boost feels smooth.
         p = if boost_cfg.decel_ms > 0.0 { (p - dt / boost_cfg.decel_ms).max(0.0) } else { 0.0 };
     }
     s.ramp_progress = p;
 }
 
+// The orchestrator for one movement step: figures out where every mover's
+// new head would land, resolves all three collision types in a fixed
+// order (wall/obstacle first, then self, then other snakes), then applies
+// food/effects and finally kills off anyone who didn't survive. Order
+// matters here -- e.g. a snake already flagged as stalled by the wall
+// check is skipped by the later checks.
 pub(crate) fn movement_step(game: &mut Game, movers: &[usize]) {
     let all_alive: Vec<usize> = (0..game.slots.len())
         .filter(|&i| matches!(&game.slots[i], Some(s) if s.alive))
@@ -40,6 +58,10 @@ pub(crate) fn movement_step(game: &mut Game, movers: &[usize]) {
     clear_mutual_kills(&mut died);
     apply_movement_and_food(game, movers, &new_heads, &died, &stalled);
     apply_kill_bonuses(game, &died);
+    // `std::mem::take` swaps `died.entries` out for an empty Vec and hands
+    // back the original contents -- lets us consume/loop over the deaths
+    // while still being able to pass `game` (which no longer conflicts
+    // with a borrow of `died`) into handle_death below.
     for (victim, info) in std::mem::take(&mut died.entries) {
         handle_death(game, victim, &info);
     }
@@ -67,6 +89,9 @@ pub(crate) fn consume_inbounds_turn(game: &mut Game, i: usize, now: i64) -> Opti
         }
         found
     };
+    // `?` also works on `Option`, not just `Result` (see RUST-CHEATSHEET.md
+    // "Result<T, E>"): if `pick` is None, return None from this function
+    // right here; otherwise unwrap it into `(k, dir)`.
     let (k, dir) = pick?;
     let s = game.slots[i].as_mut().unwrap();
     for j in 0..=k {
@@ -84,6 +109,10 @@ pub(crate) fn consume_inbounds_turn(game: &mut Game, i: usize, now: i64) -> Opti
 fn apply_drift_slides(game: &mut Game, movers: &[usize]) {
     let now = now_ms();
     for &i in movers {
+        // `continue` in the None arm is valid here even though the other
+        // arm produces a tuple: `continue` never "returns" a value (it
+        // jumps straight to the next loop iteration), so the compiler
+        // doesn't need it to match the tuple's type.
         let (d, expired) = {
             let s = game.slots[i].as_ref().unwrap();
             match s.drift_dir {
@@ -98,6 +127,8 @@ fn apply_drift_slides(game: &mut Game, movers: &[usize]) {
         let blocked = {
             let s = game.slots[i].as_ref().unwrap();
             let mut blocked = false;
+            // `'outer:` labels this loop so the inner loop's `break 'outer`
+            // below can exit both loops at once, not just the inner one.
             'outer: for seg in &s.body {
                 let c = Cell { x: seg.x + d.x, y: seg.y + d.y };
                 if !game.in_bounds(c) || game.is_solid_wall_cell(c.x, c.y, now) {

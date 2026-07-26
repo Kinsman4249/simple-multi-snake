@@ -133,7 +133,7 @@ echo "== simple-multi-snake installer =="
 # instead. Either way these are plain function definitions; nothing here
 # touches the system.
 # ---------------------------------------------------------------------------
-INSTALL_LIB_FILES="common prompts network resources tls"
+INSTALL_LIB_FILES="common prompts network resources tls service"
 INSTALL_LIB_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
   SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
@@ -504,7 +504,13 @@ echo "[7/9] Installing and starting the systemd service..."
 install -m 0644 "${SRC}/deploy/multisnake.service" /etc/systemd/system/multisnake.service
 systemctl daemon-reload
 systemctl enable multisnake
-systemctl restart multisnake
+# If a previous version of multisnake is already running with players on
+# the board, warn them and give them 30s to finish their run before the
+# restart drops their connection (install-lib/service.sh). A first-time
+# install (nothing running yet) or a run with no players connected skips
+# the wait entirely.
+resolve_admin_token
+restart_multisnake_with_warning "${CHOSEN_PORT}"
 
 sleep 1
 if ! curl -fsS "http://127.0.0.1:${CHOSEN_PORT}/" -o /dev/null 2>/dev/null; then

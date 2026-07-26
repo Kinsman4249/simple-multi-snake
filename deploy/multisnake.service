@@ -7,6 +7,10 @@ Type=simple
 User=multisnake
 Group=multisnake
 WorkingDirectory=/opt/multisnake
+# Optional (leading "-"): supplies ADMIN_TOKEN for POST /api/admin/
+# notify-shutdown, the maintenance-warning broadcast install.sh sends before
+# restarting. Written by install-lib/service.sh's resolve_admin_token.
+EnvironmentFile=-/etc/multisnake/admin.env
 ExecStart=/opt/multisnake/multisnake-server
 Restart=on-failure
 RestartSec=3

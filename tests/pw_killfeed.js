@@ -13,17 +13,22 @@ import { connectClient, myPlayer, sleep, startServer, stopServer, runTest, asser
 
 const INTERVAL = 200; // ms per cell -- generous enough for reliable polling
 
+// async function + await: pauses here until each Promise resolves --
+// see docs/JS-CHEATSHEET.md
 async function testWallDeath() {
   const server = await startServer({
     grid: { cols: 21, rows: 19, cellSize: 20 },
     move: { startIntervalMs: INTERVAL, minIntervalMs: INTERVAL, rampIntervalSec: 3600, rampStepMs: 0 },
     wallGraceTicks: 0,
     powerups: { spawnIntervalMs: 999999, wormhole: { enabled: false } }
+  // JSON.stringify converts this array to text to pass as an env var --
+  // see docs/JS-CHEATSHEET.md
   }, {
     SNAKE_TEST_SPAWNS: JSON.stringify([{ x: 0, y: 5, dir: "left", len: 3 }])
   });
   try {
     const c = await connectClient();
+    // arrow function passed as a callback -- see docs/JS-CHEATSHEET.md
     await c.waitFor(s => myPlayer(s, 0) != null, 5000);
     const state = await c.waitFor(s => s.kills && s.kills.length > 0, INTERVAL * 10);
     const ev = state.kills.find(k => k.cause === "wall");

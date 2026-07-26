@@ -18,6 +18,11 @@
 // Deterministic staging via SNAKE_TEST_SPAWNS: same row, facing each other.
 // Run: deno run --allow-net --allow-read --allow-write --allow-run --allow-env
 // --unstable-detect-cjs tests/pw_headon.js
+//
+// In plain terms: when two snakes crash head-on, both of them must die --
+// never just one. This is tricky because the two snakes' move timers can
+// either tick on the exact same beat, or slightly out of sync with each
+// other (which is normal in real play), and both cases need to be tested.
 import { connectClient, myPlayer, sleep, startServer, stopServer, runTest, assert } from "./helpers.js";
 
 const R = 9;             // shared row
@@ -72,6 +77,8 @@ async function collide(label, spawns, staggerJoin) {
         const bMoved = hb.x !== prevB.x || hb.y !== prevB.y;
         if (aMoved !== bMoved) sawSplit = true;
       }
+      // { ...ha } spreads ha's fields into a new object -- a shallow copy,
+      // so later mutations of ha don't change prevA -- see docs/JS-CHEATSHEET.md
       prevA = { ...ha }; prevB = { ...hb };
     }
     throw new Error(label + " snakes never collided");
@@ -85,7 +92,7 @@ async function main() {
   // the 16ms sim grid is jittery), so run rounds -- varying spawn gap parity
   // and join stagger to push toward each mode -- until BOTH alignments have
   // produced a passing mutual death. Every round asserts the invariant.
-  const seen = new Set();
+  const seen = new Set(); // Set: collection of unique values -- see docs/JS-CHEATSHEET.md
   const rounds = [
     { label: "even-gap close", spawns: [{ x: 9, y: R, dir: "right" }, { x: 11, y: R, dir: "left" }], stagger: false },
     { label: "odd-gap close",  spawns: [{ x: 9, y: R, dir: "right" }, { x: 12, y: R, dir: "left" }], stagger: false },

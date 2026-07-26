@@ -8,6 +8,9 @@ use serde::Deserialize;
 // clientFx/clientRender are opaque passthrough JSON (the server never reads
 // them, only merges defaults and hands them to /api/config), so they stay
 // serde_json::Value.
+// This mirrors config.json's shape 1:1 for parsing; config/mod.rs::load()
+// turns it into the resolved Config the rest of the server actually uses
+// (filling in derived fields like sim_ms, applying grid presets, etc).
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct RawCfg {
@@ -79,7 +82,12 @@ impl Default for RawCfg {
 // clientRender sections.
 pub(super) fn shallow_merge(base: serde_json::Value, overlay: &serde_json::Value) -> serde_json::Value {
     let mut out = base;
+    // if let (Some(a), Some(b)) = (...) only runs the body when BOTH values
+    // are JSON objects (as_object_mut()/as_object() return None otherwise)
+    // -- see "Option<T>" in docs/RUST-CHEATSHEET.md.
     if let (Some(out_map), Some(over_map)) = (out.as_object_mut(), overlay.as_object()) {
+        // `for (k, v) in over_map` walks every key/value pair in the overlay
+        // object, overwriting (or adding) that key in the base map.
         for (k, v) in over_map {
             out_map.insert(k.clone(), v.clone());
         }

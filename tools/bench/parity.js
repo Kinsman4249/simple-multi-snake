@@ -5,6 +5,7 @@
 // rings through a slightly different canvas call sequence, so anti-aliased
 // edges can round differently -- but structural output must match: tiny
 // per-channel tolerance, tiny fraction of differing pixels.
+// IIFE module -- see docs/JS-CHEATSHEET.md
 (function () {
   const SCENARIOS = [
     { name: "1080p-normal", cols: 96, rows: 54, cellSize: 20, segs: 40, trailCount: 40 },
@@ -16,6 +17,9 @@
   const canvas = document.getElementById("game");
   const out = document.getElementById("out");
 
+  // Save the real performance.now, then replace it with an arrow function
+  // that always returns the same value, so both renderers see an identical
+  // "time" and their animation math produces pixel-comparable output.
   const realNow = performance.now.bind(performance);
   performance.now = () => FROZEN_NOW;
 
@@ -26,6 +30,7 @@
       scene.tick(FROZEN_NOW);
       const opts = { interpolate: true, boostTrail: true, slideDust: true, heldGlow: true };
       // wasm path first
+      // Object.assign builds a new options object with renderer:"wasm" plus everything in opts -- see docs/JS-CHEATSHEET.md
       Render.draw(scene.prev, scene.curr, scene.localBodies, scene.eatenKeys, scene.fx,
         Object.assign({ renderer: "wasm" }, opts));
       const ctx = canvas.getContext("2d");

@@ -12,6 +12,8 @@ const BASE = "http://127.0.0.1:8080";
 const repoRoot = new URL("../..", import.meta.url).pathname;
 const outDir = repoRoot + "tools/bench/out";
 await Deno.mkdir(outDir, { recursive: true });
+// Arrow function returning a Promise that resolves after `ms` -- lets other
+// code `await sleep(...)` to pause. See docs/JS-CHEATSHEET.md
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // --- start the game server (the compiled Rust binary; see tests/helpers.js) ---
@@ -42,6 +44,7 @@ const chrome = new Deno.Command("flatpak", {
 }).spawn();
 
 let ws, msgId = 0;
+// Map: tracks in-flight CDP requests by id -- see docs/JS-CHEATSHEET.md
 const pending = new Map();
 function cdp(method, params, sessionId) {
   const id = ++msgId;
@@ -50,7 +53,9 @@ function cdp(method, params, sessionId) {
     ws.send(JSON.stringify(sessionId ? { id, method, params, sessionId } : { id, method, params }));
   });
 }
+// Runs `expression` as JS code inside the browser tab (via CDP) and returns its value.
 async function evalIn(sessionId, expression) {
+  // Object shorthand: `{ expression }` means `{ expression: expression }` -- see docs/JS-CHEATSHEET.md
   const r = await cdp("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, sessionId);
   if (r.exceptionDetails) throw new Error("page eval failed: " + JSON.stringify(r.exceptionDetails.exception));
   return r.result ? r.result.value : undefined;
@@ -80,6 +85,8 @@ try {
     }
   };
 
+  // Opens one tab at `url`, solves the captcha, waits for frames to render,
+  // takes a screenshot, and checks the expected renderer stamp was used.
   async function smokeOne(label, url, expectStamp) {
     const { targetId } = await cdp("Target.createTarget", { url });
     const { sessionId } = await cdp("Target.attachToTarget", { targetId, flatten: true });
@@ -113,6 +120,7 @@ try {
     const r = JSON.parse(info);
     const shot = await cdp("Page.captureScreenshot", { format: "png" }, sessionId);
     await Deno.writeFile(`${outDir}/smoke-${label}.png`, Uint8Array.from(atob(shot.data), c => c.charCodeAt(0)));
+    // `!!x` forces any value to a strict boolean (double-negation idiom) -- see docs/JS-CHEATSHEET.md
     const stampOk = expectStamp === "wasm"
       ? !!(r.builds && r.builds.renderWasm && r.builds.render && r.builds.render.indexOf("wasm facade") !== -1)
       : !!(r.builds && r.builds.render2d);

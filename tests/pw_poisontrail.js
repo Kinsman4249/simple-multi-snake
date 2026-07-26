@@ -11,9 +11,12 @@ function dirName(v) {
   if (v.x === 1) return "right"; if (v.x === -1) return "left";
   if (v.y === 1) return "down"; return "up";
 }
+// async function + await: pauses here until each Promise resolves --
+// see docs/JS-CHEATSHEET.md
 async function stepDir(client, local, v) {
   const cur = client.state;
   client.send({ type: "dir", dir: dirName(v), local });
+  // arrow function passed as a callback -- see docs/JS-CHEATSHEET.md
   await client.waitFor(s => s !== cur, 3000);
 }
 async function stepsStraight(client, local, v, n) {
@@ -24,6 +27,7 @@ async function eatOnce(client, local) {
   const timer = setInterval(() => {
     const cur = client.state;
     const p = myPlayer(cur, local);
+    // `!x` negates a boolean ("if there's no player or no food") -- see docs/JS-CHEATSHEET.md
     if (!p || !cur.food) return;
     const dn = stepToward(cur, local, cur.food.x, cur.food.y);
     if (dn) client.send({ type: "dir", dir: dn, local });

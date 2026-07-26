@@ -37,6 +37,8 @@ pub fn broadcast_notice(game: &Game, text: &str) {
     }
 }
 
+// #[derive(Serialize)] auto-generates the code to turn this struct into
+// JSON; see docs/RUST-CHEATSHEET.md ("#[derive(...)]").
 #[derive(Serialize)]
 struct ColorView {
     head: &'static str,
@@ -48,6 +50,10 @@ fn color_view(idx: Option<usize>) -> Option<ColorView> {
 
 // Food serializes as {x,y}, with the bounty fields only when set (matching
 // the JS objects, where normal food simply has no such keys).
+// This is a "tuple struct" wrapping a borrowed &Food (see RUST-CHEATSHEET.md
+// on references) -- writing our own `impl Serialize` below (instead of
+// #[derive(Serialize)]) is how we get the "only include bounty fields when
+// bounty is true" behavior that a plain derive can't express.
 struct FoodView<'a>(&'a crate::state::Food);
 impl Serialize for FoodView<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
@@ -64,6 +70,8 @@ impl Serialize for FoodView<'_> {
     }
 }
 
+// #[serde(rename_all = "camelCase")] converts our snake_case field names
+// to the camelCase keys the JS client expects; see RUST-CHEATSHEET.md.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PickupView<'a> {
@@ -218,10 +226,15 @@ fn move_ms(game: &Game, s: &crate::state::Snake, interval: f64) -> i64 {
 }
 
 pub fn broadcast_state(game: &mut Game) {
+    // Optional perf instrumentation: only pay for the clock read when the
+    // perf flag is on (t0 stays None otherwise).
     let t0 = if game.cfg.perf { Some(std::time::Instant::now()) } else { None };
     let interval = game.current_move_interval_ms();
     let b_now = crate::config::now_ms();
 
+    // .iter().enumerate().map(closure).collect() -- walk each slot with its
+    // index, build a PlayerView (or None), gather into a Vec; see
+    // RUST-CHEATSHEET.md ("Closures", "Vec<T>").
     let players: Vec<Option<PlayerView>> = game
         .slots
         .iter()
@@ -351,8 +364,11 @@ pub fn broadcast_state(game: &mut Game) {
         mode: game.score_mode(),
     };
 
+    // Serialize the shared board state ONE time, no matter how many
+    // connections we're about to send to (that's the "serialize-once"
+    // optimization the module header mentions).
     let base_str = serde_json::to_string(&state).expect("state serialize");
-    drop(state);
+    drop(state); // state's borrows (e.g. &game.explosions) must end before game is mutated below
 
     // One-shot flags: cleared right after this broadcast.
     for s in game.slots.iter_mut().flatten() {
@@ -366,6 +382,10 @@ pub fn broadcast_state(game: &mut Game) {
     if game.cfg.perf {
         game.perf.bytes_base += base_str.len() as u64;
     }
+    // The "you-splice" trick: base_str is a JSON object ending in "}". Chop
+    // off that final brace and append a `"you":` key -- each connection
+    // below then just tacks on its own small per-connection payload and a
+    // closing brace, instead of re-serializing the whole shared state.
     let base_prefix = format!("{},\"you\":", &base_str[..base_str.len() - 1]);
 
     // Spectator queue positions, precomputed once per broadcast.

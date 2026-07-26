@@ -46,6 +46,7 @@ async function stageAtPreCollision(wallGraceTicks) {
     { SNAKE_TEST_HOOKS: "1", SNAKE_TEST_SPAWNS: JSON.stringify(SPAWN) }
   );
   const c1 = await connectClient();
+  // `s => ...` is an arrow function callback (see docs/JS-CHEATSHEET.md).
   await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
   c1.send({ type: "dir", dir: "up", local: 0 });
   c1.send({ type: "dir", dir: "left", local: 0 });
@@ -60,12 +61,16 @@ async function stageAtPreCollision(wallGraceTicks) {
 
 // --- Scenario 1: no grace (wallGraceTicks: 0) -- dies on the very next tick
 async function scenarioNoGrace() {
+  // Destructuring: pulls server/c1/preSeq out of the returned object in one
+  // step (see docs/JS-CHEATSHEET.md, "Destructuring").
   const { server, c1, preSeq } = await stageAtPreCollision(0);
   try {
     c1.send({ type: "dir", dir: "down", local: 0 }); // steps onto own body
     const dead = await c1.waitFor(s => { const p = myPlayer(s, 0); return p && p.alive === false; }, 5000);
     assert(dead.seq - preSeq === 1,
       "with wallGraceTicks:0 a self-collision must kill with NO stall (died " + (dead.seq - preSeq) + " seqs after the pre-collision cell)");
+    // `dead.kills || []` falls back to an empty array if kills is missing --
+    // see docs/JS-CHEATSHEET.md, "Nullish coalescing / defaults `a || b`".
     const kill = (dead.kills || []).find(k => k.cause === "self");
     assert(kill != null, "death cause must be 'self' (got " + JSON.stringify(dead.kills) + ")");
     console.log("PASS: wallGraceTicks:0 gives a self-collision no grace stall.");

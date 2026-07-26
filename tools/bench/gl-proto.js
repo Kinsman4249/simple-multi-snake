@@ -5,7 +5,11 @@
 // painter's order with premultiplied-alpha blending. The instance stream is
 // built in JS here purely for the benchmark -- in the shipped renderer the
 // wasm module produces it.
+// IIFE module: everything below is private except what's attached to
+// `window.GLProto` at the bottom -- see docs/JS-CHEATSHEET.md
 (function () {
+  // Template literal (backtick string): this one holds raw GLSL shader
+  // source code as text, not JS -- see docs/JS-CHEATSHEET.md
   const VS = `#version 300 es
 layout(location=0) in vec4 i_rect;   // x,y (top-left px), w,h
 layout(location=1) in vec4 i_color;  // straight alpha
@@ -45,6 +49,7 @@ void main(){
   const STRIDE = 12; // floats per instance
   const CAPACITY = 65536;
 
+  // Map: key-value cache from color string -> parsed [r,g,b,a] -- see docs/JS-CHEATSHEET.md
   const colorCache = new Map();
   function parseColor(str) {
     let c = colorCache.get(str);
@@ -70,6 +75,8 @@ void main(){
     return sh;
   }
 
+  // Sets up the GL program, buffers, and attribute layout once; returns a
+  // small state object the draw function reuses every frame.
   function init(canvas) {
     const gl = canvas.getContext("webgl2", { alpha: false, antialias: false, preserveDrawingBuffer: true });
     if (!gl) return null;
@@ -93,6 +100,8 @@ void main(){
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.clearColor(0, 0, 0, 1);
+    // Typed array: a fixed-size buffer of raw 32-bit floats, used here to
+    // stage instance data before uploading it to the GPU -- see docs/JS-CHEATSHEET.md
     const buf = new Float32Array(CAPACITY * STRIDE);
     const state = {
       gl, uRes, buf, n: 0, canvas,
@@ -101,6 +110,8 @@ void main(){
     return state;
   }
 
+  // Appends one instance's data (rect, color, shape kind, rotation) into the
+  // shared Float32Array buffer at the next free slot.
   function push(st, x, y, w, h, color, alpha, kind, rot, p1) {
     const o = st.n * STRIDE;
     const b = st.buf;
@@ -122,6 +133,7 @@ void main(){
 
   // Mirrors render.js draw() 1:1, emitting instances instead of 2D calls.
   function drawScene(st, scene, now) {
+    // Destructuring: pulls these named fields out of `scene` in one step -- see docs/JS-CHEATSHEET.md
     const { curr, prev, localBodies, eatenKeys, fx, opts } = scene;
     const grid = curr.grid, cs = grid.cellSize;
     const cellGap = Math.max(1, Math.round(cs * 0.08));
@@ -226,5 +238,7 @@ void main(){
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, st.n);
   }
 
+  // Object shorthand: `{ init, drawScene }` means `{ init: init, drawScene: drawScene }`.
+  // This is the module's public API, attached to `window` for other scripts to use.
   window.GLProto = { init, drawScene };
 })();

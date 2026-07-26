@@ -19,6 +19,10 @@ const CANDY_COLORS = ["#ffcc00", "#ff4499", "#44ccff", "#77ee44"]; // gold / pin
 // opts.powerupFx) so "you are moving fast" reads the same way for both.
 function drawBoostTrail(headPx, headPy, dir, now, color) {
   const cs = grid.cellSize;
+  // ctx.save()/ctx.restore() bracket a group of drawing calls: save()
+  // remembers the current canvas settings (fillStyle, globalAlpha, ...) so
+  // they can be restored afterward, letting this function tweak alpha/color
+  // freely without leaking those changes to whatever draws next.
   ctx.save();
   for (let n = 0; n < 3; n++) {
     const phase = (now / 90 + n * 0.33) % 1;

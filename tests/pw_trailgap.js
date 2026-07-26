@@ -12,6 +12,8 @@ import { connectClient, myPlayer, assert, sleep, stepToward, startServer, stopSe
 const COLS = 48, ROWS = 40;
 
 async function steerTo(client, tx, ty, timeoutMs) {
+  // `timeoutMs || 20000` falls back to 20000 if timeoutMs wasn't passed --
+  // see docs/JS-CHEATSHEET.md ("Nullish coalescing / defaults `a || b`").
   const deadline = Date.now() + (timeoutMs || 20000);
   while (Date.now() < deadline) {
     const cur = client.state;
@@ -21,6 +23,7 @@ async function steerTo(client, tx, ty, timeoutMs) {
     if (Math.abs(head.x - tx) <= 1 && Math.abs(head.y - ty) <= 1) return;
     const dn = stepToward(cur, 0, tx, ty);
     if (dn) client.send({ type: "dir", dir: dn, local: 0 });
+    // `s => ...` is an arrow function callback (see docs/JS-CHEATSHEET.md).
     await client.waitFor(s => s !== cur, 2000).catch(() => {});
   }
   throw new Error("timed out steering to staging point");

@@ -21,6 +21,10 @@ export function drawPlayers(
   nPlayers: i32, nLocals: i32, nFlashes: i32, nGlides: i32, nPflash: i32,
 ): void {
   for (let i = 0; i < nPlayers; i++) {
+    // `p` is this player's byte address within the snapshot's player array
+    // (index * fixed-size stride, see layout.ts). `load<i32>(p)` reads the
+    // "present" flag at offset 0 -- see docs/JS-CHEATSHEET.md's
+    // AssemblyScript section for what load<T>/store<T> do.
     const p = curr + SNAP_PLAYERS + <usize>(i * PLAYER_STRIDE);
     if (!load<i32>(p)) continue; // not present
     const alive = load<i32>(p, 4) != 0;
@@ -57,12 +61,17 @@ export function drawPlayers(
     // smooth interpolation eligible?
     const pPrev = prev + SNAP_PLAYERS + <usize>(i * PLAYER_STRIDE);
     const smooth = interpolate && !isLocal && alive && load<i32>(pPrev) != 0 && load<i32>(pPrev, 36) > 0;
+    // t is how far (0 = just moved, 1 = fully arrived) between the previous
+    // and current grid position this player should visually be right now,
+    // based on how much time has passed since the snapshot arrived. This is
+    // what makes movement look smooth between discrete server ticks instead
+    // of snapping.
     let t: f32 = 1;
     if (smooth) {
       const moveMs = load<f32>(p, 24);
       const span = moveMs > 0 ? moveMs : (tickMs > 0 ? tickMs : 100);
       t = recvElapsed / span;
-      if (t < 0) t = 0;
+      if (t < 0) t = 0; // clamp into 0..1
       if (t > 1) t = 1;
     }
     const prevPool = prev + SNAP_BODY;

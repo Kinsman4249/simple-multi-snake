@@ -6,7 +6,12 @@
 function setConnectionStatus(text) { statusEl.textContent = text; }
 
 function updateStatus(curr) {
+  // `|| []` falls back to an empty array if locals is missing (see
+  // docs/JS-CHEATSHEET.md for this default idiom).
   const locals = curr.you.locals || [];
+  // `.filter(e => e)` keeps only truthy entries -- drops `null` holes left
+  // by seats that departed. `e => e` is an arrow function used as a
+  // callback (see docs/JS-CHEATSHEET.md).
   const present = locals.filter(e => e);
   // Speed-run / food-rate readout (v3.7.0): best-5-minutes food/min,
   // provisional until floorMs of play accrues (see server-rust/src/state.rs),
@@ -96,6 +101,9 @@ function pushKillFeed(events) {
   const el = document.getElementById("killFeed");
   if (!el) return;
   for (const ev of events) {
+    // Destructuring: pulls `text` and `color` out of the object
+    // killFeedLine() returns, into two separate variables in one step (see
+    // docs/JS-CHEATSHEET.md).
     const { text, color } = killFeedLine(ev);
     const line = document.createElement("div");
     line.className = "kf-line";
@@ -128,4 +136,5 @@ function showVersionStamp(enableDebug, serverBuild) {
   el.style.display = "block";
 }
 
+// Publish this file's public functions onto the shared UI object.
 Object.assign(UI, { setConnectionStatus, updateStatus, updateLeaderboards, pushKillFeed, showVersionStamp });

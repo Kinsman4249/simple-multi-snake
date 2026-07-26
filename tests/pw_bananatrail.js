@@ -12,6 +12,12 @@
 // leaves the striped row for good.
 // Run: deno run --allow-net --allow-read --allow-write --allow-run
 //      --allow-env tests/pw_bananatrail.js
+//
+// In plain terms: this checks the "banana trail" power-up. Picking one up
+// should fire it immediately (not sit in inventory) and start dropping
+// tiles behind the snake. Any snake -- including the one that laid the
+// trail -- that steps on a tile gets its steering controls reversed for a
+// while, then goes back to normal once that wears off.
 import { connectClient, myPlayer, assert, startServer, stopServer, runTest, testHook, sleep, assertTrailContiguous } from "./helpers.js";
 
 const STEP_MS = 150;
@@ -34,6 +40,9 @@ async function main() {
   }, { SNAKE_TEST_HOOKS: "1", SNAKE_TEST_SPAWNS: JSON.stringify(spawns) });
   try {
     const c1 = await connectClient();
+    // s => myPlayer(s, 0) != null is an arrow function: shorthand for
+    // "given a state s, return whether myPlayer(...) is non-null" -- see
+    // docs/JS-CHEATSHEET.md
     await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
     const c2 = await connectClient();
     await c2.waitFor(s => myPlayer(s, 0) != null, 5000);
@@ -44,6 +53,8 @@ async function main() {
     testHook(c1, "spawnPickup", { ptype: "bananaTrail", x: head0.x + 4, y: 30 });
     const fired = await c1.waitFor(s => s.players[0].activePowerup === "bananaTrail", 5000);
     assert(fired.players[0].heldPowerup == null, "bananaTrail must auto-fire, never occupy the held slot");
+    // (s.trails || []) falls back to an empty array if s.trails is missing --
+    // see "Nullish coalescing / defaults" in docs/JS-CHEATSHEET.md
     await c1.waitFor(s => (s.trails || []).some(t => t.type === "bananaTrail"), 5000);
     console.log("PASS: banana auto-fired on pickup and lays trail tiles.");
 

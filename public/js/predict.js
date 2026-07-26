@@ -65,6 +65,10 @@ const DIR_VECTORS = {
 const RETRY_AFTER_TICKS = 2;
 const MAX_RETRIES = 3;
 const EAT_CONFIRM_TICKS = 3;
+// `class Foo { constructor(...) {...} method() {...} }` is JS's syntax for
+// a reusable object blueprint: `new LocalPlayerPredictor(id)` below builds
+// one instance per local seat, each with its own private fields (this.dir,
+// this.inputBuffer, ...) and shared methods (rebuild, reconcile, ...).
 class LocalPlayerPredictor {
   constructor(id) {
     this.id = id;
@@ -91,7 +95,7 @@ class LocalPlayerPredictor {
     // Multi-food (v3.5.0): the board can hold several food cells at once.
     // foodKeys is the set of "x,y" keys from the last snapshot; pendingEat
     // names the ONE cell this snake is provisionally eating.
-    this.foodKeys = new Set();
+    this.foodKeys = new Set(); // Set: unique "x,y" strings -- see JS-CHEATSHEET.md
     this.pendingEat = null;      // { key, atServerSeq }
     this.localGrow = 0;
     this.lastServerLen = null;
@@ -244,6 +248,9 @@ class LocalPlayerPredictor {
     // and animate a slide across the board instead of an instant snap.
     if (p.teleport) {
       this.authBody = p.body.map(s => ({ x: s.x, y: s.y }));
+      // `{ ...s }` (spread) copies s's own fields into a brand-new object --
+      // a shallow clone, so simBody's segments don't alias authBody's. See
+      // JS-CHEATSHEET.md "Spread / rest".
       this.simBody = this.authBody.map(s => ({ ...s }));
       this.predicted = false;
       this.inputBuffer = [];

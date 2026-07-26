@@ -17,7 +17,13 @@
 // never calls step() (a hung request with no timeout of its own), the UI
 // still reveals so nobody is stuck staring at a spinner forever.
 // ============================================================
+// `a || b` evaluates to b when a is falsy -- here "use the existing
+// __BUILDS__ object, or create one if this is the first script to run" --
+// see JS-CHEATSHEET.md "Nullish coalescing / defaults".
 (window.__BUILDS__ = window.__BUILDS__ || {}).loading = "loading 2026-07-22.1";
+// IIFE module pattern: everything below (MAX_WAIT_MS, total, done, ...) is
+// private; only { begin, step } is exposed as `Loading.begin`/`Loading.step`
+// -- see JS-CHEATSHEET.md.
 const Loading = (() => {
   const MAX_WAIT_MS = 8000;
   let total = 0;

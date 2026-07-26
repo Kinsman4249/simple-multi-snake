@@ -16,6 +16,10 @@ use crate::state::{Conn, Game, JoinOffer, KillEvent, LocalSeat, QueueEntry, Role
 // Record a qualifying LENGTH score for one seat (earned-length gate: a
 // snake back at the starting length records nothing).
 fn record_if_qualifies(game: &mut Game, conn_id: &str, local_idx: usize, mode: &'static str, slot_index: usize) {
+    // game.slots is Vec<Option<Snake>>: .get() borrows the slot (Option, in
+    // case the index is out of range) and the nested Some(Some(s)) pattern
+    // also requires the slot itself to be occupied. let-else bails out on
+    // either "no such slot" or "empty slot"; see RUST-CHEATSHEET.md.
     let Some(Some(s)) = game.slots.get(slot_index) else { return };
     let len = s.body.len();
     if len <= game.cfg.min_snake_length {
@@ -50,6 +54,9 @@ fn record_if_qualifies_food_rate(game: &mut Game, conn_id: &str, local_idx: usiz
     game.dlog(&format!("food-rate score recorded local={} initials={} score={}", local_idx, initials, score));
 }
 
+// Called once per new WebSocket connection (see ws.rs). Registers the
+// connection's outbound channel and immediately tries to seat local seat 0
+// (the first controller/keyboard slot) as either a player or a spectator.
 pub fn assign_connection(game: &mut Game, conn_id: String, tx: tokio::sync::mpsc::UnboundedSender<WsOut>) {
     game.connections.insert(
         conn_id.clone(),
@@ -65,6 +72,9 @@ pub fn admit_local(game: &mut Game, conn_id: &str, local_idx: usize) {
     if !game.connections.contains_key(conn_id) {
         return;
     }
+    // .position() runs the closure over each slot and returns the index of
+    // the first match (an empty seat) as Some(i), or None if every slot is
+    // full; see RUST-CHEATSHEET.md ("Closures", "Option<T>").
     let free_index = game.slots.iter().position(|s| s.is_none());
     if let (Some(free_index), true) = (free_index, game.spectator_queue.is_empty() && game.join_offer.is_none()) {
         let color = if free_index < crate::config::COLORS.len() { Some(free_index) } else { None };
@@ -145,6 +155,12 @@ pub fn respawn_or_spectate(game: &mut Game, slot_index: usize) {
     }
 }
 
+// Full teardown when a WebSocket connection closes (client disconnect, idle
+// kick, etc): frees any slot(s) the connection's seats occupied, drops it
+// from the spectator queue and any pending join offer, then tries to seat
+// the next spectator into the slot(s) that opened up. If the room is now
+// completely empty, resets session-scoped state (food, speed ramp) so the
+// next player gets a fresh start.
 pub fn remove_connection(game: &mut Game, conn_id: &str) {
     let Some(conn) = game.connections.remove(conn_id) else { return };
     game.conn_order.retain(|c| c != conn_id);
@@ -169,6 +185,11 @@ pub fn remove_connection(game: &mut Game, conn_id: &str) {
     }
 }
 
+// If a slot is free and nobody already has a pending join offer, offer it
+// to the spectator at the front of the queue (they get join_offer_ms to
+// accept via "acceptJoin" before the offer expires -- see
+// lifecycle_sweep). Recurses to skip past stale queue entries (e.g. a
+// spectator who disconnected without formally leaving the queue).
 pub fn maybe_offer_slot(game: &mut Game) {
     if game.join_offer.is_some() {
         return;
@@ -344,6 +365,11 @@ pub struct KillInfo {
     pub cause: &'static str,
 }
 
+// Runs the moment a snake dies: kills its momentum, drops any pinata food,
+// records a qualifying high score immediately (since initials are
+// session-bound, this is the only safe time to write them), builds a
+// kill-feed event for the next broadcast, and schedules the respawn timer
+// that lifecycle_sweep will fire later.
 pub fn handle_death(game: &mut Game, slot_index: usize, kill_info: &KillInfo) {
     if game.slots[slot_index].is_none() {
         return;

@@ -9,12 +9,16 @@ import { WALL_WARN_1, WALL_WARN_2, WALL_SPIKE_1, WALL_SPIKE_2, WALL_SPIKE_3, COL
 // 0-2, blank gap row 3, dot on row 4. Outer columns (0, 4) stay empty so
 // the glyph reads as a narrow mark, not a block. Must mirror render2d.js
 // warnVal()/WALL_WARN_COLORS exactly for parity.
-// @ts-ignore: decorator valid in AssemblyScript
+// @ts-ignore: decorator valid in AssemblyScript -- see docs/JS-CHEATSHEET.md
 @inline
+// r/c step through the rows/columns of the 5x5 sub-grid; the return value is
+// a small integer code (0 = empty pixel, 1/2/... = which color to use --
+// see warnColor()/spikeColor() below) that the caller looks up per pixel to
+// draw the glyph one tiny rect at a time.
 export function warnVal(r: i32, c: i32): i32 {
   if (r == 3) return 0;
   if (c == 0 || c == 4) return 0;
-  return c == 2 ? 1 : 2;
+  return c == 2 ? 1 : 2; // ternary: 1 if c==2, else 2 -- shorthand for if/else returning a value
 }
 // @ts-ignore: decorator valid in AssemblyScript
 @inline
@@ -112,6 +116,10 @@ export function dirVY(d: i32): i32 { return d == 0 ? -1 : (d == 1 ? 1 : 0); }
 
 // @ts-ignore: decorator valid in AssemblyScript
 @inline
+// Reads one body-segment's x coordinate out of a packed segment pool: each
+// segment is 4 bytes ({x:i16, y:i16}), so `idx << 2` (idx * 4) finds its
+// byte offset, and load<i16> reads the 2-byte x value there (y is the same
+// offset +2 bytes, read by segY below). `<i32>` casts the loaded i16 up.
 export function segX(pool: usize, idx: i32): i32 { return <i32>load<i16>(pool + <usize>(idx << 2)); }
 // @ts-ignore: decorator valid in AssemblyScript
 @inline

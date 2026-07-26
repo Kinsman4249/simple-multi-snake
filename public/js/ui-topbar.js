@@ -38,6 +38,9 @@ function initInitialsPanel(getFn, saveFn) {
       const save = document.createElement("button");
       save.textContent = "Save";
       save.style.cssText = "background:#333;color:#eee;border:1px solid #666;padding:2px 8px;cursor:pointer;font-family:monospace;font-size:11px;";
+      // `() => {...}` is an arrow function; assigning it to `.onclick` wires
+      // up a click handler (event-handler-property style -- see
+      // docs/JS-CHEATSHEET.md).
       save.onclick = () => {
         const v = sanitizeInitials(input.value);
         if (v) { saveFn(idx, v); input.value = v; }
@@ -92,6 +95,8 @@ function initDebug(getInfoFn, toggleFn) {
 function renderDebug() {
   const panel = document.getElementById("debugPanel");
   if (!panel || !debugInfoFn) return;
+  // `|| {}` falls back to an empty object if debugInfoFn() returned nothing
+  // yet, so the `b.xxx` lookups below never throw (see docs/JS-CHEATSHEET.md).
   const info = debugInfoFn() || {};
   const b = info.builds || {};
   const lines = [];
@@ -181,6 +186,10 @@ function initKeymapPanel(getKeyMapsFn, saveKeyMapFn, swapFn) {
   document.addEventListener("keydown", e => {
     if (capturing == null) return;
     const maps = getKeyMapsFn();
+    // Object.assign({}, a, b) builds a NEW object by copying `a`'s
+    // properties onto a fresh `{}`, then `b`'s on top (so `b` wins on
+    // conflicts) -- a shallow-merge that doesn't mutate `maps[capturing]`
+    // (see docs/JS-CHEATSHEET.md).
     const newMap = Object.assign({}, maps[capturing], { activate: e.code });
     saveKeyMapFn(capturing, newMap);
     capturing = null;
@@ -218,4 +227,5 @@ function initPowerupRefButton() {
   };
 }
 
+// Publish this file's public functions onto the shared UI object.
 Object.assign(UI, { initInitialsPanel, initDebug, initKeymapPanel, initPowerupRefButton });

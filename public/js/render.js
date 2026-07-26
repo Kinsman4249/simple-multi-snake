@@ -25,6 +25,9 @@
 // Display scaling (fitCanvas) is CSS-only and identical for both paths.
 // ============================================================
 (window.__BUILDS__ = window.__BUILDS__ || {}).render = "render 2026-07-20.1 (wasm facade)";
+// IIFE module pattern: private state (wasm, ctx, grid, ...) lives inside,
+// only { draw, POWERUP_STYLE } is exposed as `Render.draw`/`Render.POWERUP_STYLE`
+// -- see JS-CHEATSHEET.md.
 const Render = (() => {
   const canvas = document.getElementById("game");
   const POWERUP_STYLE = Render2D.POWERUP_STYLE;
@@ -99,6 +102,15 @@ const Render = (() => {
   }
   window.addEventListener("resize", fitCanvas);
 
+  // wasm.memory.buffer is one big raw block of bytes (the wasm module's
+  // linear memory). Int32Array/Uint32Array/Float32Array/Int16Array are
+  // "typed arrays": fixed-type windows over that SAME memory (no copying),
+  // so writing into i32[x] or reading f32[x] talks directly to the wasm
+  // side -- see JS-CHEATSHEET.md "Typed arrays". The functions below use
+  // these views to pack game state in and read drawing instructions back
+  // out, using raw index math (byte offset / 4 for i32/f32, / 2 for i16)
+  // instead of named fields, since that's the calling convention the wasm
+  // module (wasm/renderer.ts) expects.
   function views() {
     if (!mem || mem.buffer !== wasm.memory.buffer) {
       const buf = wasm.memory.buffer;
@@ -114,6 +126,9 @@ const Render = (() => {
   }
 
   // Colors go to the wasm as u32 with r in the low byte (little-endian RGBA).
+  // Map here is a key-value cache (like a plain {} object but can hold any
+  // key type and is a bit more purpose-built for this) -- see
+  // JS-CHEATSHEET.md "Map / Set / WeakMap".
   const colorCache = new Map();
   function packColor(str) {
     let v = colorCache.get(str);
@@ -361,31 +376,40 @@ const Render = (() => {
 
   // Walk the wasm's instance buffer onto the 2D context. Kinds: 0 rect,
   // 1 ellipse (rot honored), 2 ring (param = inner radius fraction).
+  // The wasm side already decided WHAT to draw this frame (every cell,
+  // pickup, trail, fx, ...) and wrote it as a flat list of "instances"
+  // (x, y, w, h, color, kind, ...); this function is a dumb player that
+  // just replays each instance as one canvas draw call, in order.
   function executeInstances(n) {
     const m = views();
     const ip = wasm.instancePtr();
     const f32 = m.f32, u32 = m.u32;
-    const b = ip >>> 2;
+    const b = ip >>> 2; // byte offset -> i32/f32 index (4 bytes per element)
     ctx.globalAlpha = 1;
+    // Clear the canvas to black before drawing this frame's instances.
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     for (let i = 0; i < n; i++) {
       const o = b + i * 8;
       const color = u32[o + 4];
-      const a = (color >>> 24) / 255;
+      const a = (color >>> 24) / 255; // alpha channel packed into the top byte
       if (a <= 0) continue;
       const x = f32[o], y = f32[o + 1], w = f32[o + 2], h = f32[o + 3];
       const kind = f32[o + 5];
       ctx.globalAlpha = a;
       if (kind === 0) {
+        // Filled rectangle -- a grid cell, a flat-color pickup/trail tile, etc.
         ctx.fillStyle = rgbStyle(color);
         ctx.fillRect(x, y, w, h);
       } else if (kind === 1) {
+        // Filled ellipse (optionally rotated) -- e.g. the blue-shell body.
         ctx.fillStyle = rgbStyle(color);
         ctx.beginPath();
         ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, f32[o + 6], 0, Math.PI * 2);
         ctx.fill();
       } else {
+        // Ring (a stroked circle) -- e.g. a wormhole portal or the
+        // blue-shell explosion shockwave.
         const outer = w / 2;
         const inner = f32[o + 7] * outer;
         ctx.strokeStyle = rgbStyle(color);

@@ -29,6 +29,7 @@ async function selfCollisionScenario(withBoost) {
   }, { SNAKE_TEST_HOOKS: "1", SNAKE_TEST_SPAWNS: JSON.stringify([{ x: 20, y: 15, dir: "right", len: 12 }]) });
   try {
     const c1 = await connectClient();
+    // `s => ...` is an arrow function callback (see docs/JS-CHEATSHEET.md).
     await c1.waitFor(s => myPlayer(s, 0) != null, 5000);
     testHook(c1, "grantPowerup", { slot: 0, ptype: "wormhole" });
     await c1.waitFor(s => myPlayer(s, 0).wormholeCharge === true, 3000);
@@ -103,6 +104,8 @@ async function transitionSurvivalScenario() {
 // Shared config for the staged geometry scenarios below: fixed cadence, no
 // random walls/pickups/food interfering with exact-cell assertions.
 function stagedCfg(extra) {
+  // Object.assign(...) merges the two config objects together -- see
+  // docs/JS-CHEATSHEET.md.
   return Object.assign({
     maxPlayers: 4,
     grid: { cols: 40, rows: 20, cellSize: 20 },

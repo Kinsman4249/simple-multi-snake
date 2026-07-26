@@ -22,20 +22,32 @@ function loadKeyMaps() {
     let map = null;
     try {
       const raw = localStorage.getItem(KEYMAP_STORAGE_PREFIX + i);
+      // JSON.parse turns the saved JSON text back into a real JS object
+      // (see docs/JS-CHEATSHEET.md).
       if (raw) map = JSON.parse(raw);
     } catch (_) { /* localStorage unavailable or corrupt entry: fall back to default */ }
+    // `map || Object.assign({}, DEFAULT_KEY_MAPS[i])`: use the saved map if
+    // we got one, otherwise make a COPY of the default (Object.assign into a
+    // fresh {} so callers can't accidentally mutate the shared default --
+    // see docs/JS-CHEATSHEET.md).
     maps.push(map || Object.assign({}, DEFAULT_KEY_MAPS[i]));
   }
   return maps;
 }
 function saveKeyMap(localIdx, map) {
   KEY_MAPS[localIdx] = map;
+  // JSON.stringify converts the map object to JSON text for storage (see
+  // docs/JS-CHEATSHEET.md); JSON.parse (above) reverses it on load.
   try { localStorage.setItem(KEYMAP_STORAGE_PREFIX + localIdx, JSON.stringify(map)); } catch (_) {}
 }
 // Swaps which local index uses WASD vs. arrows -- movement keys only, each
 // seat keeps its OWN activation key rebind across the swap.
 function swapKeyMaps() {
   const a = KEY_MAPS[0], b = KEY_MAPS[1];
+  // `m => { ... }` is an arrow function stored in a variable (see
+  // docs/JS-CHEATSHEET.md). `for (const k in m)` loops over an object's own
+  // property names (keys), unlike `for...of` which loops over an
+  // array's/iterable's values.
   const moveOnly = m => { const o = {}; for (const k in m) if (k !== "activate") o[k] = m[k]; return o; };
   saveKeyMap(0, Object.assign({ activate: a.activate }, moveOnly(b)));
   saveKeyMap(1, Object.assign({ activate: b.activate }, moveOnly(a)));

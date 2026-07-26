@@ -26,6 +26,10 @@ function steerTouch(dir) {
 function initSwipeSteering() {
   const board = document.getElementById("game");
   let start = null;
+  // addEventListener registers a handler without overwriting any other
+  // listener on the same event (unlike the el.onclick = fn style used
+  // elsewhere in this codebase -- see JS-CHEATSHEET.md). `e => {...}` is an
+  // arrow function used as the callback.
   board.addEventListener("touchstart", e => {
     const t = e.touches[0];
     start = { x: t.clientX, y: t.clientY };
@@ -83,6 +87,8 @@ document.addEventListener("keydown", e => {
       return;
     }
   }
+  // heldKeys is a Set: it only stores unique values, so re-adding a key
+  // that's already held is a no-op -- see JS-CHEATSHEET.md "Map / Set".
   const wasHeld = heldKeys.has(key);
   heldKeys.add(key);
   for (let localIdx = 0; localIdx < KEY_MAPS.length; localIdx++) {

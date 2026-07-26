@@ -9,6 +9,11 @@
 use crate::config::{Grid, PowerupsCfg};
 use crate::state::{Cell, Game, Snake};
 
+// An `enum` where every variant is a plain marker (no per-variant data),
+// so it behaves like a C-style enum; see RUST-CHEATSHEET.md ("struct and
+// enum"). The derives make it copyable by value (Copy/Clone), comparable
+// with == (PartialEq/Eq), and printable for debugging (Debug); see
+// RUST-CHEATSHEET.md ("#[derive(...)]").
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PowerupType {
     Wormhole,
@@ -34,8 +39,14 @@ pub const POWERUP_TYPES: [PowerupType; 9] = [
     PowerupType::Scissors,
 ];
 
+// impl block: PowerupType's methods, kept separate from the enum
+// declaration above; see RUST-CHEATSHEET.md ("impl blocks"). `self` here is
+// taken by value, which is cheap because PowerupType derives Copy above.
 impl PowerupType {
     pub fn as_str(self) -> &'static str {
+        // match over every enum variant -- the compiler enforces that all
+        // 9 variants are covered here (no catch-all needed); see
+        // RUST-CHEATSHEET.md ("match").
         match self {
             PowerupType::Wormhole => "wormhole",
             PowerupType::GrowthSpurt => "growthSpurt",
@@ -54,6 +65,8 @@ impl PowerupType {
     // Which powerups wait in the held slot for the activate button (JS:
     // requiresActivation). Only speedBoost, by maintainer decision 2026-07-16.
     pub fn requires_activation(self) -> bool {
+        // matches!(value, pattern) -- shorthand for "does this match?" as a
+        // bool, without writing a full match; see RUST-CHEATSHEET.md.
         matches!(self, PowerupType::SpeedBoost)
     }
     // Trail-laying powerups: while one is the activePowerup, each movement
@@ -195,6 +208,8 @@ pub fn segments_lost(body_length: usize, percent: f64, floor: usize) -> usize {
 // scissors module: where in `body` the impact cell lands (first match --
 // a body can't revisit a cell, so this is unambiguous). Shared by the
 // self-cut and opponent-cut paths in sim.rs.
+// `&[Cell]` is a slice -- a borrowed view over a Vec<Cell> without taking
+// ownership of it; see RUST-CHEATSHEET.md ("Slices &[T]").
 pub fn scissors_cut_index(body: &[Cell], impact: Cell) -> Option<usize> {
     body.iter().position(|seg| seg.x == impact.x && seg.y == impact.y)
 }

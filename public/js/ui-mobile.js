@@ -26,6 +26,9 @@ function initMobileUiToggle() {
     "z-index:10000;width:40px;height:40px;border-radius:50%;font-size:18px;" +
     "background:rgba(20,20,20,0.6);color:#ccc;border:1px solid #555;" +
     "font-family:monospace;opacity:0.55;touch-action:none;-webkit-user-select:none;user-select:none;";
+  // `e => {...}` is an arrow function stored in a variable so it can be
+  // passed to two different addEventListener calls below (see
+  // docs/JS-CHEATSHEET.md).
   const toggle = e => {
     if (e) { e.preventDefault(); e.stopPropagation(); }
     const hidden = document.body.classList.toggle("mobile-hidden");
@@ -74,4 +77,5 @@ function initTouchControls(handlers) {
   document.body.appendChild(boost);
 }
 
+// Publish this file's public functions onto the shared UI object.
 Object.assign(UI, { initMobileUiToggle, initTouchControls });

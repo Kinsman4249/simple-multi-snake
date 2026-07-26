@@ -10,6 +10,10 @@ use std::collections::HashMap;
 
 const CAPTCHA_TTL_MS: i64 = 120000;
 
+// A `struct` bundling this type's state (see RUST-CHEATSHEET.md,
+// "struct and enum"). No `pub` on the fields, so only code inside this
+// module can read/write them directly -- everyone else must go through
+// the methods in the `impl Captcha` block below.
 pub struct Captcha {
     pending: HashMap<String, (i64, i64)>, // id -> (answer, expires_at)
     tokens: HashMap<String, i64>,         // token -> expires_at
@@ -21,6 +25,19 @@ pub fn random_hex(bytes: usize) -> String {
     (0..bytes).map(|_| format!("{:02x}", rng.random::<u8>())).collect()
 }
 
+// impl block: where Captcha's methods live, separate from the struct's
+// field declaration above; see RUST-CHEATSHEET.md ("impl blocks").
+//
+// Overall flow (see ws.rs / routes.rs for callers):
+//   1. make() -- generate an addition puzzle ("a + b = ?"), remember the
+//      expected answer keyed by a random id, hand (id, a, b) to the client.
+//   2. verify() -- client posts back id + their answer; if it matches
+//      (and hasn't expired) this returns true and the pending entry is
+//      consumed (one-shot: can't be verified twice).
+//   3. issue_token() -- on a successful verify, the caller mints a
+//      short-lived join token.
+//   4. consume_token() -- the WebSocket handshake spends that token once,
+//      proving "this connection passed a captcha recently".
 impl Captcha {
     pub fn new(token_ttl_ms: i64) -> Captcha {
         Captcha { pending: HashMap::new(), tokens: HashMap::new(), token_ttl_ms }
@@ -40,6 +57,10 @@ impl Captcha {
 
     pub fn verify(&mut self, id: &str, answer: i64) -> bool {
         let now = now_ms();
+        // .remove() both looks up AND deletes the entry, returning it as an
+        // Option -- so a verify attempt always consumes the pending puzzle,
+        // win or lose (one-shot). match handles the found/not-found cases;
+        // see RUST-CHEATSHEET.md ("Option<T>", "match").
         match self.pending.remove(id) {
             Some((expected, exp)) => exp > now && answer == expected,
             None => false,

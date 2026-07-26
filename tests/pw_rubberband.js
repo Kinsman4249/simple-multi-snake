@@ -18,11 +18,14 @@ function cheb(a, b) { return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
 
 // Roll `n` food placements via the placeFood hook; for each, measure the
 // Chebyshev distance from the new food cell to both heads (same broadcast).
+// async function + await: pauses here until each Promise resolves --
+// see docs/JS-CHEATSHEET.md
 async function sampleFood(c1, n) {
   const near = { trail: 0 }, dist = { trail: [], lead: [] };
   let lastKey = c1.state.food ? c1.state.food.x + "," + c1.state.food.y : null;
   for (let k = 0; k < n; k++) {
     testHook(c1, "placeFood");
+    // arrow function passed as a callback -- see docs/JS-CHEATSHEET.md
     const st = await c1.waitFor(s => {
       const key = s.food ? s.food.x + "," + s.food.y : null;
       return key !== null && key !== lastKey;
@@ -52,6 +55,8 @@ async function foodBiasScenario(biasEnabled) {
       foodBias: { enabled: biasEnabled, radius: RADIUS, strength: STRENGTH },
       shellPressure: { enabled: false }
     }
+  // JSON.stringify converts this array to text to pass as an env var --
+  // see docs/JS-CHEATSHEET.md
   }, { SNAKE_TEST_HOOKS: "1", SNAKE_TEST_SPAWNS: JSON.stringify(spawns) });
   try {
     const c1 = await connectClient();
@@ -69,6 +74,8 @@ async function foodBiasScenario(biasEnabled) {
 
 // Count the types of the first `n` NEW pickups the spawner produces.
 async function sampleSpawns(client, n, timeoutMs) {
+  // Set stores unique values -- used here to track which pickup ids we've
+  // already counted -- see docs/JS-CHEATSHEET.md
   const seen = new Set();
   const counts = {};
   const deadline = Date.now() + timeoutMs;
@@ -79,6 +86,7 @@ async function sampleSpawns(client, n, timeoutMs) {
     for (const p of (cur.powerupPickups || [])) {
       if (seen.has(p.id)) continue;
       seen.add(p.id);
+      // `x || 0`: fall back to 0 the first time this type is counted -- see docs/JS-CHEATSHEET.md
       counts[p.type] = (counts[p.type] || 0) + 1;
       total++;
       sawNew = true;

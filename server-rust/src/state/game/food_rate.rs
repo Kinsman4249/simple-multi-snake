@@ -9,6 +9,8 @@ impl Game {
         ((self.cfg.food_rate.window_ms / self.cfg.food_rate.bucket_ms).round() as usize).max(1)
     }
 
+    // conn: &mut Conn -- mutable borrow, this fn is allowed to modify the
+    // caller's Conn -- see "References" in RUST-CHEATSHEET.md.
     pub fn ensure_food_rate_acc(conn: &mut Conn, local_idx: usize) {
         if conn.food_rate.len() <= local_idx {
             conn.food_rate.resize(local_idx + 1, None);
@@ -62,6 +64,11 @@ impl Game {
             return;
         }
         let Some((conn_id, li)) = self.seat_for_slot(slot_index) else { return };
+        // if let Some(x) = ... : handle only the Some case, do nothing on
+        // None -- see "Option<T>" in RUST-CHEATSHEET.md. Nested here because
+        // food_rate is a Vec<Option<FoodRateAcc>>: .get_mut gives
+        // Option<&mut Option<FoodRateAcc>>, so it takes two Some(..) layers
+        // to reach the accumulator.
         if let Some(conn) = self.connections.get_mut(&conn_id) {
             if let Some(Some(acc)) = conn.food_rate.get_mut(li) {
                 acc.cur_food += amount;

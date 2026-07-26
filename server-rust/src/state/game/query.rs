@@ -7,6 +7,8 @@ use crate::state::types::{Cell, Role};
 
 impl Game {
     // Banana-trail control inversion status (sim-clock based).
+    // s: &Snake borrows the Snake without taking ownership -- see
+    // "References" in RUST-CHEATSHEET.md.
     pub fn is_inverted(&self, s: &Snake) -> bool {
         self.move_seq < s.invert_until_tick
     }
@@ -90,6 +92,9 @@ impl Game {
                 continue;
             }
             count += 1;
+            // match here covers: no length recorded yet, a mismatching
+            // length (bail out), or anything else (matching length, do
+            // nothing) -- see "match" in RUST-CHEATSHEET.md.
             match first {
                 None => first = Some(s.body.len()),
                 Some(f) if s.body.len() != f => return false,
@@ -100,6 +105,8 @@ impl Game {
     }
 
     // "How many computers": connections owning at least one player seat.
+    // Returns a &'static str -- one of two string literals baked into the
+    // binary, see "Lifetimes" in RUST-CHEATSHEET.md.
     pub fn score_mode(&self) -> &'static str {
         let n = self
             .connections

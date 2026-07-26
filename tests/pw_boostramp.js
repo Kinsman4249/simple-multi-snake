@@ -12,6 +12,14 @@
 //      a much shorter `sliding` window than a turn at full ramp.
 // Run: deno run --allow-net --allow-read --allow-write --allow-run
 // --allow-env tests/pw_boostramp.js
+//
+// In plain terms: this checks the fine details of how boosting ramps up.
+// A very short tap of boost should do nothing at all (a "hold grace"
+// period). Once boost is actually held long enough, speed should climb
+// smoothly up to full boost speed over a set ramp time, rather than
+// snapping instantly. And the sideways "drift" from turning while boosted
+// should be shorter if you turn early in the ramp than if you turn once
+// fully ramped up.
 import { connectClient, myPlayer, assert, sleep, stepToward, startServer, stopServer, runTest } from "./helpers.js";
 
 const COLS = 96, ROWS = 54;
@@ -28,6 +36,8 @@ async function steerTo(client, tx, ty, timeoutMs) {
     if (Math.abs(head.x - tx) <= 1 && Math.abs(head.y - ty) <= 1) return;
     const dirName = stepToward(cur, 0, tx, ty);
     if (dirName) client.send({ type: "dir", dir: dirName, local: 0 });
+    // s => s !== cur is an arrow function (see docs/JS-CHEATSHEET.md);
+    // .catch(() => {}) swallows the timeout error if we never see a new state
     await client.waitFor(s => s !== cur, 2000).catch(() => {});
   }
   throw new Error("timed out steering to staging point");
@@ -49,6 +59,8 @@ async function ensureHeadingRight(client) {
 async function measureSlide(client, timeoutMs) {
   let start = null;
   try {
+    // timeoutMs || 1200: use timeoutMs if it was passed in, else default to
+    // 1200 -- see "Nullish coalescing / defaults" in docs/JS-CHEATSHEET.md
     await client.waitFor(s => { const p = myPlayer(s, 0); return p && p.sliding === true; }, timeoutMs || 1200);
     start = Date.now();
   } catch (_) { return 0; }

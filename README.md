@@ -2,131 +2,29 @@
 
 Browser-based multiplayer Snake. One authoritative server process (a compiled
 Rust binary, built from `server-rust/`) holds the game state and serves the
-client. Apache reverse-proxies a hostname you choose
-to it, with TLS from Let's Encrypt. Up to eight live players share one board by
-default -- the cap (maxPlayers) is configurable to taste and to the hardware you
-run it on; extra connections wait in a spectator queue and are promoted when a
-slot frees.
+client. Apache reverse-proxies a hostname you choose to it, with TLS from
+Let's Encrypt. Up to eight live players share one board by default -- the cap
+is configurable to taste and to the hardware you run it on; extra connections
+wait in a spectator queue and are promoted when a slot frees.
 
-## Features
+Full feature list: [FEATURES.md](FEATURES.md) -- couch co-op, boost/drift
+movement, powerups (Wormhole, Scissors, Blue Shell, Banana Trail, ...),
+dynamic walls, pinata bounty food, rubberbanding, mobile controls, and the
+high-score boards.
 
-- Up to eight players on a shared board by default (the cap is configurable --
-  see maxPlayers), no accounts.
-- Couch co-op: a second local player can join on the same connection (p1 on
-  arrow keys, p2 on WASD), taking a second slot on the same board.
-- Leave button per local seat. Leaving exits that seat completely (it is not
-  queued as a spectator); rejoin any time by pressing that seat's own keys or
-  the Play/Add button. Leaving your last seat closes the connection and shows
-  a rejoin screen instead of leaving a dead board on screen.
-- Boost & momentum drift: hold the key of the direction you're already moving
-  to speed up. Boost doesn't kick in instantly: a short tap does nothing at
-  all (a hold-grace, so taps can't accidentally tag a queued turn with a
-  drift), and once engaged the speed RAMPS up to full over a moment rather
-  than snapping. Speed is real momentum: releasing the key does not stop you
-  dead -- the snake decelerates over a moment (faster than it accelerated,
-  but spanning multiple frames), and while it is still fast a turn skids
-  exactly like a boosted one. Turning at speed turns your head immediately,
-  but your body keeps skidding sideways in the old direction -- and the skid
-  length scales with how fast you actually were when you turned (a
-  barely-moving snake barely drifts). Rapid alternating turns chain skids.
-  The skidding body clamps against walls and other snakes rather than dying,
-  lays a trail of fading dust on every cell it slides through, and there is
-  no wall-grace tick while you carry speed. A brief tip explaining this is
-  shown on the join screen while the captcha is being solved. Configurable,
-  and can be turned off entirely.
-- Held-powerup glow: a snake carrying a powerup (or an armed wormhole charge)
-  glows in that powerup's color -- visible to EVERYONE, not just the holder,
-  so opponents can see what's coming and play around it. When a snake has
-  BOTH a held powerup and an armed wormhole charge, the glow alternates
-  between the two colors so neither ready cue is hidden. Cosmetic-only flag
-  clientFx.heldGlow (default true).
-- Powerups: pickups spawn on the board and fire the instant you collect them --
-  the only exception is Speed Boost, which you hold and trigger with your seat's
-  activation key (default Right Shift for the arrows seat, Space for the WASD
-  seat). Wormhole is also held, as an independent charge, and auto-fires the
-  instant a move would otherwise kill you (a wall, another snake, or your own
-  body), teleporting you somewhere safe -- and the teleport THREADS: only the
-  head exits at the destination, with the body following through the entry
-  point segment by segment, so the snake visibly snakes through the wormhole
-  instead of snapping across the board. The set: Wormhole, Growth Spurt,
-  Speed Boost, Ice Trail, Poison Trail, Blue Shell (a fast projectile that
-  hunts whoever is longest -- even the player who fired it. It phases straight
-  through bodies and only detonates on the target's HEAD, so you cannot shield
-  with your tail; it is faster than a plain boost, so it is almost impossible
-  to dodge -- but a hold-boost stacked with the Speed Boost powerup can still
-  outrun it. It never spawns and fizzles into food if collected when every
-  snake is the same length, and it is much rarer while the leader is still
-  short, since there is no meaningful leader to punish yet), and Banana Trail
-  (lays
-  pixel-art banana peels -- drawn as little bananas so they read distinctly on
-  the board; any snake that slips on one, the layer included, has its
-  controls REVERSED for a few seconds -- the status bar shows a "controls
-  reversed" notice while it lasts). Each type has its own config block and
-  on/off switch. A "What do the powerups do?" button on the join screen
-  explains them, and every powerup can be disabled. See Configuration.
-- Rubberbanding (silent catch-up, config block `rubberband`): food spawns
-  biased toward the shortest living snake, and when the leader is at least
-  30% longer than the next snake, Blue Shells spawn sooner and more often --
-  pressure on the runaway leader from both ends. Both mechanics have their
-  own enable switches and tuning knobs.
-- Powerup feedback on the snake itself (clientFx.powerupFx, default true): a
-  brief bright flash in the powerup's color when it fires, a jetstream while
-  Speed Boost is active, and a built-in timer -- an active powerup tints the
-  snake its color and that tint drains tail-first as the effect runs down, so
-  the amount of colored snake is the time you have left.
-- Rebindable activation keys and a WASD/Arrows swap, from a small panel in the
-  bottom-left corner. Saved in the browser (localStorage); nothing is sent to
-  the server but which seat activated.
-- Mobile: swipe on the board to steer, with on-screen PWR and BOOST buttons
-  that are always visible (they are play controls). The INFO overlays
-  (leaderboard, top bar and its panels, status line) are HIDDEN by default so
-  they never cover the board -- a small round toggle button at the bottom
-  reveals or hides them on tap; swipe-steering and the PWR/BOOST buttons keep
-  working throughout. The overlays start hidden again on every reload.
-- Spectator queue past the player cap (eight by default, configurable). A
-  spectator takes over shortly after a player dies; if the board is not full the
-  dead player just respawns.
-- Killing another player (they run into your body) gives you a 10 point bonus
-  and grows your snake by 3 segments. Head-on collisions kill both, no bonus.
-- Global speed scales with the AVERAGE snake length in the room (total length
-  / number of snakes), saturating at a configurable cap and eased smoothly so
-  growth or a join/leave never snaps the speed. One long snake alone runs as
-  fast as four long snakes; one long + one short matches two mediums.
-- Food and powerups scale with the number of players: food is ceil(players/2)
-  items at once (1-2 players: 1, 3-4: 2, 5-6: 3, ...) and powerups
-  max(1, ceil(players/4)) (1 up to four players, 2 at five to eight, ...),
-  recomputed live as players join and leave.
-- Daily and all-time top 5 high scores with arcade-style 3 letter initials --
-  kept as TWO separate board pairs: "Single PC" (one computer: solo or
-  couch co-op) and "Networked" (two or more computers), because those are
-  different skills. The "Single PC" board is the uncontested / same-computer
-  board; it is not tied to any specific machine, just distinct from networked
-  play. A run is classified at death time by how many computers had players
-  in the game, the hover panel shows both pairs with the current mode
-  highlighted, and an existing single-board highscores.json migrates into the
-  Single PC pair automatically (the networked boards start fresh).
-  Initials are SESSION-BOUND: P1 enters them on the join screen (with the
-  captcha) before playing, P2 at its first join, and a qualifying score is
-  written to the boards automatically the moment the run ends -- there is no
-  post-game prompt to interrupt anyone. A persistent INITIALS button in the
-  top bar changes either seat's initials any time, no refresh needed. While
-  any initials entry is on screen, game keys are fully suspended (typing
-  "WAS" into a text box can never steer a snake or spawn P2), and a short
-  grace after confirming absorbs trailing keypresses.
-- Simple math captcha on join, intended to sit behind a Cloudflare filter.
-- Client-side prediction with server reconciliation: local movement is
-  responsive while the server stays authoritative for collisions, food, and
-  score. Other players' snakes are smoothed between server updates in lock
-  step with the server's own movement rate (cosmetic only; this does not
-  change server-side collision or authority).
-- Idle cleanup applies to active play too: if every living snake on the board
-  goes quiet at once, the whole lobby is disconnected; one attentive player
-  keeps the session alive for everyone else.
-- An on-page DEBUG button shows per-module build stamps, the live server
-  build (commit-derived, not hand-edited), and recent server corrections, so
-  a stale or partial deploy is obvious. The operator can disable the debug
-  system entirely (see enableDebug below) for zero added overhead.
-- All gameplay tuning lives in config.json next to the server.
+## Contents
+
+- [Requirements](#requirements)
+- [Install (one command)](#install-one-command)
+- [Port selection](#port-selection)
+- [TLS (Let's Encrypt via DNS-01)](#tls-lets-encrypt-via-dns-01)
+- [Uninstall (one command)](#uninstall-one-command)
+- [Configuration](#configuration)
+- [The WASM renderer](#the-wasm-renderer)
+- [Netcode and debugging](#netcode-and-debugging)
+- [Manual install](#manual-install)
+- [Development](#development)
+- [Notes and limitations](#notes-and-limitations)
 
 ## Requirements
 
@@ -349,22 +247,59 @@ Keys:
   ceil(players / 4)), so 1-4 players get 1, 5-8 get 2, and so on -- clamped to
   this. Set to 1 to keep a single pickup regardless of player count.
 - powerups.<type>.enabled: on/off per powerup type. Types: wormhole,
-  growthSpurt, speedBoost, iceTrail, poisonTrail, blueShell, bananaTrail.
-  All default on. Blue Shell additionally requires at least two people in
-  the game AND a spread in snake lengths to spawn: a pickup collected while
-  alone, or once every snake is the same length, fizzles into +1 growth
-  (acts like food) instead of launching. Each type has its own tuning keys
-  alongside enabled -- for
+  growthSpurt, speedBoost, iceTrail, poisonTrail, blueShell, bananaTrail,
+  scissors, helloWorld (helloWorld defaults OFF -- it's a minimal ~20-line
+  example powerup used as the "add a new powerup" teaching template, see the
+  `PowerupType::HelloWorld` arm in `server-rust/src/powerups.rs`). Everything
+  else defaults on. Blue Shell additionally
+  requires at least two people in the game AND a spread in snake lengths to
+  spawn: a pickup collected while alone, or once every snake is the same
+  length, fizzles into +1 growth (acts like food) instead of launching. Each
+  type has its own tuning keys alongside enabled -- for
   example growthSpurt.durationMs / foodMultiplier / killBonusGrowth,
   speedBoost.durationMs / speedMult, iceTrail.slowMultiplierPerStack /
   minSpeedMultiplier / tileDurationMs, wormhole.lookaheadDepth,
-  blueShell.segmentLossPercent / explosionRadius / splashLossPercent /
+  blueShell.segmentLossPercent / explosionRadius / splashLossPercent
+  (splashLossPercent applies to every OTHER snake within explosionRadius of
+  the impact, on top of the direct segmentLossPercent hit on the target) /
   speedRatio (projectile cadence as a fraction of the game move interval;
   lower = faster, 0.45 is ~2.2x a normal snake and dodgeable only with a
   boost + Speed Boost) / shortLeaderLength / shortLeaderFactor (spawn weight
   is multiplied by shortLeaderFactor while the leader is shorter than
-  shortLeaderLength), and bananaTrail.invertDurationMs / tileDurationMs. See
-  the powerups block in config.json for the full set and defaults.
+  shortLeaderLength), and bananaTrail.invertDurationMs / tileDurationMs.
+  scissors has no tuning keys beyond enabled: it is a second, fallback
+  self-save charge (tried only after wormhole has already failed to save the
+  snake) that on a self-collision cuts off your own tail at the impact point
+  instead of killing you (the severed segments scatter as pinata food, see
+  pinata below), and on hitting a dynamic wall shatters that wall piece and
+  reroutes you around it -- and if an OPPONENT runs into a scissors-armed
+  snake's body, the opponent gets cut off there instead of scoring a kill.
+  See the powerups block in config.json for the full set and defaults.
+- pinata: bounty food scattered when a sufficiently long snake dies or is
+  cut by scissors, biased toward the trailing/lowest-scoring players.
+  `enabled` (default true), `minLength` (30 -- shorter deaths drop nothing),
+  `percent` (0.30 of body length becomes candy, up to `maxFood`, default
+  12), `ttlMs` (6000 -- uneaten candy expires), `spread` (6, scatter radius
+  in cells), `bias` (0.6, pull toward trailing players), `sizeScale` (0.15,
+  extra scatter radius per segment above minLength -- a bigger corpse bursts
+  wider).
+- walls: pentomino-shaped 5-cell obstacle pieces that periodically telegraph
+  (flash a warning) then solidify on the board, biased toward the leader,
+  and despawn after a lifetime or shrink early as the player pool thins.
+  `enabled` (default true), `minPlayers` (1), `telegraphMs` (3000, warning
+  duration before a piece goes solid), `lifetimeMs` (45000, how long a solid
+  piece stays once armed), `despawnTelegraphMs` (3000, warning fade before
+  removal), `spawnIntervalMs` (15000), `maxConcurrent` (3), `minHeadDistance`
+  (4, cells kept clear around every snake head when placing a new piece),
+  `leaderBias.{enabled,radius,strength}` (bias placement toward the current
+  leader, same bias shape as rubberband.foodBias below).
+- foodRate: a separate speed-run-style leaderboard (`enabled` default true)
+  tracking food eaten per unit time per seat, independent of the length-based
+  Single PC / Networked boards -- shown as its own daily/all-time pair in the
+  high-score panel with a "food/min" rate. `bucketMs` (1000, accumulator
+  resolution), `windowMs` (300000, rolling window the rate is computed
+  over), `floorMs` (300000, minimum play time before a rate counts as
+  qualifying rather than "provisional").
 - rubberband.foodBias: bias food placement toward the shortest living snake
   (enabled default true). A free cell within `radius` (default 15, Chebyshev)
   of the trailing snake's head is always accepted; farther cells only with

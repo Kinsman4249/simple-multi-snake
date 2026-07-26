@@ -15,6 +15,7 @@ function dirName(v) {
 async function stepDir(client, local, v) {
   const cur = client.state;
   client.send({ type: "dir", dir: dirName(v), local });
+  // arrow function passed as a callback -- see docs/JS-CHEATSHEET.md
   await client.waitFor(s => s !== cur, 3000);
 }
 async function stepsStraight(client, local, v, n) {
@@ -66,6 +67,8 @@ async function main() {
 
     const before = c1.state;
     assert(myPlayer(before, 0).activePowerup === "iceTrail", "still laying trail after repositioning");
+    // {...obj} spread makes a shallow copy so later mutation of the head
+    // doesn't change this snapshot -- see docs/JS-CHEATSHEET.md
     const startHead = { ...myPlayer(before, 0).body[0] };
     const dir0 = myPlayer(before, 0).dir;
     assert(
@@ -83,6 +86,7 @@ async function main() {
 
     // One more step in the original direction should land back on the
     // first-laid tile (the snake's own starting cell) -- self-crossing.
+    // `x || 0`: fall back to 0 if iceStacks is missing/falsy -- see docs/JS-CHEATSHEET.md
     const stacksBefore = myPlayer(c1.state, 0).iceStacks || 0;
     await stepDir(c1, 0, dir0);
     let after = myPlayer(c1.state, 0);

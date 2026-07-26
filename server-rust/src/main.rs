@@ -39,6 +39,10 @@ use crate::config::{now_ms, Config};
 use crate::net::js_num;
 use crate::state::{Game, WsOut};
 
+// Shared server state handed to every route handler (axum clones this cheaply
+// per-request since Arc<Mutex<T>> is just a shared pointer + lock -- see
+// docs/RUST-CHEATSHEET.md). Locking `game`/`captcha` gives temporary
+// exclusive access; only one task can hold the lock at a time.
 #[derive(Clone)]
 pub(crate) struct App {
     cfg: &'static Config,
@@ -46,6 +50,9 @@ pub(crate) struct App {
     captcha: Arc<Mutex<Captcha>>,
 }
 
+// #[tokio::main] is a macro that wraps `main` in the async runtime setup
+// needed to actually run `async fn` bodies -- see "async fn / .await" in
+// docs/RUST-CHEATSHEET.md.
 #[tokio::main]
 async fn main() {
     let cfg = config::load();
@@ -57,6 +64,11 @@ async fn main() {
     // PERF summary printer (SNAKE_PERF only): one "[perf] {json}" line every
     // 5s, consumed by tests/perf_baseline.js.
     if cfg.perf {
+        // Clone the Arc (cheap: bumps a refcount, doesn't copy the Game) so
+        // this background task can own its own handle to the shared state.
+        // `tokio::spawn` starts an independent async task that runs
+        // concurrently with the rest of main -- `async move` hands the
+        // closure ownership of `game` so it can outlive this block.
         let game = game.clone();
         tokio::spawn(async move {
             loop {
@@ -128,6 +140,9 @@ async fn main() {
         });
     }
 
+    // Wire each URL path to its handler function. .with_state(app) makes
+    // `App` available to every handler via the State<App> extractor (see
+    // routes.rs).
     let router = Router::new()
         .route("/api/config", get(routes::api_config))
         .route("/api/captcha", get(routes::api_captcha))
@@ -138,6 +153,8 @@ async fn main() {
         .with_state(app);
 
     let addr = format!("127.0.0.1:{}", cfg.port);
+    // .await suspends this task until the bind completes, without blocking
+    // the whole OS thread -- see docs/RUST-CHEATSHEET.md.
     let listener = TcpListener::bind(&addr).await.expect("bind");
     println!(
         "Multisnake listening on http://{} build {} (simHz={})",
@@ -151,6 +168,9 @@ async fn main() {
     // broadcasts waiting to coalesce them (Nagle) -- that is pure added
     // latency for a realtime game.
     loop {
+        // `let Ok(x) = ... else { continue }` unwraps a successful accept, or
+        // skips this loop iteration on error -- see "let ... else" in
+        // docs/RUST-CHEATSHEET.md.
         let Ok((stream, _)) = listener.accept().await else { continue };
         let _ = stream.set_nodelay(true);
         let tower_service = router.clone();

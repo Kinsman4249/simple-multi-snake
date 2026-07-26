@@ -7,12 +7,18 @@ use crate::state::types::{Cell, Food};
 use rand::Rng;
 
 impl Game {
+    // ignore_slot: Option<usize> -- see "Option<T>" in RUST-CHEATSHEET.md.
     pub fn cell_free(&self, x: i32, y: i32, ignore_slot: Option<usize>) -> bool {
         for (i, s) in self.slots.iter().enumerate() {
+            // `let ... else { ... }`: unwrap Some(s), or run the else block
+            // (which must diverge, e.g. continue/return) if it was None
+            // instead -- a shorthand for a two-armed match on Option.
             let Some(s) = s else { continue };
             if Some(i) == ignore_slot {
                 continue;
             }
+            // .any(|seg| ...): closure passed to an iterator method -- see
+            // "Closures" in RUST-CHEATSHEET.md.
             if s.body.iter().any(|seg| seg.x == x && seg.y == y) {
                 return false;
             }
@@ -65,6 +71,9 @@ impl Game {
             if fallback.is_none() {
                 fallback = Some(Cell { x, y });
             }
+            // match with a guard (`if attempts < 300`): only takes this arm
+            // when both the pattern matches AND the condition holds -- see
+            // "match" in RUST-CHEATSHEET.md.
             match target {
                 Some(t) if attempts < 300 => {
                     let d = (x - t.x).abs().max((y - t.y).abs());
@@ -238,6 +247,8 @@ impl Game {
     // or opponent-cut scatter the same way a corpse does, sized off the
     // ORIGINAL (pre-cut) body length so a bigger snake's cut still sprays
     // wide even though only the tail portion is actually being converted.
+    // severed: &[Cell] -- a borrowed slice, see "Slices" in
+    // RUST-CHEATSHEET.md.
     pub fn drop_scissors_food(&mut self, exclude: usize, severed: &[Cell], original_len: usize) {
         if severed.is_empty() {
             return;

@@ -30,6 +30,9 @@ function promptInitials(local, prefill, onDone) {
   input.value = sanitizeInitials(prefill);
   input.focus();
   let done = false;
+  // `() => {...}` arrow function stored in a variable so it can be reused
+  // below by both the button's click handler and the Enter keypress (see
+  // docs/JS-CHEATSHEET.md).
   const submit = () => {
     if (done) return;
     const value = sanitizeInitials(input.value);
@@ -39,11 +42,15 @@ function promptInitials(local, prefill, onDone) {
     textEntryCount = Math.max(0, textEntryCount - 1);
     onDone(value);
   };
+  // Assigning a function reference to `.onclick` wires up the click handler
+  // (event-handler-property style, see docs/JS-CHEATSHEET.md).
   document.getElementById(submitId).onclick = submit;
   input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); submit(); } });
 }
 
 function showSpectator(msg, isCoOp) {
+  // `msg.local || 0` defaults to seat 0 if msg.local is missing/falsy (see
+  // docs/JS-CHEATSHEET.md).
   const local = msg.local || 0;
   const boxId = "spectatorOverlay" + local;
   const box = overlayBox(boxId);
@@ -208,6 +215,8 @@ function showSystemNotice(msg) {
   document.body.appendChild(box);
 }
 
+// Publish this file's public functions onto the shared UI object (shorthand
+// properties -- see docs/JS-CHEATSHEET.md).
 Object.assign(UI, {
   promptInitials, showSpectator, offerJoin, initCoOp, coOpJoined, coOpLeft,
   notifyJoinLocalDenied, initLeaveButtons, updateLeaveButtons, showRejoin,

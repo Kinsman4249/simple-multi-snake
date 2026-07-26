@@ -16,6 +16,9 @@ use crate::highscores::HighScores;
 use std::collections::HashMap;
 
 pub struct Game {
+    // &'static Config: a reference to a Config that lives for the whole
+    // program (leaked once at startup) -- see "Lifetimes" in
+    // docs/RUST-CHEATSHEET.md.
     pub cfg: &'static Config,
     pub slots: Vec<Option<super::Snake>>,
     pub spectator_queue: Vec<QueueEntry>,
@@ -49,10 +52,18 @@ pub struct Game {
     pub perf: PerfCounters,
 }
 
+// impl block -- see "impl blocks" in RUST-CHEATSHEET.md. This is only one
+// of several `impl Game` blocks for this type: Rust lets you split a type's
+// methods across multiple files/impl blocks (see spawn.rs, food.rs,
+// query.rs, food_rate.rs, all `impl Game` too) as long as they're in the
+// same crate.
 impl Game {
     pub fn new(cfg: &'static Config, highscores: HighScores) -> Game {
         Game {
             cfg,
+            // .map(|_| None).collect(): build a Vec of `max_players` Nones
+            // by mapping every number in the range to None, then collecting
+            // the iterator into a Vec -- see "Closures" and "Vec<T>".
             slots: (0..cfg.max_players).map(|_| None).collect(),
             spectator_queue: Vec::new(),
             connections: HashMap::new(),

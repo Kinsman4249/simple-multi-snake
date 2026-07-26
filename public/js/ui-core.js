@@ -5,6 +5,10 @@
 // plain globals and calls `Object.assign(UI, {...})` to add its own piece
 // of the UI API onto the shared `UI` object defined here.
 // ============================================================
+// `x || {}` is the "use x if it's already set, otherwise create a fresh
+// value" default idiom (see docs/JS-CHEATSHEET.md) -- lets any script that
+// loads first create window.__BUILDS__ without clobbering one another script
+// already made.
 (window.__BUILDS__ = window.__BUILDS__ || {}).ui = "ui 2026-07-22.1";
 const UI = {};
 
@@ -16,6 +20,9 @@ const statusEl = document.getElementById("status");
 let textEntryCount = 0;
 function isTextEntryActive() { return textEntryCount > 0; }
 function sanitizeInitials(v) {
+  // Chain of built-ins: coerce to a string (in case v is null/undefined),
+  // uppercase it, strip anything that isn't A-Z or 0-9 via a regex, then
+  // keep only the first 3 characters.
   return String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 3);
 }
 
@@ -48,6 +55,9 @@ function topBarShow() {
 }
 function topBarScheduleHide() {
   if (topBarHideTimer) clearTimeout(topBarHideTimer);
+  // `() => { ... }` is an arrow function -- a shorthand function used
+  // constantly in this codebase for short callbacks (see
+  // docs/JS-CHEATSHEET.md).
   topBarHideTimer = setTimeout(() => {
     topBarHideTimer = null;
     if (topBarPinned === 0) topBarSetVisible(false);
@@ -98,4 +108,8 @@ function overlayBox(id) {
   return box;
 }
 
+// Object.assign copies properties onto UI (see docs/JS-CHEATSHEET.md);
+// `{ isTextEntryActive }` is object-literal shorthand for
+// `{ isTextEntryActive: isTextEntryActive }` -- every ui-*.js file ends with
+// a call like this to publish its functions onto the shared UI namespace.
 Object.assign(UI, { isTextEntryActive });

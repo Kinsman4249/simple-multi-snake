@@ -33,6 +33,7 @@ use std::process::Command;
 
 // Everything the rest of the server reads. Built once in load() and leaked
 // to 'static (the JS equivalent was module-level consts).
+// `struct` groups named fields together, see docs/RUST-CHEATSHEET.md.
 pub struct Config {
     pub root: PathBuf,
     pub build: String,
@@ -67,6 +68,9 @@ pub struct Config {
     pub highscores_file: String,
     pub perf: bool,
     pub test_hooks: bool,
+    // Option<T> means "maybe absent" -- see docs/RUST-CHEATSHEET.md. Here:
+    // maybe no forced-spawn override, and each slot in the list may itself
+    // be empty (a gap in the test's spawn list).
     pub test_spawns: Option<Vec<Option<ForcedSpawn>>>,
     // Shared secret gating POST /api/admin/notify-shutdown (see routes.rs).
     // Apache proxies "/" straight through to this server (deploy vhost
@@ -76,6 +80,8 @@ pub struct Config {
     pub admin_token: Option<String>,
 }
 
+// #[derive(...)] auto-generates boilerplate methods for the struct below --
+// see docs/RUST-CHEATSHEET.md for what Deserialize/Clone/etc. each add.
 #[derive(Deserialize, Clone)]
 pub struct ForcedSpawn {
     pub x: i32,
@@ -94,6 +100,8 @@ pub const COLORS: [(&str, &str); 4] = [
 // Build identity, cheapest source first: live git checkout (commit count +
 // short hash), release archive (build-info.json stamped by export-subst),
 // else package.json version alone marked "dev".
+// `&PathBuf` borrows the path instead of taking ownership of it -- see
+// "References and borrowing" in docs/RUST-CHEATSHEET.md.
 fn resolve_build(root: &PathBuf) -> String {
     let version = std::fs::read_to_string(root.join("package.json"))
         .ok()
@@ -101,6 +109,9 @@ fn resolve_build(root: &PathBuf) -> String {
         .and_then(|v| v.get("version").and_then(|x| x.as_str()).map(String::from))
         .unwrap_or_else(|| "0.0.0".into());
     let base = format!("v{}", version);
+    // `|args| { ... }` is a closure (an inline anonymous function) stored in
+    // a local variable so it can be called twice below -- see
+    // docs/RUST-CHEATSHEET.md.
     let git = |args: &[&str]| -> Option<String> {
         let out = Command::new("git").args(args).current_dir(root).output().ok()?;
         if !out.status.success() {
@@ -149,6 +160,8 @@ pub fn load() -> &'static Config {
     // Board presets: explicit cols/rows always win; else resolve the preset.
     let mut grid = raw.grid.clone();
     if grid.cols <= 0 || grid.rows <= 0 {
+        // match picks the branch whose pattern fits the value -- see
+        // docs/RUST-CHEATSHEET.md.
         let (cols, rows) = match grid.preset.as_deref() {
             Some("4k") => (192, 108),
             _ => (96, 54),
@@ -214,6 +227,10 @@ pub fn load() -> &'static Config {
         admin_token: std::env::var("ADMIN_TOKEN").ok().filter(|s| !s.is_empty()),
         root,
     };
+    // Box::leak deliberately never frees this memory, turning it into a
+    // 'static reference every part of the server can share -- see
+    // docs/RUST-CHEATSHEET.md. Fine here since it only happens once at
+    // startup and the config must live for the whole program anyway.
     Box::leak(Box::new(cfg))
 }
 

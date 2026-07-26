@@ -31,6 +31,9 @@ function armSeatRequestGrace() { seatRequestGraceUntil = performance.now() + SEA
 
 function wireLocalPlayer(localIdx) {
   const p = myPlayers.get(localIdx);
+  // `(dir, clientSeq) => expr` is an arrow function -- shorthand syntax for
+  // "() => expr" that also returns the expression's value with no explicit
+  // `return` needed (see docs/JS-CHEATSHEET.md).
   p.setSender((dir, clientSeq) => Net.send({ type: "dir", dir, cseq: clientSeq, local: localIdx }));
 }
 // Request (or re-request after a Leave) a seat for this local index. The
@@ -44,6 +47,8 @@ function requestSeat(localIdx) {
   if (seatPending[localIdx]) return;
   if (myLocals && myLocals[localIdx]) return; // seat already exists in some role
   if (!sessionInitials[localIdx]) {
+    // Arrow function passed in as a callback -- it runs later, once the
+    // initials prompt is confirmed.
     UI.promptInitials(localIdx, storedInitials(localIdx), value => {
       storeInitials(localIdx, value);
       armSeatRequestGrace();
@@ -89,6 +94,8 @@ function dropSeat(localIdx) {
 // current direction can change under a held key); only on/off TRANSITIONS
 // go over the wire.
 function dirNameOfVec(v) {
+  // `for (const name in obj)` loops over an object's keys (here, the
+  // direction names in DIR_TO_VEC).
   for (const name in DIR_TO_VEC) {
     if (DIR_TO_VEC[name].x === v.x && DIR_TO_VEC[name].y === v.y) return name;
   }
@@ -114,6 +121,9 @@ function refreshBoost() {
       const pending = p.inputBuffer.length > 0 ? p.inputBuffer[p.inputBuffer.length - 1].vec : p.dir;
       const dirName = dirNameOfVec(pending);
       const key = dirName && keyForDir(localIdx, dirName);
+      // `!!(...)` forces the result to a strict boolean (see
+      // docs/JS-CHEATSHEET.md); `key && heldKeys.has(key)` short-circuits so
+      // .has() is only called when a key was actually found.
       want = !!(key && heldKeys.has(key));
       // The touch BOOST button has no direction of its own: holding it
       // boosts seat 0's current travel, whatever that is.

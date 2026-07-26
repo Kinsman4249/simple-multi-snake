@@ -133,6 +133,10 @@ function dirIdxFromVec(dir) {
 function drawScissorsTile(cx, cy, dirIdx) {
   const cs = grid.cellSize, cell = cs - cellGap;
   const ox = cx * cs, oy = cy * cs;
+  // Draws the icon as a 5x5 grid of small filled rectangles (a "pixel-art"
+  // sprite built from plain fillRect calls, no image file needed): loop
+  // over each of the 25 sub-cells, skip empty ones, fill the rest in that
+  // sub-cell's color.
   for (let r = 0; r < 5; r++) {
     for (let c = 0; c < 5; c++) {
       const v = scissorsVal(r, c, dirIdx);

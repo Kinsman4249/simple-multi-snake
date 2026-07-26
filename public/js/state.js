@@ -15,6 +15,8 @@ const DIR_TO_VEC = { up: { x: 0, y: -1 }, down: { x: 0, y: 1 }, left: { x: -1, y
 // INDEX (0 = p1/arrow keys, 1 = p2/WASD), not by server slot -- the server
 // slot a local player occupies can change across respawns, but the local
 // index (which controls map to it) never does.
+// Map is a key-value dictionary, used here so numeric local indices (0, 1)
+// map to LocalPlayerPredictor objects (see docs/JS-CHEATSHEET.md).
 const myPlayers = new Map();
 // curr.you.locals: array of
 //   { local, role:"player", slot, ack } | { local, role:"spectator", ... } |
@@ -28,6 +30,8 @@ let activeGlide = [null, null];
 let lastSeenCorrectionEventId = [0, 0];
 // Boost input state: which raw keys are physically held, and whether each
 // seat's boost is currently reported ON to the server.
+// Set stores unique values with no duplicates -- here, the set of
+// physical keys currently held down (see docs/JS-CHEATSHEET.md).
 const heldKeys = new Set();
 const boostOn = [false, false];
 // When each seat's boost was last reported ON. Mirrors the server's
@@ -63,8 +67,12 @@ function driftyTurn(localIdx) {
 function seatInverted(localIdx) {
   const entry = myLocals && myLocals[localIdx];
   if (!entry || entry.role !== "player") return false;
+  // Destructuring: pulls just the `curr` field out of the object
+  // Net.snapshots() returns (see docs/JS-CHEATSHEET.md).
   const { curr } = Net.snapshots();
   const p = curr && curr.players && curr.players[entry.slot];
+  // `!!x` forces any value to a strict true/false boolean (a common idiom,
+  // not a typo -- see docs/JS-CHEATSHEET.md).
   return !!(p && p.inverted);
 }
 // Blue Shell explosions: state.explosions is a one-shot list (populated only
@@ -97,6 +105,9 @@ function spawnDriftDust(curr, prev) {
   if (!CLIENT_FX.slideDust || !prev || !prev.players) return;
   const now = performance.now();
   const seen = new Set();
+  // `.forEach((p, i) => {...})` runs this arrow function once per array
+  // element, with `p` the value and `i` its index (see
+  // docs/JS-CHEATSHEET.md for arrow function syntax).
   curr.players.forEach((p, i) => {
     if (!p || !p.alive || !p.sliding) return;
     const pb = prev.players[i] && prev.players[i].body;
@@ -115,6 +126,9 @@ function spawnDriftDust(curr, prev) {
 // detection gates ALL touch surfaces; desktop behavior is untouched. A
 // touchscreen laptop matches too and simply gets both input surfaces --
 // harmless, since WASD still auto-joins P2 the keyboard way.
+// `a && b` short-circuits: only evaluates/calls `b` if `a` is truthy (see
+// docs/JS-CHEATSHEET.md) -- guards against calling matchMedia on a browser
+// that doesn't have it.
 const IS_TOUCH = (window.matchMedia && window.matchMedia("(pointer: coarse)").matches) ||
   "ontouchstart" in window;
 // Hold-to-boost button state, OR-ed into refreshBoost()'s want for seat 0 so

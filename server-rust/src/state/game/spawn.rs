@@ -14,6 +14,8 @@ impl Game {
     // True when a snake of `len` at (hx,hy) heading `dir` fits with
     // `wall_margin` from every edge and a `clearance` halo free of other
     // snakes (and never on/under an obstacle wall).
+    // Private helper (no `pub`): only callable from within this module --
+    // see "Modules" in RUST-CHEATSHEET.md.
     fn spawn_area_clear(
         &self,
         hx: i32,
@@ -53,11 +55,17 @@ impl Game {
         let x;
         let y;
         let mut dir = Cell { x: 1, y: 0 };
+        // Option<ForcedSpawn> -- see "Option<T>" in RUST-CHEATSHEET.md.
+        // .and_then(closure): only runs the closure (and flattens its
+        // Option result into this one) if test_spawns.as_ref() was Some --
+        // see "Closures" in RUST-CHEATSHEET.md.
         let forced: Option<ForcedSpawn> = self
             .cfg
             .test_spawns
             .as_ref()
             .and_then(|v| v.get(slot_index).cloned().flatten());
+        // if let Some(f) = forced: only run this block when forced is Some,
+        // binding its inner value to f.
         if let Some(f) = forced {
             x = f.x;
             y = f.y;

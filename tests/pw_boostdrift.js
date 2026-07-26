@@ -6,6 +6,12 @@
 // reaching the last column; unboosted still gets the one-tick stall).
 // Run: deno run --allow-net --allow-read --allow-write --allow-run
 // --allow-env tests/pw_boostdrift.js
+//
+// In plain terms: this checks how the snake handles boosting and turning
+// at the same time. Turning while boosted should turn the head right away,
+// but the body should keep skidding sideways in the old direction for a
+// short window (the "drift"), and hitting a wall while boosted should kill
+// the snake instantly instead of getting the usual one-tick grace period.
 import { connectClient, myPlayer, assert, sleep, stepToward, startServer, stopServer, runTest } from "./helpers.js";
 
 const COLS = 48, ROWS = 28;
@@ -21,6 +27,8 @@ async function steerTo(client, tx, ty, timeoutMs) {
     if (Math.abs(head.x - tx) <= 1 && Math.abs(head.y - ty) <= 1) return;
     const dirName = stepToward(cur, 0, tx, ty);
     if (dirName) client.send({ type: "dir", dir: dirName, local: 0 });
+    // s => s !== cur is an arrow function (see docs/JS-CHEATSHEET.md);
+    // .catch(() => {}) swallows the timeout error if we never see a new state
     await client.waitFor(s => s !== cur, 2000).catch(() => {});
   }
   throw new Error("timed out steering to staging point");

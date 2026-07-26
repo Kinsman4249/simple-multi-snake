@@ -7,6 +7,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+// #[derive(Serialize, Deserialize, Clone)] auto-generates the code to
+// convert this struct to/from JSON and to `.clone()` it; see
+// docs/RUST-CHEATSHEET.md ("#[derive(...)]").
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Entry {
     pub initials: String,
@@ -85,7 +88,15 @@ fn empty_board() -> Board {
     }
 }
 
+// Reads highscores.json off disk and upgrades whatever version it finds
+// (missing file, v1 flat store, v2, or current v3) into today's in-memory
+// Store shape. Called both at startup and again right before every write
+// (see HighScores::record), so a stale in-memory copy never clobbers
+// changes another process made to the file.
 fn load_store(path: &PathBuf) -> Store {
+    // .ok() turns a Result into an Option (discarding the error), so a
+    // missing/unreadable file or bad JSON both fall through to `None`
+    // below instead of panicking; see RUST-CHEATSHEET.md ("Result<T, E>").
     let raw: Option<serde_json::Value> = std::fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok());
@@ -154,6 +165,8 @@ impl HighScores {
     }
 
     // Which lists a score would enter. kind: "length" or "foodRate".
+    // Returns a Vec of board-key names (e.g. "daily", "allTime") the score
+    // is good enough for; an empty Vec means it doesn't place anywhere.
     pub fn qualifies(&self, score: f64, mode: &str, kind: &str) -> Vec<&'static str> {
         let mut targets = Vec::new();
         if score <= 0.0 {

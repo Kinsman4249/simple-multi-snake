@@ -25,7 +25,16 @@
 // ============================================================
 (window.__BUILDS__ = window.__BUILDS__ || {}).main = "main 2026-07-22.1";
 Loading.begin(1); // boot task: config must be in before the UI is revealed
+// fetch() returns a Promise (a value that resolves later, e.g. once the
+// network response arrives). `.then(fn)` chains what runs when it resolves;
+// `r.json()` itself returns another Promise (parsing the response body), so
+// the second .then() runs once THAT resolves too. See JS-CHEATSHEET.md
+// "Async / Promises / await".
 fetch("/api/config").then(r => r.json()).then(cfg => {
+  // Object.assign(target, ...sources) copies each source's fields onto
+  // target left-to-right (later sources win) and returns target. With a
+  // fresh {} as target this builds a new merged object without mutating
+  // either input -- see JS-CHEATSHEET.md.
   if (cfg && cfg.clientFx) CLIENT_FX = Object.assign({}, CLIENT_FX, cfg.clientFx);
   if (cfg && cfg.clientRender) CLIENT_RENDER = Object.assign({}, CLIENT_RENDER, cfg.clientRender);
   if (cfg && cfg.boost) BOOST_CFG = Object.assign({}, BOOST_CFG, cfg.boost);
@@ -52,6 +61,9 @@ fetch("/api/config").then(r => r.json()).then(cfg => {
   Loading.step();
 });
 
+// myPlayers is a Map (local-seat-index -> LocalPlayerPredictor), which is
+// why it uses .has/.get/.set/.forEach below instead of plain object syntax
+// -- see JS-CHEATSHEET.md "Map / Set / WeakMap".
 function startGame(token, initials) {
   if (!myPlayers.has(0)) myPlayers.set(0, new LocalPlayerPredictor("p1"));
   wireLocalPlayer(0);
@@ -170,7 +182,15 @@ function handleState(curr, prev) {
   UI.updateLeaveButtons(myLocals);
   UI.updateLeaderboards(curr.highScores, curr.mode);
 }
+// Runs once per rendered frame (scheduled below via requestAnimationFrame,
+// which reschedules itself at the end -- so this keeps looping at the
+// browser's own refresh rate). Each call: grabs the latest two server
+// snapshots, gathers this frame's cosmetic effects (input flashes,
+// correction glides, explosions, dust, ...) that are still "alive" (not yet
+// expired), and hands it all to Render.draw() to paint one frame.
 function frame() {
+  // Object destructuring: pulls `prev` and `curr` out of the object
+  // Net.snapshots() returns, in one step -- see JS-CHEATSHEET.md.
   const { prev, curr } = Net.snapshots();
   if (curr) {
     const localBodies = new Map();
@@ -259,4 +279,7 @@ window.__DEBUG_SOURCE__ = function () {
   };
 };
 UI.initCaptchaGate(startGame);
+// Kicks off the render loop: requestAnimationFrame asks the browser to call
+// frame() right before its next repaint (see frame()'s definition above,
+// which re-schedules itself the same way each time).
 requestAnimationFrame(frame);

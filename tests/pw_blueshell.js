@@ -17,6 +17,15 @@
 //      lone survivor's pickup fires and hits themselves.
 // Run: deno run --allow-net --allow-read --allow-write --allow-run
 //      --allow-env tests/pw_blueshell.js
+//
+// In plain terms: this is the big test suite for the "blue shell" power-up
+// (like Mario Kart's homing shell). It checks that picking one up fires it
+// automatically at the current leader, that the resulting explosion costs
+// the right amount of length to the leader and to anyone else caught in the
+// blast radius, and a handful of edge cases: nobody else to target it at
+// (fizzles into ordinary food), the only other player being dead-but-not-
+// respawned-yet, all players tied for the lead, and the shell weaving
+// through a body to blow up on the head rather than the tail.
 import { connectClient, myPlayer, assert, startServer, stopServer, runTest, testHook, sleep } from "./helpers.js";
 
 // Base config for every scenario: fixed move cadence (no ramp), natural
@@ -34,6 +43,8 @@ function baseConfig(grid, extraPowerups) {
     maxConcurrentFood: 1,
     minSnakeLength: 3,
     enableDebug: false, // keep the piped stdout quiet (pipe-stall gotcha)
+    // Object.assign copies the second object's fields onto the first --
+    // see docs/JS-CHEATSHEET.md
     powerups: Object.assign({
       spawnIntervalMs: 3600000, maxConcurrentPickups: 8,
       blueShell: { enabled: true, segmentLossPercent: 0.5, explosionRadius: 3, splashLossPercent: 0.34 }
@@ -85,6 +96,8 @@ async function scenarioSplash() {
     await c3.waitFor(s => myPlayer(s, 0) != null, 5000);
 
     const st = c1.state;
+    // Array destructuring: pulls the three players out into named variables
+    // in one step -- see docs/JS-CHEATSHEET.md
     const [leader, victim, outsider] = [st.players[0], st.players[1], st.players[2]];
     assert(leader && victim && outsider, "three seated snakes expected");
     assert(leader.body.length > victim.body.length, "slot0 must be the leader");
@@ -335,7 +348,7 @@ async function shortLeaderShellFraction(leaderLen) {
     await c2.waitFor(s => myPlayer(s, 0) != null, 5000);
     await c1.waitFor(s => s.players[0] && s.players[1] &&
       s.players[0].body.length > s.players[1].body.length, 5000);
-    const seen = new Set();
+    const seen = new Set(); // Set: a collection that only keeps unique values -- see docs/JS-CHEATSHEET.md
     let shells = 0, total = 0;
     const deadline = Date.now() + 20000;
     while (total < 30 && Date.now() < deadline) {

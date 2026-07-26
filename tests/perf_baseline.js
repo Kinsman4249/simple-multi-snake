@@ -20,24 +20,26 @@
 // - Clients circle fixed waypoint boxes (keepAlive-style steering) with
 //   boost held, and a trail powerup is enabled on a fast spawn cadence so
 //   trails/pickups appear in the broadcast like a real session.
+// ES module import: pulls in the named exports listed at the bottom of
+// helpers.js so this file can reuse them.
 import { connectClient, myPlayer, sleep, stepToward, startServer, stopServer } from "./helpers.js";
 
 const MEASURE_MS = 30000;
 const SCENARIOS = [];
 for (const preset of ["1080p", "4k"]) {
   for (const minLen of [3, 60, 120]) {
-    SCENARIOS.push({ name: `${preset} minLen=${minLen}`, preset, minLen });
+    SCENARIOS.push({ name: `${preset} minLen=${minLen}`, preset, minLen }); // template literal: embeds preset/minLen straight into the string; see docs/JS-CHEATSHEET.md
   }
 }
 
 // Circles a seat around a rectangle of waypoints forever (until stopped).
 function circle(client, local, corners) {
   let target = 0;
-  const timer = setInterval(() => {
+  const timer = setInterval(() => { // arrow function passed as the setInterval callback; see docs/JS-CHEATSHEET.md
     const cur = client.state;
     const p = myPlayer(cur, local);
     if (!p) return;
-    const [tx, ty] = corners[target];
+    const [tx, ty] = corners[target]; // destructuring: unpack the [x, y] pair into two named variables; see docs/JS-CHEATSHEET.md
     const head = p.body[0];
     if (Math.abs(head.x - tx) + Math.abs(head.y - ty) <= 2) target = (target + 1) % corners.length;
     const dn = stepToward(cur, local, tx, ty);
@@ -69,7 +71,7 @@ function collectPerfLines(child, sink) {
 }
 
 function avg(rows, key) { return rows.length ? rows.reduce((a, r) => a + r[key], 0) / rows.length : 0; }
-function max(rows, key) { return rows.length ? Math.max(...rows.map(r => r[key])) : 0; }
+function max(rows, key) { return rows.length ? Math.max(...rows.map(r => r[key])) : 0; } // spread (...): expands the mapped array into individual args for Math.max; see docs/JS-CHEATSHEET.md
 
 async function runScenario(sc) {
   const handle = await startServer({
@@ -87,7 +89,7 @@ async function runScenario(sc) {
     // Grid dims for waypoint boxes (fetch the served config; presets resolve
     // server-side).
     const cfgRes = await fetch("http://127.0.0.1:8080/api/config");
-    await cfgRes.body?.cancel();
+    await cfgRes.body?.cancel(); // optional chaining: only call .cancel() if .body isn't null/undefined; see docs/JS-CHEATSHEET.md
     for (let n = 0; n < 4; n++) {
       const c = await connectClient();
       await c.waitFor(s => myPlayer(s, 0) != null, 8000);
@@ -145,6 +147,6 @@ console.log("\n=== BASELINE SUMMARY ===");
 const cols = ["name", "alive", "totalSegs", "mvAvgUs", "mvMaxUs", "bcAvgUs", "bcMaxUs", "baseBytesAvg", "sendBytesAvg", "bcPerSec", "rssMb"];
 console.log(cols.join("\t"));
 for (const r of results) {
-  console.log(cols.map(k => typeof r[k] === "number" ? Math.round(r[k] * 10) / 10 : (r[k] ?? "-")).join("\t"));
+  console.log(cols.map(k => typeof r[k] === "number" ? Math.round(r[k] * 10) / 10 : (r[k] ?? "-")).join("\t")); // ?? : fall back to "-" only when the value is null/undefined; see docs/JS-CHEATSHEET.md
 }
 Deno.exit(0);

@@ -2,6 +2,9 @@
 // shell, banana trail, helloWorld, scissors) plus the aggregate PowerupsCfg
 // that bundles all powerup sub-configs (including wormhole/growthSpurt from
 // movement.rs) and the lookup helpers sim.rs calls per-type.
+// `use` brings names from other files in this crate into scope -- see
+// "Modules" in docs/RUST-CHEATSHEET.md. `super::` means "the parent module"
+// (config/mod.rs), which re-exports movement's types.
 use super::movement::{GrowthSpurtCfg, WormholeCfg};
 use serde::{Deserialize, Serialize};
 
@@ -109,6 +112,8 @@ impl Default for ScissorsCfg {
     }
 }
 
+// The aggregate config bundling every powerup's own sub-config (this is the
+// struct sim.rs and routes.rs actually hold onto -- Config.powerups).
 #[derive(Deserialize, Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PowerupsCfg {
@@ -133,6 +138,10 @@ fn d_max_pickups() -> usize {
     4
 }
 impl PowerupsCfg {
+    // &self borrows the PowerupsCfg without taking ownership (see
+    // docs/RUST-CHEATSHEET.md). `use ...::*;` pulls every enum variant into
+    // scope so the match arms below can say `Wormhole` instead of the full
+    // `PowerupType::Wormhole` -- see "Glob imports" in the cheatsheet.
     pub fn enabled(&self, t: crate::powerups::PowerupType) -> bool {
         use crate::powerups::PowerupType::*;
         match t {

@@ -3,6 +3,9 @@
 // leader-bias sub-config, distinct from the food rubberband one).
 use serde::Deserialize;
 
+// Nudges new food to spawn nearer the trailing/losing players (within
+// `radius` tiles, weighted by `strength`) so falling behind isn't a death
+// spiral.
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase", default)]
 pub struct FoodBiasCfg {
@@ -32,6 +35,7 @@ impl Default for ShellPressureCfg {
 
 #[derive(Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase", default)]
+// Groups the two "help the underdog" spawn biases under one config key.
 pub struct RubberbandCfg {
     pub food_bias: FoodBiasCfg,
     pub shell_pressure: ShellPressureCfg,
@@ -65,6 +69,9 @@ impl Default for PinataCfg {
 
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase", default)]
+// Caps how often food can spawn (score-mode anti-farming): spawns are
+// counted into `bucket_ms`-sized time buckets over a rolling `window_ms`,
+// and the rate is throttled toward `floor_ms` if too many land in a window.
 pub struct FoodRateCfg {
     pub enabled: bool,
     pub bucket_ms: f64,
@@ -92,15 +99,17 @@ impl Default for LeaderBiasCfg {
 
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase", default)]
+// Obstacle-wall spawner tuning: walls telegraph (warn) before appearing and
+// before disappearing, giving players time to react.
 pub struct WallsCfg {
     pub enabled: bool,
-    pub min_players: usize,
-    pub telegraph_ms: i64,
-    pub lifetime_ms: i64,
-    pub despawn_telegraph_ms: i64,
+    pub min_players: usize,        // walls only spawn once this many players are in-game
+    pub telegraph_ms: i64,         // warning shown before a wall appears
+    pub lifetime_ms: i64,          // how long a wall stays once it appears
+    pub despawn_telegraph_ms: i64, // warning shown before a wall disappears
     pub spawn_interval_ms: i64,
     pub max_concurrent: usize,
-    pub min_head_distance: i32,
+    pub min_head_distance: i32,    // don't spawn a wall this close to any snake head
     pub leader_bias: LeaderBiasCfg,
 }
 impl Default for WallsCfg {

@@ -21,6 +21,8 @@ const PINATA = { enabled: true, minLength: 30, percent: 0.30, maxFood: 12, ttlMs
 // so a lone snake never pops -- that gate is exercised via popSnake's second
 // seat here). Waits for the first snake to die and returns the post-death
 // broadcast state.
+// async function + await: pauses here until each Promise resolves --
+// see docs/JS-CHEATSHEET.md
 async function popSnake(len) {
   const server = await startServer(
     {
@@ -31,11 +33,14 @@ async function popSnake(len) {
       pinata: PINATA,
       powerups: { spawnIntervalMs: 999999, wormhole:{enabled:false}, growthSpurt:{enabled:false}, iceTrail:{enabled:false}, poisonTrail:{enabled:false}, speedBoost:{enabled:false}, blueShell:{enabled:false}, bananaTrail:{enabled:false} }
     },
+    // JSON.stringify converts this array to text to pass as an env var --
+    // see docs/JS-CHEATSHEET.md
     { SNAKE_TEST_SPAWNS: JSON.stringify([{ x: 6, y: 15, dir: "left", len }, { x: 20, y: 15, dir: "right" }]) }
   );
   try {
     const c = await connectClient();
     // Wait for the forced snake to spawn at the intended length.
+    // arrow function passed as a callback -- see docs/JS-CHEATSHEET.md
     await c.waitFor(s => { const p = myPlayer(s, 0); return p && p.alive && p.body.length === len; }, 5000);
     // Add the second seat so the >=2-player piñata gate is satisfied; it spawns
     // at x=20 moving right, well clear of seat 0's wall death.
@@ -62,6 +67,7 @@ async function main() {
   // --- Big snake pops ---
   const big = await popSnake(35);
   try {
+    // `x || []`: fall back to an empty array if foods is missing -- see docs/JS-CHEATSHEET.md
     const bounty = (big.snap.foods || []).filter(f => f.bounty);
     assert(bounty.length >= 1, "a 35-long snake should drop bounty candy (got " + bounty.length + ")");
     assert(bounty.length <= PINATA.maxFood, "candy count must be capped at maxFood (got " + bounty.length + ")");

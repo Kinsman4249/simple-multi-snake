@@ -19,6 +19,11 @@ pub(crate) fn no_store_json(body: String) -> Response {
         .into_response()
 }
 
+// `State(app): State<App>` is an axum "extractor": axum pulls the shared
+// App (registered via .with_state in main.rs) out of the request and hands
+// it to this handler. `async fn` returning `Response` means this function
+// runs as a task and its result is awaited by axum -- see "async fn /
+// .await" in docs/RUST-CHEATSHEET.md.
 pub(crate) async fn api_config(State(app): State<App>) -> Response {
     let cfg = app.cfg;
     let mut powerup_info = serde_json::Map::new();
@@ -46,6 +51,8 @@ pub(crate) async fn api_captcha(State(app): State<App>) -> Response {
 }
 
 pub(crate) async fn api_verify(State(app): State<App>, body: String) -> Response {
+    // Result<T, E> is Ok(value) or Err(error) -- see docs/RUST-CHEATSHEET.md.
+    // JSON parsing can fail, so serde_json::from_str returns a Result.
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(&body);
     let Ok(v) = parsed else {
         return StatusCode::BAD_REQUEST.into_response();
@@ -107,6 +114,9 @@ pub(crate) async fn api_admin_notify_shutdown(
     no_store_json(serde_json::json!({ "connected": connected }).to_string())
 }
 
+// Fallback route: serves files out of public/ for any path that didn't
+// match one of the /api/* or /ws routes above (this is how the client's
+// index.html, JS, and CSS get served).
 pub(crate) async fn static_handler(State(app): State<App>, uri: Uri) -> Response {
     let path = uri.path();
     let rel = if path == "/" { "index.html" } else { path.trim_start_matches('/') };
@@ -116,10 +126,14 @@ pub(crate) async fn static_handler(State(app): State<App>, uri: Uri) -> Response
         return StatusCode::FORBIDDEN.into_response();
     }
     let file_path = app.cfg.public_dir.join(rel);
+    // match on a Result: Err means the file read failed (likely missing),
+    // Ok(data) carries the file bytes on success.
     match std::fs::read(&file_path) {
         Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
         Ok(data) => {
             let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            // Content-Type is guessed from the file extension since this is
+            // a plain file server, not something that inspects file bytes.
             let mime = match ext {
                 "html" => "text/html",
                 "js" => "application/javascript",

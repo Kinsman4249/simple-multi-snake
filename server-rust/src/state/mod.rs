@@ -9,11 +9,16 @@
 // snake.rs / conn.rs (per-entity structs+impls), game/ (the Game struct,
 // itself split by what its methods do -- spawn, food, queries, food-rate).
 // ============================================================
+// `mod name;` declares a submodule backed by name.rs (or name/mod.rs) --
+// see "Modules" in docs/RUST-CHEATSHEET.md. These are private by default;
+// nothing outside this file can see `conn`/`game`/etc. directly.
 mod conn;
 mod game;
 mod snake;
 mod types;
 
+// `pub use` re-exports an item from a submodule at this module's own path,
+// so callers write `crate::state::Conn` instead of `crate::state::conn::Conn`.
 pub use conn::Conn;
 pub use game::Game;
 pub use snake::Snake;
@@ -22,4 +27,6 @@ pub use types::{
     KillEvent, LocalSeat, PerfCounters, Pickup, PortalFx, QueueEntry, Role, Trail, Wall,
     WallShatterFx, WsOut,
 };
+// pub(crate): visible anywhere in this crate, but not to external users of
+// this crate as a library.
 pub(crate) use types::rand_below;

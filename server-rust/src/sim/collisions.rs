@@ -12,10 +12,14 @@ use crate::powerups::scissors_cut_index;
 use crate::state::{hits_body, Cell, Game};
 use std::collections::{HashMap, HashSet};
 
-// The JS `died` Map: insertion-ordered victim -> {killer, cause}.
+// The JS `died` Map: insertion-ordered victim -> {killer, cause}. Backed by
+// a plain Vec of pairs (not a HashMap) specifically to preserve insertion
+// order, which clear_mutual_kills below depends on being stable.
 pub(crate) struct DiedMap {
     pub(crate) entries: Vec<(usize, KillInfo)>,
 }
+// `impl DiedMap { ... }` -- see RUST-CHEATSHEET.md "impl blocks" -- defines
+// DiedMap's methods separately from its field declaration above.
 impl DiedMap {
     pub(crate) fn new() -> DiedMap {
         DiedMap { entries: Vec::new() }
@@ -35,6 +39,10 @@ impl DiedMap {
     }
 }
 
+// Checks each mover's new head against the arena boundary and dynamic
+// (spawned) walls. A snake gets a few "grace ticks" (wall_grace_ticks) to
+// bump a wall and turn away before it actually dies -- forgiving minor
+// input lag -- except while boosting, where a wall hit is instant death.
 pub(crate) fn resolve_wall_collisions(
     game: &mut Game,
     movers: &[usize],
@@ -156,6 +164,11 @@ pub(crate) fn resolve_snake_collisions(
             if j == i {
                 continue;
             }
+            // A small enum can be declared right inside a function/loop
+            // when it's only used locally -- same rules as any other enum,
+            // just scoped tighter (see RUST-CHEATSHEET.md "struct and
+            // enum"). Used here so the match below can name the two
+            // outcomes instead of returning a bare bool/number.
             enum Action {
                 HeadOnBoth,
                 BodyHit,
