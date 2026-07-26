@@ -182,9 +182,17 @@ impl Game {
     // queues the candy-burst explosion. `size_basis` drives both the candy
     // count and how far the burst spreads -- a bigger snake/cut-off tail
     // pops wider, pinata-style.
-    fn scatter_bounty(&mut self, exclude: usize, anchor: Cell, size_basis: usize) {
+    //
+    // `is_bounty`: the min-length and player-count gates are both part of
+    // the "catch-up bounty" rubberband -- a full death or a cut taken off
+    // an OPPONENT only makes sense as a bounty at longer lengths, and only
+    // with someone else around to catch up. A self-inflicted loss (scissors
+    // now, other powerups later) isn't a bounty for anyone; it's just your
+    // own segments hitting the ground, so it drops at any length and even
+    // playing solo -- callers pass false to skip both gates.
+    fn scatter_bounty(&mut self, exclude: usize, anchor: Cell, size_basis: usize, is_bounty: bool) {
         let p = &self.cfg.pinata;
-        if !p.enabled || size_basis < p.min_length || self.player_seat_count() < 2 {
+        if !p.enabled || (is_bounty && (size_basis < p.min_length || self.player_seat_count() < 2)) {
             return;
         }
         let count = p
@@ -235,12 +243,13 @@ impl Game {
     }
 
     // "Pinata" bounty burst (v3.6.6) for a dead snake's body (read before
-    // clearing).
+    // clearing). A catch-up bounty for the OTHER players, so it only fires
+    // with someone else seated to catch up.
     pub fn drop_pinata_food(&mut self, dead_slot: usize) {
         let Some(s) = self.slots[dead_slot].as_ref() else { return };
         let body_len = s.body.len();
         let mid = s.body[body_len / 2];
-        self.scatter_bounty(dead_slot, mid, body_len);
+        self.scatter_bounty(dead_slot, mid, body_len, true);
     }
 
     // Scissors tail-cut bounty (v4.5.0): the severed segments of a self-cut
@@ -249,12 +258,16 @@ impl Game {
     // wide even though only the tail portion is actually being converted.
     // severed: &[Cell] -- a borrowed slice, see "Slices" in
     // RUST-CHEATSHEET.md.
-    pub fn drop_scissors_food(&mut self, exclude: usize, severed: &[Cell], original_len: usize) {
+    // is_self_cut: a self-cut's severed tail is your own loss, not a bounty
+    // -- it drops at any length and solo or not. An opponent-cut is still a
+    // bounty taken off someone else, so it keeps both rubberband gates
+    // (min_length, >=2 players).
+    pub fn drop_scissors_food(&mut self, exclude: usize, severed: &[Cell], original_len: usize, is_self_cut: bool) {
         if severed.is_empty() {
             return;
         }
         let mid = severed[severed.len() / 2];
-        self.scatter_bounty(exclude, mid, original_len);
+        self.scatter_bounty(exclude, mid, original_len, !is_self_cut);
     }
 
     // Clear and refill food (the placeFood test hook).

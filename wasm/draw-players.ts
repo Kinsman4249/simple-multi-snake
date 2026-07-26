@@ -97,29 +97,6 @@ export function drawPlayers(
         inst(<f32>segX(bodyPool, bodyOff + si) * cs - grow, <f32>segY(bodyPool, bodyOff + si) * cs - grow, cell + grow * 2, cell + grow * 2, glowColor, glowAlpha, KIND_ELLIPSE, 0, 0);
       }
     }
-    // Scissors equipped (v4.5.0): the pixel-art scissors icon superimposed
-    // directly over the head, rotated to face the current direction of
-    // travel -- a SEPARATE, new primitive from the held-glow halo above
-    // (maintainer request: "just have scissors superimposed", not also the
-    // pulsing halo). Grid-aligned (not interpolated), same reasoning as the
-    // halo, for 2D/wasm parity. Must mirror render2d.js's equivalent block.
-    const scissorsCharge = load<i32>(p, 60) != 0;
-    if (alive && scissorsCharge) {
-      const sHeadX = segX(bodyPool, bodyOff), sHeadY = segY(bodyPool, bodyOff);
-      const sDirIdx = dirIdxFromDelta(load<i32>(p, 16), load<i32>(p, 20));
-      const sox = <f32>sHeadX * cs, soy = <f32>sHeadY * cs;
-      for (let r = 0; r < 5; r++) {
-        for (let c = 0; c < 5; c++) {
-          const v = scissorsVal(r, c, sDirIdx);
-          if (v == 0) continue;
-          const x0 = <f32>(<i32>Math.round(<f64>c * <f64>cell / 5.0));
-          const x1 = <f32>(<i32>Math.round(<f64>(c + 1) * <f64>cell / 5.0));
-          const y0 = <f32>(<i32>Math.round(<f64>r * <f64>cell / 5.0));
-          const y1 = <f32>(<i32>Math.round(<f64>(r + 1) * <f64>cell / 5.0));
-          inst(sox + x0, soy + y0, x1 - x0, y1 - y0, scissorsColor(v), 1, KIND_RECT, 0, 0);
-        }
-      }
-    }
     const nActive = powerActive ? <i32>Math.ceil(<f64>activePct * <f64>bodyLen) : 0;
     let headPx = <f32>segX(bodyPool, bodyOff) * cs;
     let headPy = <f32>segY(bodyPool, bodyOff) * cs;
@@ -155,6 +132,33 @@ export function drawPlayers(
     if (!alive) {
       for (let si = 0; si < bodyLen; si++) {
         inst(<f32>segX(bodyPool, bodyOff + si) * cs, <f32>segY(bodyPool, bodyOff + si) * cs, cell, cell, COLOR_BLACK, <f32>0.5, KIND_RECT, 0, 0);
+      }
+    }
+    // Scissors equipped (v4.5.0): the pixel-art scissors icon superimposed
+    // directly over the head, rotated to face the current direction of
+    // travel -- a SEPARATE, new primitive from the held-glow halo above
+    // (maintainer request: "just have scissors superimposed", not also the
+    // pulsing halo). Must be emitted AFTER the head/body instances above,
+    // or the head's opaque rect instance paints right over it (bug found
+    // 2026-07-26: icon was emitted before the head, so it was always
+    // immediately covered). Grid-aligned (not interpolated), same
+    // reasoning as the halo, for 2D/wasm parity. Must mirror render2d.js's
+    // equivalent block.
+    const scissorsCharge = load<i32>(p, 60) != 0;
+    if (alive && scissorsCharge) {
+      const sHeadX = segX(bodyPool, bodyOff), sHeadY = segY(bodyPool, bodyOff);
+      const sDirIdx = dirIdxFromDelta(load<i32>(p, 16), load<i32>(p, 20));
+      const sox = <f32>sHeadX * cs, soy = <f32>sHeadY * cs;
+      for (let r = 0; r < 5; r++) {
+        for (let c = 0; c < 5; c++) {
+          const v = scissorsVal(r, c, sDirIdx);
+          if (v == 0) continue;
+          const x0 = <f32>(<i32>Math.round(<f64>c * <f64>cell / 5.0));
+          const x1 = <f32>(<i32>Math.round(<f64>(c + 1) * <f64>cell / 5.0));
+          const y0 = <f32>(<i32>Math.round(<f64>r * <f64>cell / 5.0));
+          const y1 = <f32>(<i32>Math.round(<f64>(r + 1) * <f64>cell / 5.0));
+          inst(sox + x0, soy + y0, x1 - x0, y1 - y0, scissorsColor(v), 1, KIND_RECT, 0, 0);
+        }
       }
     }
     // boost jetstream (hold-boost)

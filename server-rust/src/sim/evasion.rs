@@ -214,7 +214,7 @@ pub(crate) fn try_scissors_self_save(
             let s = game.slots[idx].as_mut().unwrap();
             s.body = new_body;
             s.last_trail_cell = None;
-            game.drop_scissors_food(idx, &severed, old_len);
+            game.drop_scissors_food(idx, &severed, old_len, true);
             stalled.insert(idx);
             game.dlog(&format!("scissors self-cut slot={} survivingLen={}", idx, surviving_len));
             true

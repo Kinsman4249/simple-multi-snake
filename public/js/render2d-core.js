@@ -208,15 +208,6 @@ function draw(prevSnap, currSnap, localBodies, eatenKeys, fx, opts) {
       }
       ctx.restore();
     }
-    // Scissors equipped: the pixel-art scissors icon superimposed directly
-    // over the head, rotated to face the current direction of travel --
-    // deliberately a SEPARATE, new primitive from the held-glow halo above
-    // (maintainer request 2026-07-26: "just have scissors superimposed",
-    // not also the pulsing halo treatment). Grid-aligned (not
-    // interpolated), same reasoning as the halo, for 2D/wasm parity.
-    if (p.alive && p.scissorsCharge) {
-      drawScissorsTile(body[0].x, body[0].y, dirIdxFromVec(p.dir));
-    }
     // Powerup timer tail-drain: while a timed powerup is active the head-side
     // N = ceil(activePct * length) segments are tinted the powerup color, so
     // at activation the whole snake is colored and the tint drains tail-first
@@ -256,6 +247,18 @@ function draw(prevSnap, currSnap, localBodies, eatenKeys, fx, opts) {
     if (!p.alive) {
       ctx.fillStyle = "rgba(0,0,0,0.5)";
       body.forEach(seg => ctx.fillRect(seg.x * cs, seg.y * cs, cs - cellGap, cs - cellGap));
+    }
+    // Scissors equipped: the pixel-art scissors icon superimposed directly
+    // over the head, rotated to face the current direction of travel --
+    // deliberately a SEPARATE, new primitive from the held-glow halo above
+    // (maintainer request 2026-07-26: "just have scissors superimposed",
+    // not also the pulsing halo treatment). Must be drawn AFTER the body/
+    // head cells above, or the head's solid fillRect paints right over it
+    // (bug found 2026-07-26: icon was drawn before the head, so it was
+    // always immediately covered). Grid-aligned (not interpolated), same
+    // reasoning as the halo, for 2D/wasm parity.
+    if (p.alive && p.scissorsCharge) {
+      drawScissorsTile(body[0].x, body[0].y, dirIdxFromVec(p.dir));
     }
     if (p.alive && p.boost && opts && opts.boostTrail && p.dir) drawBoostTrail(headPx, headPy, p.dir, now, "#9df");
     // Speed Boost ACTIVE: a persistent jetstream in the powerup color while

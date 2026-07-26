@@ -116,6 +116,35 @@ function bananaSwatchUri() {
   _bananaUri = "data:image/svg+xml," + encodeURIComponent(svg);
   return _bananaUri;
 }
+// Same treatment as bananaSwatchUri() above, but for the scissors pickup:
+// the legend/reference swatch should show the same pixel-art scissors the
+// board draws, not a flat swatch. Mirrors render2d.js SCISSORS_ART exactly
+// (5x5, 1=blade shaft #dde, 2=tip #fff, 3=pivot #333, 4=handle #e33,
+// 0=transparent). Built once and cached.
+let _scissorsUri = null;
+function scissorsSwatchUri() {
+  if (_scissorsUri) return _scissorsUri;
+  const art = [
+    [0, 2, 0, 2, 0],
+    [0, 1, 0, 1, 0],
+    [0, 0, 3, 0, 0],
+    [4, 0, 0, 0, 4],
+    [4, 0, 0, 0, 4]
+  ];
+  const col = { 1: "#dde", 2: "#fff", 3: "#333", 4: "#e33" };
+  let rects = "";
+  for (let r = 0; r < 5; r++) {
+    for (let c = 0; c < 5; c++) {
+      const v = art[r][c];
+      if (v === 0) continue;
+      rects += "<rect x=\"" + c + "\" y=\"" + r + "\" width=\"1\" height=\"1\" fill=\"" + col[v] + "\"/>";
+    }
+  }
+  const svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\" " +
+    "viewBox=\"0 0 5 5\" shape-rendering=\"crispEdges\">" + rects + "</svg>";
+  _scissorsUri = "data:image/svg+xml," + encodeURIComponent(svg);
+  return _scissorsUri;
+}
 // Builds the popup's content from { type: {title, description} } and
 // sizes the popup to the number of entries -- a couple of powerups gets a
 // small, tight box; many get a taller one, capped and scrollable (see the
@@ -150,6 +179,9 @@ function setPowerupInfo(info, powerupsCfg) {
   // legend AND the in-game reference panel so they can never diverge.
   const swatchStyle = type => type === "bananaTrail"
     ? "background:transparent;background-image:url('" + bananaSwatchUri() + "');" +
+      "background-size:contain;background-repeat:no-repeat;background-position:center"
+    : type === "scissors"
+    ? "background:transparent;background-image:url('" + scissorsSwatchUri() + "');" +
       "background-size:contain;background-repeat:no-repeat;background-position:center"
     : "background:" + (style[type] || "#fff");
 

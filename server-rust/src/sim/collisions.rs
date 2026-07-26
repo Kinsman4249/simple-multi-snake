@@ -9,7 +9,7 @@ use super::movement::consume_inbounds_turn;
 use crate::config::now_ms;
 use crate::lifecycle::KillInfo;
 use crate::powerups::scissors_cut_index;
-use crate::state::{hits_body, Cell, Game};
+use crate::state::{hits_body, Cell, Game, PortalFx};
 use std::collections::{HashMap, HashSet};
 
 // The JS `died` Map: insertion-ordered victim -> {killer, cause}. Backed by
@@ -62,10 +62,19 @@ pub(crate) fn resolve_wall_collisions(
             continue;
         }
         // Wormhole threading: never die at a wall mid-drain; hold in place.
+        // Drop another portal-fx marker at the stall cell (same lifecycle as
+        // the entry/exit pair -- owner-keyed, swept once the drain ends) so
+        // this reads as an active wormhole hold instead of a bare freeze.
         if game.slots[i].as_ref().unwrap().teleport_drain > 0 {
             stalled.insert(i);
             let head = game.slots[i].as_ref().unwrap().head();
             new_heads.insert(i, head);
+            let already_marked = game.portal_fx.iter().any(|p| p.owner_slot == i && p.x == head.x && p.y == head.y);
+            if !already_marked {
+                let id = game.next_powerup_id;
+                game.next_powerup_id += 1;
+                game.portal_fx.push(PortalFx { id, x: head.x, y: head.y, owner_slot: i, expires_ms: None });
+            }
             continue;
         }
         if let Some(saved) = consume_inbounds_turn(game, i, now) {
@@ -231,7 +240,7 @@ pub(crate) fn resolve_snake_collisions(
                             } else {
                                 let severed: Vec<Cell> = victim_body[k..].to_vec();
                                 game.slots[j].as_mut().unwrap().body.truncate(k);
-                                game.drop_scissors_food(j, &severed, original_len);
+                                game.drop_scissors_food(j, &severed, original_len, false);
                                 game.dlog(&format!(
                                     "scissors cut victim={} by={} survivingLen={}",
                                     j, i, k
