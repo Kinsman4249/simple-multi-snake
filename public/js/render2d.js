@@ -81,7 +81,11 @@ const Render2D = (() => {
     // royal blue that's clearly darker/richer than the icy powder blue.
     blueShell: "#14e",
     bananaTrail: "#fd4",
-    helloWorld: "#0ff"
+    helloWorld: "#0ff",
+    // Fallback swatch for any generic UI/info-popup use -- the pickup and
+    // head-icon themselves draw as pixel-art (SCISSORS_ART), not this flat
+    // color (same treatment as bananaTrail above).
+    scissors: "#ccd"
   };
   // Grid decay / anti-turtling obstacles (v3.8.1): a telegraphed cell shows
   // a pixel-art red "!" for the warning window, then becomes a pixel-art
@@ -143,6 +147,57 @@ const Render2D = (() => {
     [2, 1, 0, 0, 0]
   ];
   const BANANA_BODY = "#fd4", BANANA_TIP = "#a70", BANANA_SPOT = "#630";
+  // Pixel-art scissors (5x5 sub-grid), canonical "facing up" orientation --
+  // blade tips (2) at the top narrowing to a pivot rivet (3) at center,
+  // handle loops (4) at the bottom. 1 = blade shaft. Rotated 0/90/180/270
+  // degrees by scissorsVal() below to face whichever way the snake is
+  // currently traveling (equipped head icon) -- the ground pickup always
+  // draws the canonical un-rotated orientation. Must mirror
+  // wasm/renderer.ts scissorsVal() exactly for parity.
+  const SCISSORS_ART = [
+    [0, 2, 0, 2, 0],
+    [0, 1, 0, 1, 0],
+    [0, 0, 3, 0, 0],
+    [4, 0, 0, 0, 4],
+    [4, 0, 0, 0, 4]
+  ];
+  const SCISSORS_BLADE = "#dde", SCISSORS_TIP = "#fff", SCISSORS_PIVOT = "#333", SCISSORS_HANDLE = "#e33";
+  function scissorsColor(v) {
+    return v === 2 ? SCISSORS_TIP : v === 3 ? SCISSORS_PIVOT : v === 4 ? SCISSORS_HANDLE : SCISSORS_BLADE;
+  }
+  // dirIdx: 0 up, 1 down, 2 left, 3 right -- matches wasm/renderer.ts
+  // dirVX/dirVY convention. Rotates the 5x5 lookup by remapping (r,c)
+  // before indexing into the canonical up-facing array.
+  function scissorsVal(r, c, dirIdx) {
+    if (dirIdx === 1) return SCISSORS_ART[4 - r][4 - c];
+    if (dirIdx === 3) return SCISSORS_ART[4 - c][r];
+    if (dirIdx === 2) return SCISSORS_ART[c][4 - r];
+    return SCISSORS_ART[r][c];
+  }
+  function dirIdxFromVec(dir) {
+    if (!dir) return 0;
+    if (dir.y === -1) return 0;
+    if (dir.y === 1) return 1;
+    if (dir.x === -1) return 2;
+    if (dir.x === 1) return 3;
+    return 0;
+  }
+  // A single pixel-art scissors icon on tile (cx,cy), oriented by dirIdx.
+  // Same round(i*cell/5) pixel edges as drawBananaTile for parity.
+  function drawScissorsTile(cx, cy, dirIdx) {
+    const cs = grid.cellSize, cell = cs - cellGap;
+    const ox = cx * cs, oy = cy * cs;
+    for (let r = 0; r < 5; r++) {
+      for (let c = 0; c < 5; c++) {
+        const v = scissorsVal(r, c, dirIdx);
+        if (!v) continue;
+        const x0 = Math.round(c * cell / 5), x1 = Math.round((c + 1) * cell / 5);
+        const y0 = Math.round(r * cell / 5), y1 = Math.round((r + 1) * cell / 5);
+        ctx.fillStyle = scissorsColor(v);
+        ctx.fillRect(ox + x0, oy + y0, x1 - x0, y1 - y0);
+      }
+    }
+  }
   // Gap between cells, in internal-resolution pixels. Scales with cell size
   // so it survives fractional CSS downscales (a fixed 1px gap lands between
   // destination pixels below scale 1 and vanishes).
@@ -196,6 +251,16 @@ const Render2D = (() => {
       ctx.save();
       ctx.globalAlpha = 0.6 + 0.4 * pulse;
       drawBananaTile(p.x, p.y);
+      ctx.restore();
+      return;
+    }
+    // Scissors pickup: pixel-art scissors (canonical facing-up orientation --
+    // ground pickups don't have a travel direction), same "breathing" alpha
+    // pulse as the banana pickup above.
+    if (p.type === "scissors") {
+      ctx.save();
+      ctx.globalAlpha = 0.6 + 0.4 * pulse;
+      drawScissorsTile(p.x, p.y, 0);
       ctx.restore();
       return;
     }
@@ -441,6 +506,30 @@ const Render2D = (() => {
     ctx.stroke();
     ctx.restore();
   }
+  // Scissors wall-shatter (v4.5.0): a dynamic wall broken through by a
+  // scissors-armed snake. Same deterministic flung-debris technique as the
+  // pinata candy burst above (drawExplosion's negative-radius branch), but a
+  // stone/gray palette so it reads as "wall breaking" rather than "food
+  // bursting." Must mirror wasm/renderer.ts drawWallShatter exactly.
+  const WALLSHATTER_N = 10;
+  const DEBRIS_COLORS = ["#999", "#753", "#555", "#420"];
+  function drawWallShatter(x, y, age) {
+    const cs = grid.cellSize;
+    const cx = x * cs + cs / 2, cy = y * cs + cs / 2;
+    const dist = cs * 1.1 * age;
+    const phase = ((x + y) % 7) * 0.897;
+    const sz = cs * 0.28 * (1 - 0.4 * age);
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, 1 - age);
+    for (let i = 0; i < WALLSHATTER_N; i++) {
+      const ang = i * 2.399963 + phase;
+      const px = cx + Math.cos(ang) * dist;
+      const py = cy + Math.sin(ang) * dist;
+      ctx.fillStyle = DEBRIS_COLORS[i & 3];
+      ctx.fillRect(px - sz / 2, py - sz / 2, sz, sz);
+    }
+    ctx.restore();
+  }
   // Draws a short fading strip on the leading edge of the head cell at
   // (px, py), in the direction the player just pressed.
   function drawInputFlash(px, py, dirName, alpha) {
@@ -499,6 +588,8 @@ const Render2D = (() => {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     drawTrails(currSnap.trails);
     drawWalls(currSnap.walls, now);
+    const wallShatters = (fx && fx.wallShatters) || [];
+    wallShatters.forEach(w => drawWallShatter(w.x, w.y, w.age));
     // Multi-food (v3.5.0): draw every active food cell, hiding any the local
     // predictor is provisionally treating as eaten. Falls back to the single
     // `food` compat field if `foods` is absent (rolling deploy).
@@ -544,6 +635,15 @@ const Render2D = (() => {
           ctx.fill();
         }
         ctx.restore();
+      }
+      // Scissors equipped: the pixel-art scissors icon superimposed directly
+      // over the head, rotated to face the current direction of travel --
+      // deliberately a SEPARATE, new primitive from the held-glow halo above
+      // (maintainer request 2026-07-26: "just have scissors superimposed",
+      // not also the pulsing halo treatment). Grid-aligned (not
+      // interpolated), same reasoning as the halo, for 2D/wasm parity.
+      if (p.alive && p.scissorsCharge) {
+        drawScissorsTile(body[0].x, body[0].y, dirIdxFromVec(p.dir));
       }
       // Powerup timer tail-drain: while a timed powerup is active the head-side
       // N = ceil(activePct * length) segments are tinted the powerup color, so

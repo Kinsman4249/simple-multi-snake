@@ -29,7 +29,8 @@ async function main() {
       spawnIntervalMs: 300, maxConcurrentPickups: 3,
       wormhole: { enabled: false }, growthSpurt: { enabled: false },
       iceTrail: { enabled: true, durationMs: 10000, tileDurationMs: 15000, slowDurationMs: 3000, slowMultiplierPerStack: 0.15, minSpeedMultiplier: 0.4 },
-      poisonTrail: { enabled: false }, speedBoost: { enabled: false }, blueShell: { enabled: false }
+      poisonTrail: { enabled: false }, speedBoost: { enabled: false }, blueShell: { enabled: false },
+      scissors: { enabled: false }
     }
   });
   try {

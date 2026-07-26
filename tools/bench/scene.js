@@ -12,7 +12,7 @@
     { head: "#88f", body: "#33c" },
     { head: "#ff8", body: "#cc3" }
   ];
-  const PICKUP_TYPES = ["wormhole", "growthSpurt", "iceTrail", "poisonTrail", "speedBoost", "blueShell", "bananaTrail", "helloWorld"];
+  const PICKUP_TYPES = ["wormhole", "growthSpurt", "iceTrail", "poisonTrail", "speedBoost", "blueShell", "bananaTrail", "helloWorld", "scissors"];
 
   // Serpentine body of `len` segments inside the quadrant box, head first.
   function serpentine(x0, y0, w, h, len) {
@@ -45,6 +45,10 @@
         // charge-only.
         heldPowerup: s === 1 ? "speedBoost" : null,
         wormholeCharge: s === 1 || s === 2,
+        // Scissors equipped (v4.5.0): slot 0's dir is {1,0} (right), so this
+        // exercises the head-icon rotation branch distinct from the
+        // canonical "up" ground-pickup orientation drawn below.
+        scissorsCharge: s === 0,
         // exercise the tail-drain countdown + speedBoost active jetstream:
         // slot 0 (local, non-smooth branch) speedBoost, slot 2 (smooth branch)
         // growthSpurt, at different remaining fractions.
@@ -107,7 +111,7 @@
     const localBodies = new Map([[0, players[0].body]]);
     const scene = {
       grid, prev, curr, localBodies, eatenKeys: [],
-      fx: { flashes: [], glides: [], explosions: [], powerFlashes: [] },
+      fx: { flashes: [], glides: [], explosions: [], powerFlashes: [], wallShatters: [] },
       opts: { interpolate: true, boostTrail: true, slideDust: true, powerupFx: true, heldGlow: true },
       // Refresh time-anchored pieces each frame: keeps interpolation t~0.5,
       // flash alpha ~0.5, glide mid-flight -- stable worst-case work. Pass a
@@ -145,6 +149,12 @@
         for (let d = 0; d < 8; d++) {
           scene.fx.dust.push({ x: dustBase.x - 1 - d, y: dustBase.y + 1, age: 0.1 + d * 0.1 });
         }
+        // Scissors wall-shatter (v4.5.0): mid-fade debris burst at one of
+        // the dynamic wall cells above, exercising the gray/brown debris
+        // palette distinct from the pinata candy burst.
+        scene.fx.wallShatters = [
+          { x: 9, y: Math.floor(rows / 2) + 3, age: 0.35 }
+        ];
       }
     };
     return scene;

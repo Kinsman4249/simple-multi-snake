@@ -36,7 +36,9 @@
 //        (active-powerup type index for the tail-drain/speed jetstream,
 //        -1 = none), 52 activePct f32 (fraction of the active powerup
 //        remaining, 1..0), 56 wormholeCharge i32 (glow alternates between
-//        the held color and the wormhole color when both are ready), 60 pad
+//        the held color and the wormhole color when both are ready),
+//        60 scissorsCharge i32 (v4.5.0 -- a SEPARATE head-only rotated
+//        icon, NOT part of the heldIdx/wormholeCharge glow-alternation)
 //   +players: body pool, MAX_SEGS x {x:i16, y:i16}
 //   +pool: trails, MAX_TRAILS stride 8: {x:i16, y:i16, type:i16, pad}
 //   +trails: pickups, MAX_PICKUPS stride 16: {x:i32, y:i32, type:i32, id:i32}
@@ -67,6 +69,9 @@
 //   864 nDust i32   (drift dust particles, v3.4.0 -- one per slid-through cell)
 //   868 dust[MAX_DUST] stride 12: {x i32, y i32, age f32}
 //   3940 local body pool, MAX_LOCAL_SEGS x {x:i16, y:i16}
+//   FR_NFOODS/FR_FOODS (computed, after the local body pool): foods
+//   FR_NWALLSHATTER/FR_WALLSHATTER (computed, after foods): scissors
+//        wall-shatter fx (v4.5.0), stride 12: {x i32, y i32, age f32}
 //
 // Instance buffer (output) stride 32:
 //   0 x f32, 4 y f32, 8 w f32, 12 h f32, 16 color u32 (ABGR: r low byte,
@@ -86,6 +91,7 @@ const MAX_EXPLOSIONS: i32 = 16;
 const MAX_PFLASHES: i32 = 8;
 const MAX_DUST: i32 = 256;
 const MAX_FOODS: i32 = 32;
+const MAX_WALLSHATTERS: i32 = 8;
 const MAX_LOCALS: i32 = 4;
 const MAX_LOCAL_SEGS: i32 = 16384;
 const INSTANCE_CAP: i32 = 40960;
@@ -127,7 +133,11 @@ const FR_LOCAL_BODY: i32 = 3940; // 868 + MAX_DUST(256) * 12
 // simply omitted from the array).
 const FR_NFOODS: i32 = FR_LOCAL_BODY + MAX_LOCAL_SEGS * 4;
 const FR_FOODS: i32 = FR_NFOODS + 4;   // stride 12: {x i32, y i32, bounty i32}
-const FRAME_SIZE: i32 = FR_FOODS + MAX_FOODS * 12;
+// Scissors wall-shatter fx (v4.5.0), appended right after foods (the last
+// dynamic-count section). Must match public/js/render.js FR_WALLSHATTER_OFF.
+const FR_NWALLSHATTER: i32 = FR_FOODS + MAX_FOODS * 12;
+const FR_WALLSHATTER: i32 = FR_NWALLSHATTER + 4; // stride 12: {x i32, y i32, age f32}
+const FRAME_SIZE: i32 = FR_WALLSHATTER + MAX_WALLSHATTERS * 12;
 
 const KIND_RECT: f32 = 0;
 const KIND_ELLIPSE: f32 = 1;
@@ -141,6 +151,7 @@ const COLOR_FOOD_BOUNTY: u32 = rgba(0xff, 0xcc, 0x00, 255); // #fc0 piñata gold
 // Piñata candy-burst palette (mirrors render2d.js CANDY_COLORS): gold / pink /
 // cyan / lime. CANDY_N particle count must match render2d.js CANDY_N.
 const CANDY_N: i32 = 14;
+const WALLSHATTER_N: i32 = 10;
 const CANDY_GOLD: u32 = rgba(0xff, 0xcc, 0x00, 255); // #ffcc00
 const CANDY_PINK: u32 = rgba(0xff, 0x44, 0x99, 255); // #ff4499
 const CANDY_CYAN: u32 = rgba(0x44, 0xcc, 0xff, 255); // #44ccff
@@ -165,6 +176,24 @@ const COLOR_BLACK: u32 = rgba(0, 0, 0, 255);
 const COLOR_BANANA_BODY: u32 = rgba(0xff, 0xdd, 0x44, 255); // #fd4
 const COLOR_BANANA_TIP: u32 = rgba(0xaa, 0x77, 0x00, 255);  // #a70
 const COLOR_BANANA_SPOT: u32 = rgba(0x66, 0x33, 0x00, 255); // #630 ripeness speckle
+const COLOR_SCISSORS_BLADE: u32 = rgba(0xdd, 0xdd, 0xee, 255); // #dde
+const COLOR_SCISSORS_TIP: u32 = rgba(0xff, 0xff, 0xff, 255);   // #fff
+const COLOR_SCISSORS_PIVOT: u32 = rgba(0x33, 0x33, 0x33, 255); // #333
+const COLOR_SCISSORS_HANDLE: u32 = rgba(0xee, 0x33, 0x33, 255); // #e33
+// Scissors wall-shatter debris palette (v4.5.0): stone/gray, distinct from
+// the pinata candy-burst gold/pink/cyan/lime above so "wall breaking" never
+// reads as "food bursting." Must mirror render2d.js DEBRIS_COLORS exactly.
+const DEBRIS_1: u32 = rgba(0x99, 0x99, 0x99, 255); // #999
+const DEBRIS_2: u32 = rgba(0x77, 0x55, 0x33, 255); // #753
+const DEBRIS_3: u32 = rgba(0x55, 0x55, 0x55, 255); // #555
+const DEBRIS_4: u32 = rgba(0x44, 0x22, 0x00, 255); // #420
+function debrisColor(i: i32): u32 {
+  const m = i & 3;
+  if (m == 0) return DEBRIS_1;
+  if (m == 1) return DEBRIS_2;
+  if (m == 2) return DEBRIS_3;
+  return DEBRIS_4;
+}
 // Grid decay / anti-turtling obstacles (v3.8.1): the solid state is a
 // pixel-art spike trap (see spikeVal/spikeColor below), not a flat fill --
 // a plain gray square read as just another powerup pickup (maintainer
@@ -226,6 +255,7 @@ function pickupColor(t: i32): u32 {
   if (t == 5) return rgba(0x11, 0x44, 0xee, 255);
   if (t == 6) return rgba(0xff, 0xdd, 0x44, 255);
   if (t == 7) return rgba(0x00, 0xff, 0xff, 255);
+  if (t == 8) return rgba(0xcc, 0xcc, 0xdd, 255); // scissors fallback swatch (drawn as pixel-art, not this flat color)
   return COLOR_WHITE;
 }
 function trailColor(t: i32): u32 {
@@ -289,6 +319,43 @@ function bananaVal(r: i32, c: i32): i32 {
   if (r == 2) return (c == 1 || c == 2) ? 1 : 0;
   if (r == 3) return c == 0 ? 3 : (c == 1 ? 1 : 0);
   return c == 0 ? 2 : (c == 1 ? 1 : 0);
+}
+// Pixel-art scissors bitmap (5x5), canonical "facing up" orientation --
+// must match render2d.js SCISSORS_ART exactly (same rows): 1 blade shaft,
+// 2 blade tip, 3 pivot rivet, 4 handle loop.
+@inline
+function scissorsArt(r: i32, c: i32): i32 {
+  if (r == 0) return (c == 1 || c == 3) ? 2 : 0;
+  if (r == 1) return (c == 1 || c == 3) ? 1 : 0;
+  if (r == 2) return c == 2 ? 3 : 0;
+  return (c == 0 || c == 4) ? 4 : 0;
+}
+// dirIdx: 0 up, 1 down, 2 left, 3 right (matches dirVX/dirVY below). Rotates
+// the 5x5 lookup by remapping (r,c) before indexing the canonical up-facing
+// bitmap -- must mirror render2d.js scissorsVal() exactly for parity.
+@inline
+function scissorsVal(r: i32, c: i32, dirIdx: i32): i32 {
+  if (dirIdx == 1) return scissorsArt(4 - r, 4 - c);
+  if (dirIdx == 3) return scissorsArt(4 - c, r);
+  if (dirIdx == 2) return scissorsArt(c, 4 - r);
+  return scissorsArt(r, c);
+}
+@inline
+function scissorsColor(v: i32): u32 {
+  if (v == 2) return COLOR_SCISSORS_TIP;
+  if (v == 3) return COLOR_SCISSORS_PIVOT;
+  if (v == 4) return COLOR_SCISSORS_HANDLE;
+  return COLOR_SCISSORS_BLADE;
+}
+// dx/dy (a snake's dir vector) -> the 0 up/1 down/2 left/3 right dirIdx
+// scissorsVal expects. Mirrors render2d.js dirIdxFromVec().
+@inline
+function dirIdxFromDelta(dx: i32, dy: i32): i32 {
+  if (dy == -1) return 0;
+  if (dy == 1) return 1;
+  if (dx == -1) return 2;
+  if (dx == 1) return 3;
+  return 0;
 }
 @inline
 function easeOutCubic(t: f32): f32 { const u: f32 = <f32>1 - t; return <f32>1 - u * u * u; }
@@ -434,6 +501,23 @@ export function render(now: f64, which: i32): i32 {
       }
       continue;
     }
+    if (pt == 8) {
+      // scissors pickup: pixel-art scissors, canonical facing-up orientation
+      // (ground pickups have no travel direction) -- see render2d.js.
+      const sx = <f32>px * cs, sy = <f32>py * cs;
+      for (let r = 0; r < 5; r++) {
+        for (let c = 0; c < 5; c++) {
+          const v = scissorsVal(r, c, 0);
+          if (v == 0) continue;
+          const x0 = <f32>(<i32>Math.round(<f64>c * <f64>cell / 5.0));
+          const x1 = <f32>(<i32>Math.round(<f64>(c + 1) * <f64>cell / 5.0));
+          const y0 = <f32>(<i32>Math.round(<f64>r * <f64>cell / 5.0));
+          const y1 = <f32>(<i32>Math.round(<f64>(r + 1) * <f64>cell / 5.0));
+          inst(sx + x0, sy + y0, x1 - x0, y1 - y0, scissorsColor(v), pkAlpha, KIND_RECT, 0, 0);
+        }
+      }
+      continue;
+    }
     const size = (cs - 2) * (<f32>0.7 + <f32>0.3 * pulse);
     const off = (cs - size) / 2;
     inst(<f32>px * cs + off, <f32>py * cs + off, size, size, pickupColor(pt), pkAlpha, KIND_RECT, 0, 0);
@@ -483,6 +567,26 @@ export function render(now: f64, which: i32): i32 {
     if (outer > 0) {
       const inner = max<f32>(0, r - lw / 2) / outer;
       inst(cx - outer, cy - outer, outer * 2, outer * 2, COLOR_SHELL, max<f32>(0, 1 - age), KIND_RING, 0, inner);
+    }
+  }
+  // scissors wall-shatter debris (v4.5.0): same deterministic flung-debris
+  // technique as the pinata candy burst above, gray/brown palette instead of
+  // festive candy colors. Must mirror render2d.js drawWallShatter exactly.
+  const nWs = min(load<i32>(frameIn + FR_NWALLSHATTER), MAX_WALLSHATTERS);
+  for (let i = 0; i < nWs; i++) {
+    const o = frameIn + FR_WALLSHATTER + <usize>(i * 12);
+    const wx = load<i32>(o), wy = load<i32>(o, 4);
+    const wage = load<f32>(o, 8);
+    const wcx = <f32>wx * cs + cs / 2, wcy = <f32>wy * cs + cs / 2;
+    const wdist = <f64>cs * 1.1 * <f64>wage;
+    const wphase = <f64>((wx + wy) % 7) * 0.897;
+    const wsz = <f32>(<f64>cs * 0.28 * (1.0 - 0.4 * <f64>wage));
+    const wal = max<f32>(0, 1 - wage);
+    for (let k = 0; k < WALLSHATTER_N; k++) {
+      const ang = <f64>k * 2.399963 + wphase;
+      const wpx = <f32>(<f64>wcx + Math.cos(ang) * wdist);
+      const wpy = <f32>(<f64>wcy + Math.sin(ang) * wdist);
+      inst(wpx - wsz / 2, wpy - wsz / 2, wsz, wsz, debrisColor(k), wal, KIND_RECT, 0, 0);
     }
   }
   // players
@@ -557,6 +661,29 @@ export function render(now: f64, which: i32): i32 {
       const glowColor = pickupColor(glowIdx);
       for (let si = 0; si < bodyLen; si++) {
         inst(<f32>segX(bodyPool, bodyOff + si) * cs - grow, <f32>segY(bodyPool, bodyOff + si) * cs - grow, cell + grow * 2, cell + grow * 2, glowColor, glowAlpha, KIND_ELLIPSE, 0, 0);
+      }
+    }
+    // Scissors equipped (v4.5.0): the pixel-art scissors icon superimposed
+    // directly over the head, rotated to face the current direction of
+    // travel -- a SEPARATE, new primitive from the held-glow halo above
+    // (maintainer request: "just have scissors superimposed", not also the
+    // pulsing halo). Grid-aligned (not interpolated), same reasoning as the
+    // halo, for 2D/wasm parity. Must mirror render2d.js's equivalent block.
+    const scissorsCharge = load<i32>(p, 60) != 0;
+    if (alive && scissorsCharge) {
+      const sHeadX = segX(bodyPool, bodyOff), sHeadY = segY(bodyPool, bodyOff);
+      const sDirIdx = dirIdxFromDelta(load<i32>(p, 16), load<i32>(p, 20));
+      const sox = <f32>sHeadX * cs, soy = <f32>sHeadY * cs;
+      for (let r = 0; r < 5; r++) {
+        for (let c = 0; c < 5; c++) {
+          const v = scissorsVal(r, c, sDirIdx);
+          if (v == 0) continue;
+          const x0 = <f32>(<i32>Math.round(<f64>c * <f64>cell / 5.0));
+          const x1 = <f32>(<i32>Math.round(<f64>(c + 1) * <f64>cell / 5.0));
+          const y0 = <f32>(<i32>Math.round(<f64>r * <f64>cell / 5.0));
+          const y1 = <f32>(<i32>Math.round(<f64>(r + 1) * <f64>cell / 5.0));
+          inst(sox + x0, soy + y0, x1 - x0, y1 - y0, scissorsColor(v), 1, KIND_RECT, 0, 0);
+        }
       }
     }
     const nActive = powerActive ? <i32>Math.ceil(<f64>activePct * <f64>bodyLen) : 0;

@@ -19,9 +19,10 @@ pub enum PowerupType {
     BlueShell,
     BananaTrail,
     HelloWorld,
+    Scissors,
 }
 
-pub const POWERUP_TYPES: [PowerupType; 8] = [
+pub const POWERUP_TYPES: [PowerupType; 9] = [
     PowerupType::Wormhole,
     PowerupType::GrowthSpurt,
     PowerupType::IceTrail,
@@ -30,6 +31,7 @@ pub const POWERUP_TYPES: [PowerupType; 8] = [
     PowerupType::BlueShell,
     PowerupType::BananaTrail,
     PowerupType::HelloWorld,
+    PowerupType::Scissors,
 ];
 
 impl PowerupType {
@@ -43,6 +45,7 @@ impl PowerupType {
             PowerupType::BlueShell => "blueShell",
             PowerupType::BananaTrail => "bananaTrail",
             PowerupType::HelloWorld => "helloWorld",
+            PowerupType::Scissors => "scissors",
         }
     }
     pub fn from_str(s: &str) -> Option<PowerupType> {
@@ -78,6 +81,7 @@ impl PowerupType {
             PowerupType::BlueShell => "Blue Shell",
             PowerupType::BananaTrail => "Banana Trail",
             PowerupType::HelloWorld => "Hello World",
+            PowerupType::Scissors => "Scissors",
         }
     }
     pub fn description(self) -> &'static str {
@@ -118,6 +122,16 @@ impl PowerupType {
             PowerupType::HelloWorld => {
                 "A tiny demo powerup for developers: it says hello in the server log and \
                  makes you 2% faster for one second. Off by default."
+            }
+            PowerupType::Scissors => {
+                "You do not use a button for this one. It waits, held in reserve, until your \
+                 next fatal-looking collision. Run your head into another snake's body and you \
+                 snip its tail off at the point of impact instead of dying -- the severed piece \
+                 scatters as bonus food. Bite your own tail and you cut yourself free the same \
+                 way. Run into a spawned wall and it shatters, kicking you sideways away from it. \
+                 A cut that would leave too little snake behind kills instead. Wormhole always \
+                 gets first say when it is your own life on the line -- scissors only cuts in \
+                 when you hit someone else. One-time use, then it is gone."
             }
         }
     }
@@ -176,6 +190,13 @@ pub fn segments_lost(body_length: usize, percent: f64, floor: usize) -> usize {
     let by_percent = (body_length as f64 * percent).floor() as i64;
     let room = body_length as i64 - floor as i64;
     by_percent.min(room).max(0) as usize
+}
+
+// scissors module: where in `body` the impact cell lands (first match --
+// a body can't revisit a cell, so this is unambiguous). Shared by the
+// self-cut and opponent-cut paths in sim.rs.
+pub fn scissors_cut_index(body: &[Cell], impact: Cell) -> Option<usize> {
+    body.iter().position(|seg| seg.x == impact.x && seg.y == impact.y)
 }
 
 // ---------------------------------------------------------------

@@ -51,7 +51,8 @@ async function main() {
       // Huge durations: the trail stays active and its tiles never expire for
       // the whole test, so the contiguity check sees the entire laid path.
       iceTrail: { enabled: true, durationMs: 600000, tileDurationMs: 600000, slowDurationMs: 1, slowMultiplierPerStack: 0.01, minSpeedMultiplier: 0.95 },
-      poisonTrail: { enabled: false }, speedBoost: { enabled: false }, blueShell: { enabled: false }
+      poisonTrail: { enabled: false }, speedBoost: { enabled: false }, blueShell: { enabled: false },
+      scissors: { enabled: false }
     }
   });
   try {

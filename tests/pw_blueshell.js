@@ -240,7 +240,8 @@ async function scenarioEqualLengthNoSpawn() {
     spawnIntervalMs: 200,
     wormhole: { enabled: false }, growthSpurt: { enabled: false },
     iceTrail: { enabled: false }, poisonTrail: { enabled: false },
-    speedBoost: { enabled: false }, bananaTrail: { enabled: false }
+    speedBoost: { enabled: false }, bananaTrail: { enabled: false },
+    scissors: { enabled: false }
   });
   cfg.maxConcurrentFood = 0;
   const server = await startServer(cfg, {
@@ -316,7 +317,7 @@ async function shortLeaderShellFraction(leaderLen) {
     spawnIntervalMs: 150,
     wormhole: { enabled: false }, iceTrail: { enabled: false },
     poisonTrail: { enabled: false }, speedBoost: { enabled: false },
-    bananaTrail: { enabled: false } // leaves blueShell + growthSpurt enabled
+    bananaTrail: { enabled: false }, scissors: { enabled: false } // leaves blueShell + growthSpurt enabled
   });
   cfg.maxConcurrentFood = 0;
   cfg.rubberband = { foodBias: { enabled: false }, shellPressure: { enabled: false } };

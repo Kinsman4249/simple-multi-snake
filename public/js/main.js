@@ -181,6 +181,10 @@ function seatInverted(localIdx) {
 // that timing; render.js just draws whatever age it's given.
 const EXPLOSION_DURATION_MS = 500;
 let activeExplosions = [];
+// Scissors wall-shatter fx (v4.5.0): same one-shot-list-plus-local-timer
+// pattern as explosions above (server-rust/src/net.rs wallShatters).
+const WALLSHATTER_DURATION_MS = 450;
+let activeWallShatters = [];
 // Powerup activation flash: state.players[i].activated is a one-shot type
 // (set for exactly the broadcast where a powerup fired, per
 // server-rust/src/net.rs). Each is stamped with a local start time and aged
@@ -455,6 +459,10 @@ function handleState(curr, prev) {
     const now = performance.now();
     curr.explosions.forEach(e => activeExplosions.push(Object.assign({ startTime: now }, e)));
   }
+  if (curr.wallShatters && curr.wallShatters.length) {
+    const now = performance.now();
+    curr.wallShatters.forEach(w => activeWallShatters.push(Object.assign({ startTime: now }, w)));
+  }
   // Powerup activation flashes: one per player whose `activated` one-shot is
   // set this broadcast (any seat, local or remote -- everyone sees the pop).
   if (curr.players) {
@@ -510,7 +518,9 @@ function frame() {
       : [];
     activeDust = activeDust.filter(d => now2 - d.startTime < DUST_MS);
     const dust = activeDust.map(d => ({ x: d.x, y: d.y, age: (now2 - d.startTime) / DUST_MS }));
-    Render.draw(prev, curr, localBodies, eatenKeys, { flashes, glides, explosions, powerFlashes, dust }, {
+    activeWallShatters = activeWallShatters.filter(w => now2 - w.startTime < WALLSHATTER_DURATION_MS);
+    const wallShatters = activeWallShatters.map(w => Object.assign({}, w, { age: (now2 - w.startTime) / WALLSHATTER_DURATION_MS }));
+    Render.draw(prev, curr, localBodies, eatenKeys, { flashes, glides, explosions, powerFlashes, dust, wallShatters }, {
       interpolate: CLIENT_RENDER.interpolate,
       renderer: CLIENT_RENDER.renderer,
       boostTrail: CLIENT_FX.boostTrail,

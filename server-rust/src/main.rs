@@ -520,6 +520,8 @@ fn handle_test_hook(g: &mut Game, msg: &serde_json::Value) {
                         let held = msg.get("held").and_then(|h| h.as_bool()) == Some(true);
                         if t == PowerupType::Wormhole {
                             g.slots[si].as_mut().unwrap().wormhole_charge = true;
+                        } else if t == PowerupType::Scissors {
+                            g.slots[si].as_mut().unwrap().scissors_charge = true;
                         } else if held {
                             g.slots[si].as_mut().unwrap().held_powerup = Some(t);
                         } else {

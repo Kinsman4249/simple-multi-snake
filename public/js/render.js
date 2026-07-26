@@ -29,17 +29,22 @@ const Render = (() => {
   const canvas = document.getElementById("game");
   const POWERUP_STYLE = Render2D.POWERUP_STYLE;
   // Must match wasm/renderer.ts pickupColor()/trailColor() index order.
-  const POWERUP_TYPE_INDEX = { wormhole: 0, growthSpurt: 1, iceTrail: 2, poisonTrail: 3, speedBoost: 4, blueShell: 5, bananaTrail: 6, helloWorld: 7 };
+  const POWERUP_TYPE_INDEX = { wormhole: 0, growthSpurt: 1, iceTrail: 2, poisonTrail: 3, speedBoost: 4, blueShell: 5, bananaTrail: 6, helloWorld: 7, scissors: 8 };
   const DIR_INDEX = { up: 0, down: 1, left: 2, right: 3 };
   const PLAYER_STRIDE_I32 = 16;   // 64 bytes (activeIdx i32 + activePct f32, then wormholeCharge i32 + pad)
   const PLAYER_STRIDE_B = PLAYER_STRIDE_I32 * 4;
   const SNAP_PLAYERS_I32 = 10;    // header is 40 bytes (v3.8.0: +nWalls +pad)
   const MAX_PLAYERS = 8, MAX_SEGS = 16384, MAX_TRAILS = 8192, MAX_PICKUPS = 32, MAX_SHELLS = 16, MAX_WALLS = 32, MAX_PORTALS = 16;
   const MAX_FLASHES = 8, MAX_GLIDES = 8, MAX_EXPLOSIONS = 16, MAX_PFLASHES = 8, MAX_DUST = 256, MAX_LOCALS = 4, MAX_LOCAL_SEGS = 16384, MAX_FOODS = 32;
+  const MAX_WALLSHATTERS = 8;
   // Foods live in the frame-input region (re-encoded per frame so per-frame
   // predicted-eat hiding is trivial), appended after the local body pool.
   // Must match wasm/renderer.ts FR_NFOODS/FR_FOODS.
   const FR_FOODS_OFF = 3940 + MAX_LOCAL_SEGS * 4; // bytes: nFoods i32, then MAX_FOODS x {x,y,bounty} i32
+  // Scissors wall-shatter fx (v4.5.0), appended right after foods (the last
+  // dynamic-count section): nWallShatters i32, then MAX_WALLSHATTERS x
+  // {x, y, age} stride 12. Must match wasm/renderer.ts FR_WALLSHATTER_OFF.
+  const FR_WALLSHATTER_OFF = FR_FOODS_OFF + 4 + MAX_FOODS * 12;
   // Snapshot region byte offsets -- must match wasm/renderer.ts SNAP_* consts
   // exactly (v3.8.0: header grew by 8 bytes for nWalls, shifting everyone
   // after it; named consts here instead of ad-hoc arithmetic to keep the two
@@ -176,6 +181,10 @@ const Render = (() => {
       i32[po + 12] = p.activePowerup != null && p.activePowerup in POWERUP_TYPE_INDEX ? POWERUP_TYPE_INDEX[p.activePowerup] : -1;
       f32[po + 13] = typeof p.activePct === "number" ? p.activePct : 0;
       i32[po + 14] = p.wormholeCharge ? 1 : 0;
+      // Scissors (v4.5.0): a SEPARATE head-only icon, not part of the
+      // heldIdx/wormholeCharge glow-alternation above -- see the wasm
+      // player loop's dedicated scissors instance-emission block.
+      i32[po + 15] = p.scissorsCharge ? 1 : 0;
       for (let s = 0; s < len; s++) {
         i16[bodyBase16 + ((segOff + s) << 1)] = body[s].x;
         i16[bodyBase16 + ((segOff + s) << 1) + 1] = body[s].y;
@@ -335,6 +344,19 @@ const Render = (() => {
       nFd++;
     }
     i32[nFoodBase] = nFd;
+    // Scissors wall-shatter fx (v4.5.0): one-shot list, same age-tracking
+    // pattern as explosions above (main.js turns the server's one-shot
+    // wall_shatters into a timed local list with an "age" field).
+    const wallShatters = (fx && fx.wallShatters) || [];
+    const nWs = Math.min(wallShatters.length, MAX_WALLSHATTERS);
+    const wsBase = (fp + FR_WALLSHATTER_OFF) >>> 2;
+    i32[wsBase] = nWs;
+    for (let i = 0; i < nWs; i++) {
+      const o = wsBase + 1 + i * 3;
+      i32[o] = wallShatters[i].x;
+      i32[o + 1] = wallShatters[i].y;
+      f32[o + 2] = wallShatters[i].age;
+    }
   }
 
   // Walk the wasm's instance buffer onto the 2D context. Kinds: 0 rect,

@@ -63,6 +63,7 @@ async function soloShellOnlyStaysEmpty() {
     wormhole: { enabled: false }, growthSpurt: { enabled: false },
     iceTrail: { enabled: false }, poisonTrail: { enabled: false },
     speedBoost: { enabled: false }, bananaTrail: { enabled: false },
+    scissors: { enabled: false },
     blueShell: { enabled: true }
   }));
   try {
@@ -84,6 +85,7 @@ async function duoShellSpawns() {
     wormhole: { enabled: false }, growthSpurt: { enabled: false },
     iceTrail: { enabled: false }, poisonTrail: { enabled: false },
     speedBoost: { enabled: false }, bananaTrail: { enabled: false },
+    scissors: { enabled: false },
     blueShell: { enabled: true }
   }), {
     // Unequal forced lengths so the equal-length shell gate doesn't hide

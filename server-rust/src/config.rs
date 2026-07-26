@@ -190,6 +190,17 @@ impl Default for HelloWorldCfg {
     }
 }
 
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ScissorsCfg {
+    pub enabled: bool,
+}
+impl Default for ScissorsCfg {
+    fn default() -> Self {
+        ScissorsCfg { enabled: true }
+    }
+}
+
 #[derive(Deserialize, Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PowerupsCfg {
@@ -205,6 +216,7 @@ pub struct PowerupsCfg {
     pub blue_shell: BlueShellCfg,
     pub banana_trail: BananaTrailCfg,
     pub hello_world: HelloWorldCfg,
+    pub scissors: ScissorsCfg,
 }
 fn d_spawn_interval() -> f64 {
     8000.0
@@ -224,6 +236,7 @@ impl PowerupsCfg {
             BlueShell => self.blue_shell.enabled,
             BananaTrail => self.banana_trail.enabled,
             HelloWorld => self.hello_world.enabled,
+            Scissors => self.scissors.enabled,
         }
     }
     // The timed self-buff duration for a type (blueShell/wormhole never use it).
@@ -236,7 +249,7 @@ impl PowerupsCfg {
             SpeedBoost => self.speed_boost.duration_ms,
             BananaTrail => self.banana_trail.duration_ms,
             HelloWorld => self.hello_world.duration_ms,
-            Wormhole | BlueShell => 0.0,
+            Wormhole | BlueShell | Scissors => 0.0,
         }
     }
     pub fn tile_duration_ms(&self, t: crate::powerups::PowerupType) -> f64 {
@@ -294,13 +307,19 @@ pub struct PinataCfg {
     pub ttl_ms: f64,
     pub spread: i32,
     pub bias: f64,
+    // Extra scatter-radius cells per body segment above min_length -- a
+    // bigger pinata (a longer snake's corpse or cut-off tail) bursts wider.
+    pub size_scale: f64,
 }
 impl Default for PinataCfg {
     fn default() -> Self {
         // minLength default is twice blueShell's shortLeaderLength default
         // (JS computed it from the merged POWERUPS; with both defaulted the
         // result is the same 30).
-        PinataCfg { enabled: true, min_length: 30, percent: 0.30, max_food: 12, ttl_ms: 6000.0, spread: 6, bias: 0.6 }
+        PinataCfg {
+            enabled: true, min_length: 30, percent: 0.30, max_food: 12, ttl_ms: 6000.0, spread: 6,
+            bias: 0.6, size_scale: 0.15,
+        }
     }
 }
 

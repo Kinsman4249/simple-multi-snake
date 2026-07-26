@@ -57,7 +57,8 @@
     "speedBoost":  { "enabled": true, "durationMs": 6000, "speedMult": 1.6 },
     "blueShell":   { "enabled": true, "segmentLossPercent": 0.33, "explosionRadius": 3, "splashLossPercent": 0.1667, "speedRatio": 0.45, "shortLeaderLength": 15, "shortLeaderFactor": 0.25 },
     "bananaTrail": { "enabled": true, "durationMs": 8000, "tileDurationMs": 10000, "invertDurationMs": 4000 },
-    "helloWorld":  { "enabled": false, "durationMs": 1000, "speedMult": 1.02 }
+    "helloWorld":  { "enabled": false, "durationMs": 1000, "speedMult": 1.02 },
+    "scissors":    { "enabled": true }
   },
   "rubberband": {
     "foodBias":      { "enabled": true, "radius": 15, "strength": 3 },
@@ -70,7 +71,8 @@
     "maxFood": 12,
     "ttlMs": 6000,
     "spread": 6,
-    "bias": 0.6
+    "bias": 0.6,
+    "sizeScale": 0.15
   },
   "foodRate": {
     "enabled": true,

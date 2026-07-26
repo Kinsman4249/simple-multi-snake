@@ -55,6 +55,7 @@ pub struct Snake {
     pub last_input_at: i64,
     pub held_powerup: Option<PowerupType>,
     pub wormhole_charge: bool,
+    pub scissors_charge: bool,
     pub active_powerup: Option<ActivePowerup>,
     pub activated_fx: Option<PowerupType>,
     pub ice_stacks: i32,
@@ -90,6 +91,7 @@ impl Snake {
             last_input_at: now_ms(),
             held_powerup: None,
             wormhole_charge: false,
+            scissors_charge: false,
             active_powerup: None,
             activated_fx: None,
             ice_stacks: 0,
@@ -240,6 +242,15 @@ pub struct Wall {
     pub solid_until: i64,
 }
 
+// One-shot fx (v4.5.0 scissors): a dynamic wall shattered by a
+// scissors-armed snake running into it. Same lifecycle as Explosion --
+// pushed during the sim tick, serialized once, cleared right after.
+#[derive(Clone, Copy, Serialize)]
+pub struct WallShatterFx {
+    pub x: i32,
+    pub y: i32,
+}
+
 // Wormhole portal visual (2026-07-20 rework): a purple portal marker at
 // the entry and exit cells of a fired wormhole. Gameplay-inert -- pure
 // render metadata. Portals stay up while their owner's tail is still
@@ -282,6 +293,7 @@ pub struct Game {
     pub explosions: Vec<Explosion>,
     pub walls: Vec<Wall>,
     pub portal_fx: Vec<PortalFx>,
+    pub wall_shatters: Vec<WallShatterFx>,
     pub next_powerup_id: i64,
     pub last_powerup_spawn_at: Option<i64>,
     pub last_wall_spawn_at: Option<i64>,
@@ -345,6 +357,7 @@ impl Game {
             explosions: Vec::new(),
             walls: Vec::new(),
             portal_fx: Vec::new(),
+            wall_shatters: Vec::new(),
             next_powerup_id: 1,
             last_powerup_spawn_at: None,
             last_wall_spawn_at: None,
@@ -505,53 +518,64 @@ impl Game {
         }
     }
 
-    // "Pinata" bounty burst (v3.6.6) for a dead snake's body (read before
-    // clearing). Scatters short-TTL candy around the corpse midpoint, biased
-    // toward the trailing snake, and queues the candy-burst explosion.
-    pub fn drop_pinata_food(&mut self, dead_slot: usize) {
+    // Living slots other than `exclude`, sorted by body length ascending,
+    // truncated to the ceil(playerCount/2) "lowest scoring players" group
+    // (v4.5.0 generalization of the old single-trailing-snake bias -- with
+    // more players seated, more of the trailing pack shares in the bounty).
+    pub fn lowest_scoring_targets(&self, exclude: usize) -> Vec<usize> {
+        let mut living: Vec<usize> = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(i, s)| *i != exclude && matches!(s, Some(sn) if sn.alive))
+            .map(|(i, _)| i)
+            .collect();
+        living.sort_by_key(|&i| self.slots[i].as_ref().unwrap().body.len());
+        let group_size = ((self.player_seat_count() as f64 / 2.0).ceil() as usize)
+            .max(1)
+            .min(living.len());
+        living.truncate(group_size);
+        living
+    }
+
+    // Shared pinata scatter math (v3.6.6, generalized v4.5.0): scatters
+    // short-TTL candy around `anchor`, biased toward a random member of the
+    // lowest-scoring-players group (not always the single shortest), and
+    // queues the candy-burst explosion. `size_basis` drives both the candy
+    // count and how far the burst spreads -- a bigger snake/cut-off tail
+    // pops wider, pinata-style.
+    fn scatter_bounty(&mut self, exclude: usize, anchor: Cell, size_basis: usize) {
         let p = &self.cfg.pinata;
-        if !p.enabled {
+        if !p.enabled || size_basis < p.min_length || self.player_seat_count() < 2 {
             return;
         }
-        let Some(s) = self.slots[dead_slot].as_ref() else { return };
-        if s.body.len() < p.min_length {
-            return;
-        }
-        if self.player_seat_count() < 2 {
-            return;
-        }
-        let body_len = s.body.len();
-        let mid = s.body[body_len / 2];
         let count = p
             .max_food
-            .min(((body_len as f64 * p.percent).round() as usize).max(1));
-        let spread = p.spread;
+            .min(((size_basis as f64 * p.percent).round() as usize).max(1));
+        let spread = p.spread
+            + ((size_basis.saturating_sub(p.min_length)) as f64 * p.size_scale).round() as i32;
         let ttl_ticks = ((p.ttl_ms / self.current_move_interval_ms()).ceil() as i64).max(1);
         let expires_at_tick = self.move_seq + ttl_ticks;
         let cols = self.cfg.grid.cols;
         let rows = self.cfg.grid.rows;
-        // Bias target: the shortest living snake's head, if genuinely shorter
-        // than the popped snake.
-        let mut bias: Option<Cell> = None;
-        if let Some(ti) = self.current_trailing_index() {
-            if ti != dead_slot {
-                if let Some(t) = self.slots[ti].as_ref() {
-                    if t.body.len() < body_len {
-                        bias = Some(t.head());
-                    }
-                }
-            }
-        }
+        // Bias targets: living snakes shorter than the source, drawn from the
+        // lowest-scoring group -- each candy independently rolls whether to
+        // nudge toward a (uniformly random) member of that group.
+        let targets: Vec<Cell> = self
+            .lowest_scoring_targets(exclude)
+            .into_iter()
+            .filter(|&i| self.slots[i].as_ref().map_or(false, |t| t.body.len() < size_basis))
+            .map(|i| self.slots[i].as_ref().unwrap().head())
+            .collect();
         let bias_p = p.bias;
         let mut placed: Vec<Cell> = Vec::new();
         let mut rng = rand::rng();
         for _ in 0..count {
-            let (mut cx, mut cy) = (mid.x, mid.y);
-            if let Some(b) = bias {
-                if rng.random::<f64>() < bias_p {
-                    cx = (cx as f64 + (b.x - cx) as f64 * 0.5).round() as i32;
-                    cy = (cy as f64 + (b.y - cy) as f64 * 0.5).round() as i32;
-                }
+            let (mut cx, mut cy) = (anchor.x, anchor.y);
+            if !targets.is_empty() && rng.random::<f64>() < bias_p {
+                let b = targets[rand_below(targets.len() as i32) as usize];
+                cx = (cx as f64 + (b.x - cx) as f64 * 0.5).round() as i32;
+                cy = (cy as f64 + (b.y - cy) as f64 * 0.5).round() as i32;
             }
             for _ in 0..12 {
                 let jitter = |rng: &mut rand::rngs::ThreadRng| {
@@ -568,8 +592,29 @@ impl Game {
             }
         }
         if !placed.is_empty() {
-            self.explosions.push(Explosion { x: mid.x, y: mid.y, radius: -spread });
+            self.explosions.push(Explosion { x: anchor.x, y: anchor.y, radius: -spread });
         }
+    }
+
+    // "Pinata" bounty burst (v3.6.6) for a dead snake's body (read before
+    // clearing).
+    pub fn drop_pinata_food(&mut self, dead_slot: usize) {
+        let Some(s) = self.slots[dead_slot].as_ref() else { return };
+        let body_len = s.body.len();
+        let mid = s.body[body_len / 2];
+        self.scatter_bounty(dead_slot, mid, body_len);
+    }
+
+    // Scissors tail-cut bounty (v4.5.0): the severed segments of a self-cut
+    // or opponent-cut scatter the same way a corpse does, sized off the
+    // ORIGINAL (pre-cut) body length so a bigger snake's cut still sprays
+    // wide even though only the tail portion is actually being converted.
+    pub fn drop_scissors_food(&mut self, exclude: usize, severed: &[Cell], original_len: usize) {
+        if severed.is_empty() {
+            return;
+        }
+        let mid = severed[severed.len() / 2];
+        self.scatter_bounty(exclude, mid, original_len);
     }
 
     // Clear and refill food (the placeFood test hook).
@@ -690,6 +735,7 @@ impl Game {
         // (re)spawn -- a run is a clean slate.
         s.held_powerup = None;
         s.wormhole_charge = false;
+        s.scissors_charge = false;
         s.active_powerup = None;
         s.activated_fx = None;
         s.ice_stacks = 0;

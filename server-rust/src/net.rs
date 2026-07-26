@@ -6,7 +6,7 @@
 // ============================================================
 use crate::config::COLORS;
 use crate::powerups::{speed_multiplier, PowerupType, POWERUP_TYPES};
-use crate::state::{Cell, Explosion, Game, Role, WsOut};
+use crate::state::{Cell, Explosion, Game, Role, WallShatterFx, WsOut};
 use serde::ser::{SerializeMap, Serializer};
 use serde::Serialize;
 
@@ -132,6 +132,7 @@ struct PlayerView<'a> {
     sliding: bool,
     held_powerup: Option<&'static str>,
     wormhole_charge: bool,
+    scissors_charge: bool,
     active_powerup: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     active_pct: Option<f64>,
@@ -184,6 +185,7 @@ struct StateMsg<'a> {
     trails: Vec<TrailView<'a>>,
     blue_shells: Vec<ShellView>,
     explosions: &'a [Explosion],
+    wall_shatters: &'a [WallShatterFx],
     walls: Vec<WallView>,
     portal_fx: Vec<PortalView>,
     kills: Vec<KillView<'a>>,
@@ -226,6 +228,7 @@ pub fn broadcast_state(game: &mut Game) {
                 sliding: s.drift_dir.is_some() && b_now < s.drift_until_ms,
                 held_powerup: s.held_powerup.map(PowerupType::as_str),
                 wormhole_charge: s.wormhole_charge,
+                scissors_charge: s.scissors_charge,
                 active_powerup: s.active_powerup.map(|a| a.ptype.as_str()),
                 active_pct: s.active_powerup.map(|a| {
                     let span = (a.expires_at_tick - a.start_tick).max(1) as f64;
@@ -328,6 +331,7 @@ pub fn broadcast_state(game: &mut Game) {
             })
             .collect(),
         explosions: &game.explosions,
+        wall_shatters: &game.wall_shatters,
         walls,
         portal_fx,
         kills,
@@ -345,6 +349,7 @@ pub fn broadcast_state(game: &mut Game) {
         s.activated_fx = None;
     }
     game.explosions.clear();
+    game.wall_shatters.clear();
     game.kill_events.clear();
 
     if game.cfg.perf {
