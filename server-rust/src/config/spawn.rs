@@ -54,6 +54,11 @@ pub struct PinataCfg {
     // Extra scatter-radius cells per body segment above min_length -- a
     // bigger pinata (a longer snake's corpse or cut-off tail) bursts wider.
     pub size_scale: f64,
+    // Despawn cue window (v5.2.0): mirrors WallsCfg::despawn_telegraph_ms --
+    // a timed food (pinata OR scissors-cut) within this many ms of its TTL
+    // reports fading:true so the client pulses it the same way a decaying
+    // wall pulses, instead of popping out with no warning.
+    pub despawn_telegraph_ms: i64,
 }
 impl Default for PinataCfg {
     fn default() -> Self {
@@ -62,7 +67,7 @@ impl Default for PinataCfg {
         // result is the same 30).
         PinataCfg {
             enabled: true, min_length: 30, percent: 0.30, max_food: 12, ttl_ms: 6000.0, spread: 6,
-            bias: 0.6, size_scale: 0.15,
+            bias: 0.6, size_scale: 0.15, despawn_telegraph_ms: 1000,
         }
     }
 }

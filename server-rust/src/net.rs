@@ -50,19 +50,27 @@ fn color_view(idx: Option<usize>) -> Option<ColorView> {
 
 // Food serializes as {x,y}, with the timed-food fields only when set
 // (matching the JS objects, where normal food simply has no such keys).
-// `bounty` means "on a TTL, blinks out client-side"; `gold` separately means
-// "worth 2x and draws gold" -- only pinata-bounty candy is both, a
-// scissors-cut is `bounty` (timed) but not `gold` (plain red, normal value).
-// This is a "tuple struct" wrapping a borrowed &Food (see RUST-CHEATSHEET.md
-// on references) -- writing our own `impl Serialize` below (instead of
-// #[derive(Serialize)]) is how we get the "only include these fields when
-// timed" behavior that a plain derive can't express.
-struct FoodView<'a>(&'a crate::state::Food);
+// `bounty` means "on a TTL"; `gold` separately means "worth 2x and draws
+// gold" -- only pinata-bounty candy is both, a scissors-cut is `bounty`
+// (timed) but not `gold` (plain red, normal value). `fading` is precomputed
+// here (same "is this close enough to its despawn to telegraph it" shape as
+// WallView::state below) so the client can pulse a soon-to-expire food's
+// alpha exactly the way it already pulses a decaying wall -- one shared
+// visual language for "about to disappear" instead of a separate blink
+// implementation per entity type.
+// This wraps a borrowed &Food plus the precomputed `fading` (see
+// RUST-CHEATSHEET.md on references) -- writing our own `impl Serialize`
+// below (instead of #[derive(Serialize)]) is how we get the "only include
+// these fields when timed" behavior that a plain derive can't express.
+struct FoodView<'a> {
+    f: &'a crate::state::Food,
+    fading: bool,
+}
 impl Serialize for FoodView<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let f = self.0;
+        let f = self.f;
         let timed = f.kind.is_timed();
-        let n = if timed { 5 } else { 2 };
+        let n = if timed { 6 } else { 2 };
         let mut m = s.serialize_map(Some(n))?;
         m.serialize_entry("x", &f.x)?;
         m.serialize_entry("y", &f.y)?;
@@ -70,6 +78,7 @@ impl Serialize for FoodView<'_> {
             m.serialize_entry("bounty", &true)?;
             m.serialize_entry("expiresAtTick", &f.expires_at_tick)?;
             m.serialize_entry("gold", &f.kind.is_gold())?;
+            m.serialize_entry("fading", &self.fading)?;
         }
         m.end()
     }
@@ -236,6 +245,14 @@ pub fn broadcast_state(game: &mut Game) {
     let t0 = if game.cfg.perf { Some(std::time::Instant::now()) } else { None };
     let interval = game.current_move_interval_ms();
     let b_now = crate::config::now_ms();
+    // Same shape as the wall telegraph below: how many ticks of TTL a timed
+    // food has left before it counts as "fading" (see FoodView).
+    let food_telegraph_ticks =
+        ((game.cfg.pinata.despawn_telegraph_ms as f64) / interval).ceil() as i64;
+    let move_seq = game.move_seq;
+    fn food_view(f: &crate::state::Food, move_seq: i64, telegraph_ticks: i64) -> FoodView<'_> {
+        FoodView { f, fading: f.kind.is_timed() && f.expires_at_tick - move_seq <= telegraph_ticks }
+    }
 
     // .iter().enumerate().map(closure).collect() -- walk each slot with its
     // index, build a PlayerView (or None), gather into a Vec; see
@@ -328,8 +345,8 @@ pub fn broadcast_state(game: &mut Game) {
             rows: game.cfg.grid.rows,
             cell_size: game.cfg.grid.cell_size,
         },
-        foods: game.foods.iter().map(FoodView).collect(),
-        food: game.foods.first().map(FoodView),
+        foods: game.foods.iter().map(|f| food_view(f, move_seq, food_telegraph_ticks)).collect(),
+        food: game.foods.first().map(|f| food_view(f, move_seq, food_telegraph_ticks)),
         powerup_pickups: game
             .powerup_pickups
             .iter()

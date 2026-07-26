@@ -178,16 +178,26 @@ export function render(now: f64, which: i32): i32 {
       }
     }
   }
-  // food (multi-food, from the frame region; eaten AND blinked-out-dark TTL
-  // food are both omitted upstream -- see Render2D.foodVisible in
-  // render2d-core.js).
-  // Stride 12: {x, y, gold} -- only gold pinata-bounty food (gold!=0) draws
-  // gold; a TTL'd scissors-cut candy is plain red like normal food.
+  // food (multi-food, from the frame region; eaten food is omitted upstream).
+  // Stride 12: {x, y, flags} -- flags bit0 is gold (only pinata-bounty food
+  // draws gold; a TTL'd scissors-cut candy is plain red like normal food),
+  // bit1 is fading (server-flagged: within the despawn-telegraph window).
+  // A fading food pulses out with the SAME formula as a decaying wall
+  // (wstate==2 below) -- one shared despawn cue instead of a separate
+  // per-entity fade, phase-offset by cell so candies don't throb in
+  // lockstep.
   const nFoods = min(load<i32>(frameIn + FR_NFOODS), MAX_FOODS);
   for (let i = 0; i < nFoods; i++) {
     const fo = frameIn + FR_FOODS + <usize>(i * 12);
-    const fCol = load<i32>(fo, 8) != 0 ? COLOR_FOOD_GOLD : COLOR_FOOD;
-    inst(<f32>load<i32>(fo) * cs, <f32>load<i32>(fo, 4) * cs, cell, cell, fCol, 1, KIND_RECT, 0, 0);
+    const fx = load<i32>(fo), fy = load<i32>(fo, 4);
+    const fflags = load<i32>(fo, 8);
+    const fCol = (fflags & 1) != 0 ? COLOR_FOOD_GOLD : COLOR_FOOD;
+    let fAlpha: f32 = 1;
+    if ((fflags & 2) != 0) {
+      const pulse = <f32>(0.5 + 0.5 * Math.sin(now / 90.0 + <f64>(fx * 31 + fy)));
+      fAlpha = <f32>0.5 + <f32>0.5 * pulse;
+    }
+    inst(<f32>fx * cs, <f32>fy * cs, cell, cell, fCol, fAlpha, KIND_RECT, 0, 0);
   }
   // pickups (pulse)
   const nPickups = min(load<i32>(curr, 24), MAX_PICKUPS);

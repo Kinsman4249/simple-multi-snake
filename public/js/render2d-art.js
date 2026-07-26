@@ -33,6 +33,16 @@ const POWERUP_STYLE = {
   // color (same treatment as bananaTrail above).
   scissors: "#ccd"
 };
+// Shared "about to disappear" despawn cue: a fast, fairly deep alpha pulse,
+// phase-offset by `seed` so multiple simultaneously-fading entities don't
+// all throb in lockstep (originally the wall despawn-telegraph pulse --
+// v3.8.1 -- now also driving fading food, v5.2.0, so there's exactly one
+// "fading" visual language instead of a per-entity reimplementation). Must
+// mirror wasm/renderer.ts's `wstate == 2` pulse formula exactly for parity.
+function fadingPulseAlpha(now, seed) {
+  const pulse = 0.5 + 0.5 * Math.sin(now / 90 + seed);
+  return 0.5 + 0.5 * pulse;
+}
 // Grid decay / anti-turtling obstacles (v3.8.1): a telegraphed cell shows
 // a pixel-art red "!" for the warning window, then becomes a pixel-art
 // SPIKE trap once solid (not a flat block -- v3.8.0's plain gray square
@@ -244,11 +254,7 @@ function drawWalls(wallList, now) {
       ctx.restore();
       continue;
     }
-    let alpha = 1;
-    if (w.state === "fading") {
-      const pulse = 0.5 + 0.5 * Math.sin(now / 90 + w.id);
-      alpha = 0.5 + 0.5 * pulse;
-    }
+    const alpha = w.state === "fading" ? fadingPulseAlpha(now, w.id) : 1;
     drawSpikeTile(w.x, w.y, alpha);
   }
 }
@@ -270,4 +276,4 @@ function drawBananaTile(cx, cy) {
   }
 }
 
-Object.assign(Render2D, { POWERUP_STYLE });
+Object.assign(Render2D, { POWERUP_STYLE, fadingPulseAlpha });
