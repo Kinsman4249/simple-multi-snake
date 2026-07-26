@@ -358,19 +358,31 @@
      modules self-register); bump on any change to this file. -->
 <script>(window.__BUILDS__ = window.__BUILDS__ || {}).index = "index 2026-07-22.1";</script>
 
-<!-- Load order matters: main.js references everything before it. loading.js
-     comes first of all so Loading.begin()/step() exist before any other
-     script's top-level code wants to call them. -->
+<!-- Load order matters: bootstrap.js (the app entry point, ex-main.js)
+     references everything before it. loading.js comes first of all so
+     Loading.begin()/step() exist before any other script's top-level code
+     wants to call them. -->
 <script src="js/loading.js"></script>
 <script src="js/net.js"></script>
 <script src="js/predict.js"></script>
 <!-- render-wasm.js is a BUILT artifact (tools/build-wasm.mjs), not committed;
      if it is absent the facade in render.js silently uses the 2D fallback. -->
 <script src="js/render-wasm.js"></script>
-<script src="js/render2d.js"></script>
+<script src="js/render2d-core.js"></script>
+<script src="js/render2d-art.js"></script>
+<script src="js/render2d-fx.js"></script>
 <script src="js/render.js"></script>
-<script src="js/ui.js"></script>
-<script src="js/main.js"></script>
+<script src="js/ui-core.js"></script>
+<script src="js/ui-gate.js"></script>
+<script src="js/ui-topbar.js"></script>
+<script src="js/ui-hud.js"></script>
+<script src="js/ui-overlays.js"></script>
+<script src="js/ui-mobile.js"></script>
+<script src="js/state.js"></script>
+<script src="js/keymap.js"></script>
+<script src="js/seats.js"></script>
+<script src="js/input.js"></script>
+<script src="js/bootstrap.js"></script>
 
 </body>
 </html>

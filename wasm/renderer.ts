@@ -12,275 +12,55 @@
 // (compiles with --runtime stub: NO GC, no allocations after init() --
 //  every region below is a fixed block bump-allocated once.)
 //
-// Memory protocol (all little-endian, offsets relative to the pointers the
-// module exports):
-//
-// Snapshot region (x2: which=0 curr-candidate A, which=1 candidate B; JS
-// alternates and tells render() which one is CURRENT):
-//   0  seq        u32
-//   4  tickMs     f32
-//   8  foodX      i32   (-1 = no food)
-//   12 foodY      i32
-//   16 nPlayers   i32
-//   20 nTrails    i32
-//   24 nPickups   i32
-//   28 nShells    i32
-//   32 nWalls     i32   (grid decay / anti-turtling obstacles, v3.8.0)
-//   36 nPortals   i32   (wormhole portal markers, 2026-07-20 -- was pad)
-//   40 players[MAX_PLAYERS] stride 64:
-//        0 present i32, 4 alive i32, 8 colorHead u32 (ABGR byte order:
-//        r=low byte), 12 colorBody u32, 16 dirX i32, 20 dirY i32,
-//        24 moveMs f32, 28 boost i32, 32 sliding i32, 36 bodyLen i32,
-//        40 bodyOff i32 (segment index into body pool), 44 heldIdx i32
-//        (HELD-powerup type index for the glow, -1 = none), 48 activeIdx i32
-//        (active-powerup type index for the tail-drain/speed jetstream,
-//        -1 = none), 52 activePct f32 (fraction of the active powerup
-//        remaining, 1..0), 56 wormholeCharge i32 (glow alternates between
-//        the held color and the wormhole color when both are ready),
-//        60 scissorsCharge i32 (v4.5.0 -- a SEPARATE head-only rotated
-//        icon, NOT part of the heldIdx/wormholeCharge glow-alternation)
-//   +players: body pool, MAX_SEGS x {x:i16, y:i16}
-//   +pool: trails, MAX_TRAILS stride 8: {x:i16, y:i16, type:i16, pad}
-//   +trails: pickups, MAX_PICKUPS stride 16: {x:i32, y:i32, type:i32, id:i32}
-//   +pickups: shells, MAX_SHELLS stride 8: {x:i32, y:i32}
-//   +shells: walls, MAX_WALLS stride 16: {x:i32, y:i32, state:i32 (0 warn/
-//        1 solid/2 fading), id:i32 (seeds the pulse phase, like pickups)}
-//   +walls: portals, MAX_PORTALS stride 12: {x:i32, y:i32, id:i32} --
-//        wormhole entry/exit markers (2026-07-20 rework)
-//
-// Frame-input region (written every frame BEFORE render()):
-//   0  interpolate i32, 4 boostTrail i32, 8 slideDust i32, 12 foodHidden i32
-//   16 recvElapsedMs f32   (now - currSnap.recvTime; relative so f32 is safe)
-//   20 nFlashes i32
-//   24 flashes[MAX_FLASHES] stride 16: {slot i32, dirIdx i32 (0 up/1 down/
-//        2 left/3 right), elapsedMs f32, durMs f32}
-//   152 nGlides i32
-//   156 glides[MAX_GLIDES] stride 32: {slot, fromX, fromY, toX, toY (i32),
-//        elapsedMs f32, durMs f32, pad}
-//   412 nExplosions i32
-//   416 explosions[MAX_EXPLOSIONS] stride 16: {x i32, y i32, radius f32, age f32}
-//   672 nLocals i32
-//   676 locals[MAX_LOCALS] stride 12: {slot i32, len i32, off i32 (into the
-//        local body pool)}
-//   724 heldGlow i32 (clientFx.heldGlow toggle)
-//   728 powerupFx i32 (clientFx.powerupFx toggle)
-//   732 nPflash i32
-//   736 pflashes[MAX_PFLASHES] stride 16: {slot i32, colorIdx i32, age f32, pad}
-//   864 nDust i32   (drift dust particles, v3.4.0 -- one per slid-through cell)
-//   868 dust[MAX_DUST] stride 12: {x i32, y i32, age f32}
-//   3940 local body pool, MAX_LOCAL_SEGS x {x:i16, y:i16}
-//   FR_NFOODS/FR_FOODS (computed, after the local body pool): foods
-//   FR_NWALLSHATTER/FR_WALLSHATTER (computed, after foods): scissors
-//        wall-shatter fx (v4.5.0), stride 12: {x i32, y i32, age f32}
-//
-// Instance buffer (output) stride 32:
-//   0 x f32, 4 y f32, 8 w f32, 12 h f32, 16 color u32 (ABGR: r low byte,
-//   alpha high byte), 20 kind f32 (0 rect / 1 ellipse / 2 ring), 24 rot f32,
-//   28 param f32 (ring: inner radius as fraction of outer)
-
-const MAX_PLAYERS: i32 = 8;
-const MAX_SEGS: i32 = 16384;
-const MAX_TRAILS: i32 = 8192;
-const MAX_PICKUPS: i32 = 32;
-const MAX_SHELLS: i32 = 16;
-const MAX_WALLS: i32 = 32;
-const MAX_PORTALS: i32 = 16;
-const MAX_FLASHES: i32 = 8;
-const MAX_GLIDES: i32 = 8;
-const MAX_EXPLOSIONS: i32 = 16;
-const MAX_PFLASHES: i32 = 8;
-const MAX_DUST: i32 = 256;
-const MAX_FOODS: i32 = 32;
-const MAX_WALLSHATTERS: i32 = 8;
-const MAX_LOCALS: i32 = 4;
-const MAX_LOCAL_SEGS: i32 = 16384;
-const INSTANCE_CAP: i32 = 40960;
-
-// snapshot-internal offsets. Player stride 64: fields 0..52 as before, plus
-// +56 wormholeCharge i32 (and 4 bytes of pad to stay 8-aligned).
-const SNAP_NWALLS: i32 = 32;
-const SNAP_NPORTALS: i32 = 36; // wormhole portals count (was pad)
-const SNAP_PLAYERS: i32 = 40; // was 32; +8 for nWalls + pad (v3.8.0)
-const PLAYER_STRIDE: i32 = 64;
-const SNAP_BODY: i32 = SNAP_PLAYERS + MAX_PLAYERS * PLAYER_STRIDE;
-const SNAP_TRAILS: i32 = SNAP_BODY + MAX_SEGS * 4;
-const SNAP_PICKUPS: i32 = SNAP_TRAILS + MAX_TRAILS * 8;
-const SNAP_SHELLS: i32 = SNAP_PICKUPS + MAX_PICKUPS * 16;
-const SNAP_WALLS: i32 = SNAP_SHELLS + MAX_SHELLS * 8;
-const SNAP_PORTALS: i32 = SNAP_WALLS + MAX_WALLS * 16;
-const SNAP_SIZE: i32 = SNAP_PORTALS + MAX_PORTALS * 12;
-
-// frame-input offsets
-const FR_FLAGS: i32 = 0;
-const FR_RECV_ELAPSED: i32 = 16;
-const FR_NFLASHES: i32 = 20;
-const FR_FLASHES: i32 = 24;
-const FR_NGLIDES: i32 = 152;
-const FR_GLIDES: i32 = 156;
-const FR_NEXPL: i32 = 412;
-const FR_EXPL: i32 = 416;
-const FR_NLOCALS: i32 = 672;
-const FR_LOCALS: i32 = 676;
-const FR_HELDGLOW: i32 = 724;
-const FR_POWERFX: i32 = 728;   // clientFx.powerupFx toggle
-const FR_NPFLASH: i32 = 732;   // powerup activation flashes
-const FR_PFLASH: i32 = 736;    // stride 16: {slot i32, colorIdx i32, age f32, pad}
-const FR_NDUST: i32 = 864;     // 736 + MAX_PFLASHES(8) * 16
-const FR_DUST: i32 = 868;      // stride 12: {x i32, y i32, age f32}
-const FR_LOCAL_BODY: i32 = 3940; // 868 + MAX_DUST(256) * 12
-// Foods (v3.5.0) appended after the local body pool: count then {x,y} pairs.
-// Re-encoded per frame so predicted-eat hiding is per-frame (an eaten food is
-// simply omitted from the array).
-const FR_NFOODS: i32 = FR_LOCAL_BODY + MAX_LOCAL_SEGS * 4;
-const FR_FOODS: i32 = FR_NFOODS + 4;   // stride 12: {x i32, y i32, bounty i32}
-// Scissors wall-shatter fx (v4.5.0), appended right after foods (the last
-// dynamic-count section). Must match public/js/render.js FR_WALLSHATTER_OFF.
-const FR_NWALLSHATTER: i32 = FR_FOODS + MAX_FOODS * 12;
-const FR_WALLSHATTER: i32 = FR_NWALLSHATTER + 4; // stride 12: {x i32, y i32, age f32}
-const FRAME_SIZE: i32 = FR_WALLSHATTER + MAX_WALLSHATTERS * 12;
-
-const KIND_RECT: f32 = 0;
-const KIND_ELLIPSE: f32 = 1;
-const KIND_RING: f32 = 2;
-
-// Colors, packed ABGR (r = low byte, a = high byte) to match a little-endian
-// Uint32Array view over RGBA bytes. Values mirror the old render.js exactly.
-function rgba(r: u32, g: u32, b: u32, a: u32): u32 { return r | (g << 8) | (b << 16) | (a << 24); }
-const COLOR_FOOD: u32 = rgba(0xee, 0x33, 0x33, 255);        // #e33
-const COLOR_FOOD_BOUNTY: u32 = rgba(0xff, 0xcc, 0x00, 255); // #fc0 piñata gold
-// Piñata candy-burst palette (mirrors render2d.js CANDY_COLORS): gold / pink /
-// cyan / lime. CANDY_N particle count must match render2d.js CANDY_N.
-const CANDY_N: i32 = 14;
-const WALLSHATTER_N: i32 = 10;
-const CANDY_GOLD: u32 = rgba(0xff, 0xcc, 0x00, 255); // #ffcc00
-const CANDY_PINK: u32 = rgba(0xff, 0x44, 0x99, 255); // #ff4499
-const CANDY_CYAN: u32 = rgba(0x44, 0xcc, 0xff, 255); // #44ccff
-const CANDY_LIME: u32 = rgba(0x77, 0xee, 0x44, 255); // #77ee44
-function candyColor(i: i32): u32 {
-  const m = i & 3;
-  if (m == 0) return CANDY_GOLD;
-  if (m == 1) return CANDY_PINK;
-  if (m == 2) return CANDY_CYAN;
-  return CANDY_LIME;
-}
-const COLOR_TRAIL_ICE: u32 = rgba(150, 225, 255, 166);      // rgba(150,225,255,0.65)
-const COLOR_TRAIL_POISON: u32 = rgba(110, 210, 70, 153);    // rgba(110,210,70,0.6)
-const COLOR_TRAIL_BANANA: u32 = rgba(255, 221, 68, 153);    // rgba(255,221,68,0.6)
-const COLOR_TRAIL_FALLBACK: u32 = rgba(255, 255, 255, 51);  // rgba(255,255,255,0.2)
-const COLOR_SHELL: u32 = rgba(0x11, 0x44, 0xee, 255);       // #14e deep royal blue (v3.6.2)
-const COLOR_SHELL_HILIGHT: u32 = rgba(0xdd, 0xff, 0xff, 255); // #dff
-const COLOR_JETSTREAM: u32 = rgba(0x99, 0xdd, 0xff, 255);   // #9df
-const COLOR_DUST: u32 = rgba(0xcc, 0xcc, 0xcc, 255);        // #ccc
-const COLOR_WHITE: u32 = rgba(255, 255, 255, 255);
-const COLOR_BLACK: u32 = rgba(0, 0, 0, 255);
-const COLOR_BANANA_BODY: u32 = rgba(0xff, 0xdd, 0x44, 255); // #fd4
-const COLOR_BANANA_TIP: u32 = rgba(0xaa, 0x77, 0x00, 255);  // #a70
-const COLOR_BANANA_SPOT: u32 = rgba(0x66, 0x33, 0x00, 255); // #630 ripeness speckle
-const COLOR_SCISSORS_BLADE: u32 = rgba(0xdd, 0xdd, 0xee, 255); // #dde
-const COLOR_SCISSORS_TIP: u32 = rgba(0xff, 0xff, 0xff, 255);   // #fff
-const COLOR_SCISSORS_PIVOT: u32 = rgba(0x33, 0x33, 0x33, 255); // #333
-const COLOR_SCISSORS_HANDLE: u32 = rgba(0xee, 0x33, 0x33, 255); // #e33
-// Scissors wall-shatter debris palette (v4.5.0): stone/gray, distinct from
-// the pinata candy-burst gold/pink/cyan/lime above so "wall breaking" never
-// reads as "food bursting." Must mirror render2d.js DEBRIS_COLORS exactly.
-const DEBRIS_1: u32 = rgba(0x99, 0x99, 0x99, 255); // #999
-const DEBRIS_2: u32 = rgba(0x77, 0x55, 0x33, 255); // #753
-const DEBRIS_3: u32 = rgba(0x55, 0x55, 0x55, 255); // #555
-const DEBRIS_4: u32 = rgba(0x44, 0x22, 0x00, 255); // #420
-function debrisColor(i: i32): u32 {
-  const m = i & 3;
-  if (m == 0) return DEBRIS_1;
-  if (m == 1) return DEBRIS_2;
-  if (m == 2) return DEBRIS_3;
-  return DEBRIS_4;
-}
-// Grid decay / anti-turtling obstacles (v3.8.1): the solid state is a
-// pixel-art spike trap (see spikeVal/spikeColor below), not a flat fill --
-// a plain gray square read as just another powerup pickup (maintainer
-// feedback on v3.8.0). The warn (telegraph) state was a translucent flat
-// orange full-tile fill; recolored/reshaped to a small red "!"
-// (see warnVal/warnColor below) since the flat orange read too close to the
-// speedBoost powerup tint (#f50). Must mirror render2d.js WALL_WARN_COLORS
-// exactly.
-const WALL_WARN_1: u32 = rgba(0xff, 0x33, 0x33, 255); // bright core
-const WALL_WARN_2: u32 = rgba(0x99, 0x00, 0x00, 255); // dark shade
-const WALL_SPIKE_1: u32 = rgba(0x9a, 0x9a, 0x9a, 255); // mid-gray body
-const WALL_SPIKE_2: u32 = rgba(0xee, 0xee, 0xee, 255); // bright tip highlight
-const WALL_SPIKE_3: u32 = rgba(0x4a, 0x4a, 0x4a, 255); // dark shadow/gap
-// "!" pixel-art (5x5 sub-grid): 3-wide shaded stem (cols 1-3) for rows
-// 0-2, blank gap row 3, dot on row 4. Outer columns (0, 4) stay empty so
-// the glyph reads as a narrow mark, not a block. Must mirror render2d.js
-// warnVal()/WALL_WARN_COLORS exactly for parity.
-@inline
-function warnVal(r: i32, c: i32): i32 {
-  if (r == 3) return 0;
-  if (c == 0 || c == 4) return 0;
-  return c == 2 ? 1 : 2;
-}
-@inline
-function warnColor(v: i32): u32 {
-  return v == 1 ? WALL_WARN_1 : WALL_WARN_2;
-}
-// Spike pixel-art (5x5 sub-grid): three spike columns (0/2/4) alternate
-// tip-then-body down the cell, same rect-composition technique as
-// bananaVal() above -- must mirror render2d.js spikeVal()/SPIKE_COLORS
-// exactly for parity.
-@inline
-function spikeVal(r: i32, c: i32): i32 {
-  if (r == 0) return (c % 2 == 0) ? 2 : 3;
-  if (r == 1) return (c % 2 == 0) ? 1 : 2;
-  if (r == 2) return 1;
-  if (r == 3) return (c % 2 == 0) ? 3 : 1;
-  return 3;
-}
-@inline
-function spikeColor(v: i32): u32 {
-  if (v == 2) return WALL_SPIKE_2;
-  if (v == 3) return WALL_SPIKE_3;
-  return WALL_SPIKE_1;
-}
-
-// Pickup colors by type index (must match the facade's POWERUP_TYPE_INDEX
-// order): 0 wormhole #a3f, 1 growthSpurt #fe0, 2 iceTrail #9df,
-// 3 poisonTrail #4a2, 4 speedBoost #f50, 5 blueShell #14e,
-// 6 bananaTrail #fd4, 7 helloWorld #0ff. growthSpurt/speedBoost recolored in
-// v3.6.2 for contrast (vivid yellow vs hot red-orange); keep in sync with
-// render2d.js POWERUP_STYLE.
-function pickupColor(t: i32): u32 {
-  if (t == 0) return rgba(0xaa, 0x33, 0xff, 255);
-  if (t == 1) return rgba(0xff, 0xee, 0x00, 255);
-  if (t == 2) return rgba(0x99, 0xdd, 0xff, 255);
-  if (t == 3) return rgba(0x44, 0xaa, 0x22, 255);
-  if (t == 4) return rgba(0xff, 0x55, 0x00, 255);
-  if (t == 5) return rgba(0x11, 0x44, 0xee, 255);
-  if (t == 6) return rgba(0xff, 0xdd, 0x44, 255);
-  if (t == 7) return rgba(0x00, 0xff, 0xff, 255);
-  if (t == 8) return rgba(0xcc, 0xcc, 0xdd, 255); // scissors fallback swatch (drawn as pixel-art, not this flat color)
-  return COLOR_WHITE;
-}
-function trailColor(t: i32): u32 {
-  if (t == 2) return COLOR_TRAIL_ICE;     // iceTrail
-  if (t == 3) return COLOR_TRAIL_POISON;  // poisonTrail
-  if (t == 6) return COLOR_TRAIL_BANANA;  // bananaTrail
-  return COLOR_TRAIL_FALLBACK;
-}
+// Split across sibling files (asc bundles local imports from this entry
+// point, so only THIS file's path goes on the asc command line):
+//   layout.ts       -- the full memory-layout protocol doc + every offset/
+//                      size constant (shared byte-for-byte with
+//                      public/js/render.js).
+//   colors.ts       -- the ABGR color palette + type/id -> color lookups.
+//   art.ts          -- pixel-art bitmap lookups (banana/scissors/wall
+//                      glyphs) + small interpolation/direction math helpers.
+//   instbuf.ts       -- the output instance buffer + its inst() writer.
+//   draw-players.ts -- the per-frame player-body draw loop (the single
+//                      largest section of render(), split out for size).
+// This file keeps the mutable snapshot/frame-input globals, init()/pointer
+// exports, and render() itself (minus the player loop).
+import {
+  MAX_TRAILS, MAX_PICKUPS, MAX_SHELLS, MAX_WALLS, MAX_PORTALS,
+  MAX_FLASHES, MAX_GLIDES, MAX_EXPLOSIONS, MAX_PFLASHES, MAX_DUST, MAX_FOODS,
+  MAX_WALLSHATTERS, MAX_LOCALS, MAX_PLAYERS, INSTANCE_CAP,
+  SNAP_NWALLS, SNAP_NPORTALS, SNAP_PORTALS, SNAP_SIZE,
+  SNAP_TRAILS, SNAP_PICKUPS, SNAP_SHELLS, SNAP_WALLS,
+  FR_FLAGS, FR_RECV_ELAPSED, FR_NFLASHES, FR_NGLIDES,
+  FR_NEXPL, FR_EXPL, FR_NLOCALS, FR_HELDGLOW, FR_POWERFX,
+  FR_NPFLASH, FR_NDUST, FR_DUST, FR_NFOODS,
+  FR_FOODS, FR_NWALLSHATTER, FR_WALLSHATTER, FRAME_SIZE,
+  KIND_RECT, KIND_ELLIPSE, KIND_RING,
+} from "./layout";
+import {
+  COLOR_FOOD, COLOR_FOOD_BOUNTY, CANDY_N, WALLSHATTER_N, candyColor,
+  COLOR_SHELL, COLOR_SHELL_HILIGHT, COLOR_DUST,
+  COLOR_BANANA_TIP, COLOR_BANANA_SPOT, COLOR_BANANA_BODY,
+  debrisColor, pickupColor, trailColor,
+} from "./colors";
+import { bananaVal, warnVal, warnColor, spikeVal, spikeColor, scissorsVal, scissorsColor } from "./art";
+import { instBuf, allocInstBuf, resetInstN, getInstN, inst } from "./instbuf";
+import { drawPlayers } from "./draw-players";
 
 let snapA: usize = 0;
 let snapB: usize = 0;
 let frameIn: usize = 0;
-let instBuf: usize = 0;
 let gridCols: i32 = 0;
 let gridRows: i32 = 0;
 let cellSize: i32 = 0;
 let cellGap: i32 = 1;
-let instN: i32 = 0;
 
 export function init(cols: i32, rows: i32, cs: i32): void {
   if (snapA == 0) {
     snapA = heap.alloc(SNAP_SIZE);
     snapB = heap.alloc(SNAP_SIZE);
     frameIn = heap.alloc(FRAME_SIZE);
-    instBuf = heap.alloc(INSTANCE_CAP * 32);
+    allocInstBuf();
   }
   gridCols = cols;
   gridRows = rows;
@@ -292,92 +72,11 @@ export function frameInputPtr(): usize { return frameIn; }
 export function instancePtr(): usize { return instBuf; }
 export function instanceCapacity(): i32 { return INSTANCE_CAP; }
 
-// @ts-ignore: decorator valid in AssemblyScript
-@inline
-function inst(x: f32, y: f32, w: f32, h: f32, color: u32, alphaMul: f32, kind: f32, rot: f32, param: f32): void {
-  if (instN >= INSTANCE_CAP) return;
-  const o = instBuf + <usize>(instN << 5);
-  store<f32>(o, x);
-  store<f32>(o, y, 4);
-  store<f32>(o, w, 8);
-  store<f32>(o, h, 12);
-  let a = <u32>(<f32>(color >>> 24) * (alphaMul < 0 ? 0 : (alphaMul > 1 ? 1 : alphaMul)));
-  store<u32>(o, (color & 0x00ffffff) | (a << 24), 16);
-  store<f32>(o, kind, 20);
-  store<f32>(o, rot, 24);
-  store<f32>(o, param, 28);
-  instN++;
-}
-
-// Pixel-art banana bitmap (5x5), 0 empty / 1 body / 2 tip / 3 ripeness spot
-// -- must match render2d.js BANANA_ART exactly (same rows) so the two
-// renderers agree. Spots at (1,3) and (3,0) added in v3.6.2.
-@inline
-function bananaVal(r: i32, c: i32): i32 {
-  if (r == 0) return c == 3 ? 1 : (c == 4 ? 2 : 0);
-  if (r == 1) return c == 2 ? 1 : (c == 3 ? 3 : 0);
-  if (r == 2) return (c == 1 || c == 2) ? 1 : 0;
-  if (r == 3) return c == 0 ? 3 : (c == 1 ? 1 : 0);
-  return c == 0 ? 2 : (c == 1 ? 1 : 0);
-}
-// Pixel-art scissors bitmap (5x5), canonical "facing up" orientation --
-// must match render2d.js SCISSORS_ART exactly (same rows): 1 blade shaft,
-// 2 blade tip, 3 pivot rivet, 4 handle loop.
-@inline
-function scissorsArt(r: i32, c: i32): i32 {
-  if (r == 0) return (c == 1 || c == 3) ? 2 : 0;
-  if (r == 1) return (c == 1 || c == 3) ? 1 : 0;
-  if (r == 2) return c == 2 ? 3 : 0;
-  return (c == 0 || c == 4) ? 4 : 0;
-}
-// dirIdx: 0 up, 1 down, 2 left, 3 right (matches dirVX/dirVY below). Rotates
-// the 5x5 lookup by remapping (r,c) before indexing the canonical up-facing
-// bitmap -- must mirror render2d.js scissorsVal() exactly for parity.
-@inline
-function scissorsVal(r: i32, c: i32, dirIdx: i32): i32 {
-  if (dirIdx == 1) return scissorsArt(4 - r, 4 - c);
-  if (dirIdx == 3) return scissorsArt(4 - c, r);
-  if (dirIdx == 2) return scissorsArt(c, 4 - r);
-  return scissorsArt(r, c);
-}
-@inline
-function scissorsColor(v: i32): u32 {
-  if (v == 2) return COLOR_SCISSORS_TIP;
-  if (v == 3) return COLOR_SCISSORS_PIVOT;
-  if (v == 4) return COLOR_SCISSORS_HANDLE;
-  return COLOR_SCISSORS_BLADE;
-}
-// dx/dy (a snake's dir vector) -> the 0 up/1 down/2 left/3 right dirIdx
-// scissorsVal expects. Mirrors render2d.js dirIdxFromVec().
-@inline
-function dirIdxFromDelta(dx: i32, dy: i32): i32 {
-  if (dy == -1) return 0;
-  if (dy == 1) return 1;
-  if (dx == -1) return 2;
-  if (dx == 1) return 3;
-  return 0;
-}
-@inline
-function easeOutCubic(t: f32): f32 { const u: f32 = <f32>1 - t; return <f32>1 - u * u * u; }
-@inline
-function lerpf(a: f32, b: f32, t: f32): f32 { return a + (b - a) * t; }
-
-// dirIdx vectors: 0 up, 1 down, 2 left, 3 right
-@inline
-function dirVX(d: i32): i32 { return d == 2 ? -1 : (d == 3 ? 1 : 0); }
-@inline
-function dirVY(d: i32): i32 { return d == 0 ? -1 : (d == 1 ? 1 : 0); }
-
-@inline
-function segX(pool: usize, idx: i32): i32 { return <i32>load<i16>(pool + <usize>(idx << 2)); }
-@inline
-function segY(pool: usize, idx: i32): i32 { return <i32>load<i16>(pool + <usize>(idx << 2), 2); }
-
 // Returns the number of instances written. `now` is performance.now() (f64
 // for precision in the sin/phase animations); which selects the CURRENT
 // snapshot region (the other one is the previous snapshot).
 export function render(now: f64, which: i32): i32 {
-  instN = 0;
+  resetInstN();
   const curr = which == 0 ? snapA : snapB;
   const prev = which == 0 ? snapB : snapA;
   const cs = <f32>cellSize;
@@ -595,184 +294,11 @@ export function render(now: f64, which: i32): i32 {
   const nFlashes = min(load<i32>(frameIn + FR_NFLASHES), MAX_FLASHES);
   const nGlides = min(load<i32>(frameIn + FR_NGLIDES), MAX_GLIDES);
   const nPflash = min(load<i32>(frameIn + FR_NPFLASH), MAX_PFLASHES);
-  for (let i = 0; i < nPlayers; i++) {
-    const p = curr + SNAP_PLAYERS + <usize>(i * PLAYER_STRIDE);
-    if (!load<i32>(p)) continue; // not present
-    const alive = load<i32>(p, 4) != 0;
-    const colorHead = load<u32>(p, 8);
-    const colorBody = load<u32>(p, 12);
-    // Powerup timer tail-drain: head-side nActive segments tinted the powerup
-    // color (must match render2d.js segFill exactly for parity).
-    const activeIdx = load<i32>(p, 48);
-    const activePct = load<f32>(p, 52);
-    const powerActive = powerFx && alive && activeIdx >= 0;
-    const activeColor = powerActive ? pickupColor(activeIdx) : 0;
-    // local predicted body override?
-    let bodyPool = curr + SNAP_BODY;
-    let bodyLen = load<i32>(p, 36);
-    let bodyOff = load<i32>(p, 40);
-    let isLocal = false;
-    for (let l = 0; l < nLocals; l++) {
-      const lo = frameIn + FR_LOCALS + <usize>(l * 12);
-      if (load<i32>(lo) == i) {
-        isLocal = true;
-        bodyLen = load<i32>(lo, 4);
-        bodyOff = load<i32>(lo, 8);
-        bodyPool = frameIn + FR_LOCAL_BODY;
-        break;
-      }
-    }
-    if (bodyLen <= 0) continue;
-    // glide?
-    let glideAt: usize = 0;
-    for (let g = 0; g < nGlides; g++) {
-      const go = frameIn + FR_GLIDES + <usize>(g << 5);
-      if (load<i32>(go) == i) { glideAt = go; break; }
-    }
-    // smooth interpolation eligible?
-    const pPrev = prev + SNAP_PLAYERS + <usize>(i * PLAYER_STRIDE);
-    const smooth = interpolate && !isLocal && alive && load<i32>(pPrev) != 0 && load<i32>(pPrev, 36) > 0;
-    let t: f32 = 1;
-    if (smooth) {
-      const moveMs = load<f32>(p, 24);
-      const span = moveMs > 0 ? moveMs : (tickMs > 0 ? tickMs : 100);
-      t = recvElapsed / span;
-      if (t < 0) t = 0;
-      if (t > 1) t = 1;
-    }
-    const prevPool = prev + SNAP_BODY;
-    const prevLen = smooth ? load<i32>(pPrev, 36) : 0;
-    const prevOff = smooth ? load<i32>(pPrev, 40) : 0;
-    // Held-powerup glow: a pulsing halo in the powerup's color under every
-    // segment, visible to EVERYONE (the server broadcasts heldPowerup to all
-    // players precisely so opponents can plan counterplay). When BOTH a held
-    // powerup and a wormhole charge are ready, the glow alternates colors
-    // every 600ms -- same list order and clock formula as render2d.js's
-    // readyGlows (held first, wormhole second) so parity stays exact.
-    const heldIdx = load<i32>(p, 44);
-    const wormCharge = load<i32>(p, 56) != 0;
-    if (heldGlow && alive && (heldIdx >= 0 || wormCharge)) {
-      let glowIdx = heldIdx >= 0 ? heldIdx : 0; // 0 = wormhole type index
-      if (heldIdx >= 0 && wormCharge) {
-        if (<i32>Math.floor(now / 600.0) % 2 == 1) glowIdx = 0;
-      }
-      const glowAlpha = <f32>(0.22 + 0.13 * Math.sin(now / 250.0 + <f64>i));
-      const grow = cs * <f32>0.35;
-      const glowColor = pickupColor(glowIdx);
-      for (let si = 0; si < bodyLen; si++) {
-        inst(<f32>segX(bodyPool, bodyOff + si) * cs - grow, <f32>segY(bodyPool, bodyOff + si) * cs - grow, cell + grow * 2, cell + grow * 2, glowColor, glowAlpha, KIND_ELLIPSE, 0, 0);
-      }
-    }
-    // Scissors equipped (v4.5.0): the pixel-art scissors icon superimposed
-    // directly over the head, rotated to face the current direction of
-    // travel -- a SEPARATE, new primitive from the held-glow halo above
-    // (maintainer request: "just have scissors superimposed", not also the
-    // pulsing halo). Grid-aligned (not interpolated), same reasoning as the
-    // halo, for 2D/wasm parity. Must mirror render2d.js's equivalent block.
-    const scissorsCharge = load<i32>(p, 60) != 0;
-    if (alive && scissorsCharge) {
-      const sHeadX = segX(bodyPool, bodyOff), sHeadY = segY(bodyPool, bodyOff);
-      const sDirIdx = dirIdxFromDelta(load<i32>(p, 16), load<i32>(p, 20));
-      const sox = <f32>sHeadX * cs, soy = <f32>sHeadY * cs;
-      for (let r = 0; r < 5; r++) {
-        for (let c = 0; c < 5; c++) {
-          const v = scissorsVal(r, c, sDirIdx);
-          if (v == 0) continue;
-          const x0 = <f32>(<i32>Math.round(<f64>c * <f64>cell / 5.0));
-          const x1 = <f32>(<i32>Math.round(<f64>(c + 1) * <f64>cell / 5.0));
-          const y0 = <f32>(<i32>Math.round(<f64>r * <f64>cell / 5.0));
-          const y1 = <f32>(<i32>Math.round(<f64>(r + 1) * <f64>cell / 5.0));
-          inst(sox + x0, soy + y0, x1 - x0, y1 - y0, scissorsColor(v), 1, KIND_RECT, 0, 0);
-        }
-      }
-    }
-    const nActive = powerActive ? <i32>Math.ceil(<f64>activePct * <f64>bodyLen) : 0;
-    let headPx = <f32>segX(bodyPool, bodyOff) * cs;
-    let headPy = <f32>segY(bodyPool, bodyOff) * cs;
-    if (glideAt != 0) {
-      const gt0 = load<f32>(glideAt, 20) / load<f32>(glideAt, 24);
-      const et = easeOutCubic(gt0 < 0 ? 0 : (gt0 > 1 ? 1 : gt0));
-      headPx = lerpf(<f32>load<i32>(glideAt, 4) * cs, <f32>load<i32>(glideAt, 12) * cs, et);
-      headPy = lerpf(<f32>load<i32>(glideAt, 8) * cs, <f32>load<i32>(glideAt, 16) * cs, et);
-      inst(headPx, headPy, cell, cell, nActive > 0 ? activeColor : colorHead, 1, KIND_RECT, 0, 0);
-      for (let si = 1; si < bodyLen; si++) {
-        inst(<f32>segX(bodyPool, bodyOff + si) * cs, <f32>segY(bodyPool, bodyOff + si) * cs, cell, cell, si < nActive ? activeColor : colorBody, 1, KIND_RECT, 0, 0);
-      }
-    } else if (smooth) {
-      for (let si = 0; si < bodyLen; si++) {
-        const sx = segX(bodyPool, bodyOff + si), sy = segY(bodyPool, bodyOff + si);
-        let x = <f32>sx * cs, y = <f32>sy * cs;
-        if (t < 1 && si < prevLen) {
-          const px2 = segX(prevPool, prevOff + si), py2 = segY(prevPool, prevOff + si);
-          const dist = abs(px2 - sx) + abs(py2 - sy);
-          if (dist >= 1 && dist <= 2) {
-            x = lerpf(<f32>px2, <f32>sx, t) * cs;
-            y = lerpf(<f32>py2, <f32>sy, t) * cs;
-          }
-        }
-        if (si == 0) { headPx = x; headPy = y; }
-        inst(x, y, cell, cell, si < nActive ? activeColor : (si == 0 ? colorHead : colorBody), 1, KIND_RECT, 0, 0);
-      }
-    } else {
-      for (let si = 0; si < bodyLen; si++) {
-        inst(<f32>segX(bodyPool, bodyOff + si) * cs, <f32>segY(bodyPool, bodyOff + si) * cs, cell, cell, si < nActive ? activeColor : (si == 0 ? colorHead : colorBody), 1, KIND_RECT, 0, 0);
-      }
-    }
-    if (!alive) {
-      for (let si = 0; si < bodyLen; si++) {
-        inst(<f32>segX(bodyPool, bodyOff + si) * cs, <f32>segY(bodyPool, bodyOff + si) * cs, cell, cell, COLOR_BLACK, <f32>0.5, KIND_RECT, 0, 0);
-      }
-    }
-    // boost jetstream (hold-boost)
-    const dirX = load<i32>(p, 16), dirY = load<i32>(p, 20);
-    if (alive && load<i32>(p, 28) != 0 && boostTrail && (dirX != 0 || dirY != 0)) {
-      for (let n = 0; n < 3; n++) {
-        const phase = <f32>(((now / 90.0) + <f64>n * 0.33) % 1.0);
-        const dist = phase * cs * <f32>1.5;
-        inst(headPx + cs / 2 - <f32>dirX * dist - cs * <f32>0.15, headPy + cs / 2 - <f32>dirY * dist - cs * <f32>0.15, cs * <f32>0.3, cs * <f32>0.3, COLOR_JETSTREAM, <f32>0.5 * (1 - phase), KIND_RECT, 0, 0);
-      }
-    }
-    // speedBoost-powerup ACTIVE jetstream (same shape, powerup color)
-    if (alive && powerFx && activeIdx == 4 && (dirX != 0 || dirY != 0)) {
-      const speedColor = pickupColor(4);
-      for (let n = 0; n < 3; n++) {
-        const phase = <f32>(((now / 90.0) + <f64>n * 0.33) % 1.0);
-        const dist = phase * cs * <f32>1.5;
-        inst(headPx + cs / 2 - <f32>dirX * dist - cs * <f32>0.15, headPy + cs / 2 - <f32>dirY * dist - cs * <f32>0.15, cs * <f32>0.3, cs * <f32>0.3, speedColor, <f32>0.5 * (1 - phase), KIND_RECT, 0, 0);
-      }
-    }
-    // input flash
-    for (let f = 0; f < nFlashes; f++) {
-      const fo = frameIn + FR_FLASHES + <usize>(f << 4);
-      if (load<i32>(fo) != i) continue;
-      const alpha: f32 = <f32>1 - load<f32>(fo, 8) / load<f32>(fo, 12);
-      if (alpha > 0) {
-        const d = load<i32>(fo, 4);
-        const vx = dirVX(d), vy = dirVY(d);
-        const stripW = max<f32>(3, <f32>Math.round(<f64>cs * 0.28));
-        if (vx == 1) inst(headPx + cs - stripW, headPy, stripW, cell, COLOR_WHITE, alpha, KIND_RECT, 0, 0);
-        else if (vx == -1) inst(headPx, headPy, stripW, cell, COLOR_WHITE, alpha, KIND_RECT, 0, 0);
-        else if (vy == 1) inst(headPx, headPy + cs - stripW, cell, stripW, COLOR_WHITE, alpha, KIND_RECT, 0, 0);
-        else if (vy == -1) inst(headPx, headPy, cell, stripW, COLOR_WHITE, alpha, KIND_RECT, 0, 0);
-      }
-      break;
-    }
-    // powerup activation flash: brief bright pop over every segment (grid
-    // positions, like heldGlow) -- matches render2d.js drawPowerFlash.
-    for (let f = 0; f < nPflash; f++) {
-      const fo = frameIn + FR_PFLASH + <usize>(f << 4);
-      if (load<i32>(fo) != i) continue;
-      const age = load<f32>(fo, 8);
-      const pfAlpha = (<f32>1 - age) * <f32>0.85;
-      if (pfAlpha > 0) {
-        const pfColor = pickupColor(load<i32>(fo, 4));
-        for (let si = 0; si < bodyLen; si++) {
-          inst(<f32>segX(bodyPool, bodyOff + si) * cs, <f32>segY(bodyPool, bodyOff + si) * cs, cell, cell, pfColor, pfAlpha, KIND_RECT, 0, 0);
-        }
-      }
-      break;
-    }
-  }
+  drawPlayers(
+    curr, prev, frameIn, now, cs, cell, tickMs, recvElapsed,
+    interpolate, heldGlow, powerFx, boostTrail,
+    nPlayers, nLocals, nFlashes, nGlides, nPflash,
+  );
   // Wormhole portals (2026-07-20 rework): purple pulsing ring + soft core
   // at each entry/exit cell, emitted after the player loop (portals sit ON
   // TOP of threading bodies) and before dust -- must match render2d.js
@@ -806,5 +332,5 @@ export function render(now: f64, which: i32): i32 {
     if (alpha <= 0) continue;
     inst(<f32>load<i32>(o) * cs + dustOff, <f32>load<i32>(o, 4) * cs + dustOff, dustSize, dustSize, COLOR_DUST, alpha, KIND_RECT, 0, 0);
   }
-  return instN;
+  return getInstN();
 }
