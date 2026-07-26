@@ -79,12 +79,43 @@ pub struct JoinOffer {
     pub expires_at: i64,
 }
 
+// What a food cell IS, for scoring/color/despawn purposes. `Normal` food
+// never expires; the other two are TTL'd (see Food::expires_at_tick) and
+// blink out client-side just before their timer runs out. Only PinataBounty
+// is worth double score and draws gold -- a scissors-cut still drops on a
+// timer (it's "catch-up" food too) but at normal red/normal value, per the
+// v5.1.0 split.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FoodKind {
+    Normal,
+    PinataBounty,
+    ScissorsCut,
+}
+
+impl FoodKind {
+    pub fn is_timed(self) -> bool {
+        self != FoodKind::Normal
+    }
+    pub fn is_gold(self) -> bool {
+        self == FoodKind::PinataBounty
+    }
+    // Score/growth value of eating one: gold pinata candy is worth double,
+    // everything else (including scissors-cut candy) is worth the usual 1.
+    pub fn value(self) -> i64 {
+        if self.is_gold() {
+            2
+        } else {
+            1
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Food {
     pub x: i32,
     pub y: i32,
-    pub bounty: bool,
-    pub expires_at_tick: i64, // only meaningful when bounty
+    pub kind: FoodKind,
+    pub expires_at_tick: i64, // only meaningful when kind.is_timed()
 }
 
 pub struct Pickup {

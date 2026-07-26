@@ -23,8 +23,8 @@ pub use conn::Conn;
 pub use game::Game;
 pub use snake::Snake;
 pub use types::{
-    dir_vector, hits_body, ActivePowerup, BlueShell, Cell, Explosion, Food, Input, JoinOffer,
-    KillEvent, LocalSeat, PerfCounters, Pickup, PortalFx, QueueEntry, Role, Trail, Wall,
+    dir_vector, hits_body, ActivePowerup, BlueShell, Cell, Explosion, Food, FoodKind, Input,
+    JoinOffer, KillEvent, LocalSeat, PerfCounters, Pickup, PortalFx, QueueEntry, Role, Trail, Wall,
     WallShatterFx, WsOut,
 };
 // pub(crate): visible anywhere in this crate, but not to external users of

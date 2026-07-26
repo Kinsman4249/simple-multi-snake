@@ -38,7 +38,7 @@ import {
   KIND_RECT, KIND_ELLIPSE, KIND_RING,
 } from "./layout";
 import {
-  COLOR_FOOD, COLOR_FOOD_BOUNTY, CANDY_N, WALLSHATTER_N, candyColor,
+  COLOR_FOOD, COLOR_FOOD_GOLD, CANDY_N, WALLSHATTER_N, candyColor,
   COLOR_SHELL, COLOR_SHELL_HILIGHT, COLOR_DUST,
   COLOR_BANANA_TIP, COLOR_BANANA_SPOT, COLOR_BANANA_BODY,
   debrisColor, pickupColor, trailColor,
@@ -178,12 +178,15 @@ export function render(now: f64, which: i32): i32 {
       }
     }
   }
-  // food (multi-food, from the frame region; eaten ones are omitted upstream).
-  // Stride 12: {x, y, bounty} -- piñata bounty food (bounty!=0) draws gold.
+  // food (multi-food, from the frame region; eaten AND blinked-out-dark TTL
+  // food are both omitted upstream -- see Render2D.foodVisible in
+  // render2d-core.js).
+  // Stride 12: {x, y, gold} -- only gold pinata-bounty food (gold!=0) draws
+  // gold; a TTL'd scissors-cut candy is plain red like normal food.
   const nFoods = min(load<i32>(frameIn + FR_NFOODS), MAX_FOODS);
   for (let i = 0; i < nFoods; i++) {
     const fo = frameIn + FR_FOODS + <usize>(i * 12);
-    const fCol = load<i32>(fo, 8) != 0 ? COLOR_FOOD_BOUNTY : COLOR_FOOD;
+    const fCol = load<i32>(fo, 8) != 0 ? COLOR_FOOD_GOLD : COLOR_FOOD;
     inst(<f32>load<i32>(fo) * cs, <f32>load<i32>(fo, 4) * cs, cell, cell, fCol, 1, KIND_RECT, 0, 0);
   }
   // pickups (pulse)

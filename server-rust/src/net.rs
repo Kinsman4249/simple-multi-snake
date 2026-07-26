@@ -48,23 +48,28 @@ fn color_view(idx: Option<usize>) -> Option<ColorView> {
     idx.and_then(|i| COLORS.get(i)).map(|(h, b)| ColorView { head: h, body: b })
 }
 
-// Food serializes as {x,y}, with the bounty fields only when set (matching
-// the JS objects, where normal food simply has no such keys).
+// Food serializes as {x,y}, with the timed-food fields only when set
+// (matching the JS objects, where normal food simply has no such keys).
+// `bounty` means "on a TTL, blinks out client-side"; `gold` separately means
+// "worth 2x and draws gold" -- only pinata-bounty candy is both, a
+// scissors-cut is `bounty` (timed) but not `gold` (plain red, normal value).
 // This is a "tuple struct" wrapping a borrowed &Food (see RUST-CHEATSHEET.md
 // on references) -- writing our own `impl Serialize` below (instead of
-// #[derive(Serialize)]) is how we get the "only include bounty fields when
-// bounty is true" behavior that a plain derive can't express.
+// #[derive(Serialize)]) is how we get the "only include these fields when
+// timed" behavior that a plain derive can't express.
 struct FoodView<'a>(&'a crate::state::Food);
 impl Serialize for FoodView<'_> {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         let f = self.0;
-        let n = if f.bounty { 4 } else { 2 };
+        let timed = f.kind.is_timed();
+        let n = if timed { 5 } else { 2 };
         let mut m = s.serialize_map(Some(n))?;
         m.serialize_entry("x", &f.x)?;
         m.serialize_entry("y", &f.y)?;
-        if f.bounty {
+        if timed {
             m.serialize_entry("bounty", &true)?;
             m.serialize_entry("expiresAtTick", &f.expires_at_tick)?;
+            m.serialize_entry("gold", &f.kind.is_gold())?;
         }
         m.end()
     }

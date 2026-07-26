@@ -15,7 +15,7 @@
 export function rgba(r: u32, g: u32, b: u32, a: u32): u32 { return r | (g << 8) | (b << 16) | (a << 24); }
 
 export const COLOR_FOOD: u32 = rgba(0xee, 0x33, 0x33, 255);        // #e33
-export const COLOR_FOOD_BOUNTY: u32 = rgba(0xff, 0xcc, 0x00, 255); // #fc0 piñata gold
+export const COLOR_FOOD_GOLD: u32 = rgba(0xff, 0xcc, 0x00, 255); // #fc0 piñata gold
 // Piñata candy-burst palette (mirrors render2d.js CANDY_COLORS): gold / pink /
 // cyan / lime. CANDY_N particle count must match render2d.js CANDY_N.
 export const CANDY_N: i32 = 14;

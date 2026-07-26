@@ -2,8 +2,7 @@
 // "pinata" bounty-scatter math used by both a snake death and a scissors
 // tail-cut.
 use super::Game;
-use crate::state::rand_below;
-use crate::state::types::{Cell, Food};
+use crate::state::{rand_below, Cell, Food, FoodKind};
 use rand::Rng;
 
 impl Game {
@@ -101,7 +100,7 @@ impl Game {
             }
         }
         if let Some(c) = chosen {
-            self.foods.push(Food { x: c.x, y: c.y, bounty: false, expires_at_tick: 0 });
+            self.foods.push(Food { x: c.x, y: c.y, kind: FoodKind::Normal, expires_at_tick: 0 });
             true
         } else {
             false
@@ -132,11 +131,11 @@ impl Game {
     // Bring the active (non-bounty) food count to the player-scaled target.
     pub fn ensure_foods(&mut self) {
         let target = self.target_food_count();
-        let mut normal = self.foods.iter().filter(|f| !f.bounty).count();
+        let mut normal = self.foods.iter().filter(|f| !f.kind.is_timed()).count();
         if normal > target {
             let mut remove = normal - target;
             self.foods.retain(|f| {
-                if f.bounty {
+                if f.kind.is_timed() {
                     return true;
                 }
                 if remove > 0 {
@@ -176,23 +175,36 @@ impl Game {
         living
     }
 
-    // Shared pinata scatter math (v3.6.6, generalized v4.5.0): scatters
-    // short-TTL candy around `anchor`, biased toward a random member of the
-    // lowest-scoring-players group (not always the single shortest), and
-    // queues the candy-burst explosion. `size_basis` drives both the candy
-    // count and how far the burst spreads -- a bigger snake/cut-off tail
-    // pops wider, pinata-style.
+    // Shared candy-scatter math (v3.6.6, generalized v4.5.0, re-parameterized
+    // by FoodKind in v5.1.0): scatters short-TTL candy around `anchor`,
+    // biased toward a random member of the lowest-scoring-players group (not
+    // always the single shortest), and queues the candy-burst explosion.
+    // `size_basis` drives both the candy count and how far the burst spreads
+    // -- a bigger snake/cut-off tail pops wider, pinata-style.
     //
-    // `is_bounty`: the min-length and player-count gates are both part of
-    // the "catch-up bounty" rubberband -- a full death or a cut taken off
-    // an OPPONENT only makes sense as a bounty at longer lengths, and only
-    // with someone else around to catch up. A self-inflicted loss (scissors
-    // now, other powerups later) isn't a bounty for anyone; it's just your
-    // own segments hitting the ground, so it drops at any length and even
+    // This is the crate-wide hook for "something died/was cut/exploded, drop
+    // candy" -- any future powerup that wants to spray timed food just calls
+    // this directly with whichever FoodKind it wants (gold-and-2x, or plain
+    // red like a scissors cut), instead of needing its own bespoke drop_*
+    // wrapper like the two below.
+    //
+    // `gated`: the min-length and player-count gates are both part of the
+    // "catch-up bounty" rubberband -- a full death or a cut taken off an
+    // OPPONENT only makes sense as a bounty at longer lengths, and only with
+    // someone else around to catch up. A self-inflicted loss (scissors now,
+    // other powerups later) isn't a bounty for anyone; it's just your own
+    // segments hitting the ground, so it drops at any length and even
     // playing solo -- callers pass false to skip both gates.
-    fn scatter_bounty(&mut self, exclude: usize, anchor: Cell, size_basis: usize, is_bounty: bool) {
+    pub(crate) fn scatter_food(
+        &mut self,
+        exclude: usize,
+        anchor: Cell,
+        size_basis: usize,
+        kind: FoodKind,
+        gated: bool,
+    ) {
         let p = &self.cfg.pinata;
-        if !p.enabled || (is_bounty && (size_basis < p.min_length || self.player_seat_count() < 2)) {
+        if !p.enabled || (gated && (size_basis < p.min_length || self.player_seat_count() < 2)) {
             return;
         }
         let count = p
@@ -233,7 +245,7 @@ impl Game {
                     continue; // one candy per cell, no stacking on existing entities
                 }
                 placed.push(Cell { x, y });
-                self.foods.push(Food { x, y, bounty: true, expires_at_tick });
+                self.foods.push(Food { x, y, kind, expires_at_tick });
                 break;
             }
         }
@@ -249,13 +261,16 @@ impl Game {
         let Some(s) = self.slots[dead_slot].as_ref() else { return };
         let body_len = s.body.len();
         let mid = s.body[body_len / 2];
-        self.scatter_bounty(dead_slot, mid, body_len, true);
+        self.scatter_food(dead_slot, mid, body_len, FoodKind::PinataBounty, true);
     }
 
-    // Scissors tail-cut bounty (v4.5.0): the severed segments of a self-cut
-    // or opponent-cut scatter the same way a corpse does, sized off the
-    // ORIGINAL (pre-cut) body length so a bigger snake's cut still sprays
-    // wide even though only the tail portion is actually being converted.
+    // Scissors tail-cut candy (v4.5.0; normal-value/red per v5.1.0): the
+    // severed segments of a self-cut or opponent-cut scatter the same way a
+    // corpse does, sized off the ORIGINAL (pre-cut) body length so a bigger
+    // snake's cut still sprays wide even though only the tail portion is
+    // actually being converted. Unlike a pinata death-burst, this is plain
+    // red/normal-value food (FoodKind::ScissorsCut) -- still TTL'd so it
+    // blinks out on the same timer, just not the 2x-gold catch-up bounty.
     // severed: &[Cell] -- a borrowed slice, see "Slices" in
     // RUST-CHEATSHEET.md.
     // is_self_cut: a self-cut's severed tail is your own loss, not a bounty
@@ -267,7 +282,7 @@ impl Game {
             return;
         }
         let mid = severed[severed.len() / 2];
-        self.scatter_bounty(exclude, mid, original_len, !is_self_cut);
+        self.scatter_food(exclude, mid, original_len, FoodKind::ScissorsCut, !is_self_cut);
     }
 
     // Clear and refill food (the placeFood test hook).

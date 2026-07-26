@@ -181,8 +181,12 @@ pub(crate) fn apply_movement_and_food(
         let mut grew = false;
         // Multi-food: remove the eaten cell; ensureFoods tops back up.
         if let Some(fi) = game.foods.iter().position(|f| f.x == h.x && f.y == h.y) {
-            game.slots[i].as_mut().unwrap().score += 1;
-            game.bump_food_rate_points(i, 1);
+            // Gold pinata bounty food is worth double; everything else
+            // (normal red food, and red-but-timed scissors-cut candy) is the
+            // usual 1.
+            let value = game.foods[fi].kind.value();
+            game.slots[i].as_mut().unwrap().score += value;
+            game.bump_food_rate_points(i, value);
             let mult = food_growth_multiplier(game.slots[i].as_ref().unwrap(), &game.cfg.powerups);
             for _ in 1..mult {
                 grow_segment(game, i);
@@ -380,8 +384,8 @@ pub(crate) fn expire_powerups_and_trails(game: &mut Game) {
     if game.trails.iter().any(|t| seq >= t.expires_at_tick) {
         game.trails.retain(|t| seq < t.expires_at_tick);
     }
-    if game.foods.iter().any(|f| f.bounty && seq >= f.expires_at_tick) {
-        game.foods.retain(|f| !(f.bounty && seq >= f.expires_at_tick));
+    if game.foods.iter().any(|f| f.kind.is_timed() && seq >= f.expires_at_tick) {
+        game.foods.retain(|f| !(f.kind.is_timed() && seq >= f.expires_at_tick));
     }
     for s in game.slots.iter_mut().flatten() {
         if let Some(a) = s.active_powerup {

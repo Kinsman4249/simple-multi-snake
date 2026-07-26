@@ -116,6 +116,28 @@ function drawCell(seg, color) {
 }
 function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
 function lerp(a, b, t) { return a + (b - a) * t; }
+// TTL'd food (pinata bounty AND scissors-cut candy, both f.bounty===true)
+// blinks out during its last FOOD_BLINK_WINDOW_MS instead of just vanishing,
+// so the timer reads as "about to go" rather than a silent pop. Normal food
+// (f.bounty falsy) has no TTL and is always visible.
+const FOOD_BLINK_WINDOW_MS = 1000;
+const FOOD_BLINK_INTERVAL_MS = 120;
+// Ms left before this food's server-side TTL retain() sweeps it, projected
+// forward from the snapshot using wall-clock time elapsed since it arrived
+// (currSnap.recvTime) so the blink stays smooth between broadcasts, not just
+// snapshot-to-snapshot.
+function foodRemainingMs(f, currSnap, now) {
+  if (!f.bounty) return Infinity;
+  const tickMs = currSnap.tickMs || 100;
+  const ticksLeft = f.expiresAtTick - currSnap.seq;
+  return ticksLeft * tickMs - (now - currSnap.recvTime);
+}
+function foodVisible(f, currSnap, now) {
+  const remaining = foodRemainingMs(f, currSnap, now);
+  if (remaining > FOOD_BLINK_WINDOW_MS) return true;
+  if (remaining <= 0) return false;
+  return Math.floor(remaining / FOOD_BLINK_INTERVAL_MS) % 2 === 0;
+}
 // Per-segment interpolation factor between the previous and current
 // snapshot, clamped to [0,1]. t is time elapsed since the current snapshot
 // arrived, over this player's own ms-per-cell -- so a boosting snake's
@@ -166,9 +188,12 @@ function draw(prevSnap, currSnap, localBodies, eatenKeys, fx, opts) {
   const foods = currSnap.foods || (currSnap.food ? [currSnap.food] : []);
   for (const f of foods) {
     const key = f.x + "," + f.y;
-    // Piñata bounty food draws GOLD (#fc0) vs normal red (#e33) so the
-    // fast-decaying feeding frenzy from a big corpse reads at a glance.
-    if (!eatenKeys || eatenKeys.indexOf(key) === -1) drawCell(f, f.bounty ? "#fc0" : "#e33");
+    if (eatenKeys && eatenKeys.indexOf(key) !== -1) continue;
+    // Only gold (pinata bounty, 2x value) food draws GOLD (#fc0); a
+    // scissors-cut is still TTL'd (f.bounty) but plain red like normal food.
+    // Both blink out over their last second instead of popping instantly.
+    if (!foodVisible(f, currSnap, now)) continue;
+    drawCell(f, f.gold ? "#fc0" : "#e33");
   }
   if (currSnap.powerupPickups) currSnap.powerupPickups.forEach(p => drawPickup(p, now));
   if (currSnap.blueShells) currSnap.blueShells.forEach(sh => drawBlueShell(sh, now));
@@ -287,4 +312,6 @@ function draw(prevSnap, currSnap, localBodies, eatenKeys, fx, opts) {
 // convention) so the facade (render.js) can re-export it to ui-gate.js's
 // captcha-screen color legend -- one source of truth, the legend can never
 // drift from the board.
-Object.assign(Render2D, { draw });
+// foodVisible is also used by render.js's wasm-path frame encoder, so the
+// blink timing can never drift between the 2D and wasm renderers.
+Object.assign(Render2D, { draw, foodVisible });

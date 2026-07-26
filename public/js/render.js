@@ -343,19 +343,26 @@ const Render = (() => {
     }
     i32[base + 168] = nL; // offset 672
     // Foods (v3.5.0): re-encoded each frame from currSnap.foods, minus any the
-    // local predictor is provisionally treating as eaten (per-frame hiding).
+    // local predictor is provisionally treating as eaten (per-frame hiding),
+    // and minus any TTL'd food currently in its blink-out-dark phase (v5.1.0)
+    // -- same technique as eaten-hiding, just gated on Render2D.foodVisible
+    // instead of eatenKeys, so the wasm path blinks in lockstep with the 2D
+    // fallback.
     const foods = currSnap.foods || (currSnap.food ? [currSnap.food] : []);
     const nFoodBase = (fp + FR_FOODS_OFF) >>> 2;
     let nFd = 0;
-    // Stride 3 i32 per food: {x, y, bounty} -- the bounty flag lets the wasm
-    // core color piñata food gold (mirrors render2d.js). Must match
-    // wasm/renderer.ts FR_FOODS stride (12).
+    // Stride 3 i32 per food: {x, y, gold} -- the gold flag lets the wasm core
+    // color pinata bounty food gold vs plain red (mirrors render2d.js); a
+    // scissors-cut is TTL'd but NOT gold. Must match wasm/renderer.ts
+    // FR_FOODS stride (12).
     for (let i = 0; i < foods.length && nFd < MAX_FOODS; i++) {
-      const key = foods[i].x + "," + foods[i].y;
+      const f = foods[i];
+      const key = f.x + "," + f.y;
       if (eatenKeys && eatenKeys.indexOf(key) !== -1) continue;
-      i32[nFoodBase + 1 + nFd * 3] = foods[i].x;
-      i32[nFoodBase + 1 + nFd * 3 + 1] = foods[i].y;
-      i32[nFoodBase + 1 + nFd * 3 + 2] = foods[i].bounty ? 1 : 0;
+      if (!Render2D.foodVisible(f, currSnap, now)) continue;
+      i32[nFoodBase + 1 + nFd * 3] = f.x;
+      i32[nFoodBase + 1 + nFd * 3 + 1] = f.y;
+      i32[nFoodBase + 1 + nFd * 3 + 2] = f.gold ? 1 : 0;
       nFd++;
     }
     i32[nFoodBase] = nFd;
