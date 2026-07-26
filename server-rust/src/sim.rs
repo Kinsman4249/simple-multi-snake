@@ -9,10 +9,10 @@ use crate::config::now_ms;
 use crate::lifecycle::{handle_death, lifecycle_sweep, KillInfo};
 use crate::net::broadcast_state;
 use crate::powerups::{
-    attempt_wormhole, food_growth_multiplier, kill_bonus_growth_bonus, segments_lost,
-    speed_multiplier, PowerupType, POWERUP_TYPES,
+    attempt_wormhole, food_growth_multiplier, kill_bonus_growth_bonus, scissors_cut_index,
+    segments_lost, speed_multiplier, PowerupType, POWERUP_TYPES,
 };
-use crate::state::{hits_body, BlueShell, Cell, Game, Pickup, PortalFx, Trail, Wall};
+use crate::state::{hits_body, BlueShell, Cell, Game, Pickup, PortalFx, Trail, Wall, WallShatterFx};
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
 
@@ -510,7 +510,7 @@ fn movement_step(game: &mut Game, movers: &[usize]) {
     let mut died = DiedMap::new();
     let mut stalled: HashSet<usize> = HashSet::new();
     resolve_wall_collisions(game, movers, &mut new_heads, &mut died, &mut stalled);
-    resolve_self_collisions(game, movers, &new_heads, &mut died, &mut stalled);
+    resolve_self_collisions(game, movers, &mut new_heads, &mut died, &mut stalled);
     resolve_snake_collisions(game, movers, &new_heads, &mut died, &mut stalled, &all_alive);
     clear_mutual_kills(&mut died);
     apply_movement_and_food(game, movers, &new_heads, &died, &stalled);
@@ -630,16 +630,10 @@ fn compute_new_heads(game: &mut Game, movers: &[usize]) -> HashMap<usize, Cell> 
 
 // Wormhole interception (see the JS state-machine comment): the ONLY
 // transition out of ARMED is a fatal collision this step; firing always
-// consumes the charge, and a failed landing dies normally.
-fn try_wormhole_or_die(
-    game: &mut Game,
-    idx: usize,
-    killer: Option<usize>,
-    cause: &'static str,
-    died: &mut DiedMap,
-    stalled: &mut HashSet<usize>,
-    new_heads: &HashMap<usize, Cell>,
-) {
+// consumes the charge, and a failed landing dies normally. Returns true
+// if the snake was saved (teleported); the caller must not also call
+// died.set in that case.
+fn try_wormhole(game: &mut Game, idx: usize, stalled: &mut HashSet<usize>, new_heads: &HashMap<usize, Cell>) -> bool {
     let armed = matches!(&game.slots[idx], Some(s) if s.wormhole_charge);
     if armed {
         let (own_dir, own_head) = {
@@ -700,11 +694,144 @@ fn try_wormhole_or_die(
                 "wormhole fired slot={} entry=({},{}) landing=({},{})",
                 idx, r.entry_portal.x, r.entry_portal.y, landing.x, landing.y
             ));
-            return;
+            return true;
         }
         game.dlog(&format!("wormhole fizzled, no landing slot={}", idx));
     }
+    false
+}
+
+// Plain wrapper for call sites that must NOT fall back to scissors: the
+// arena boundary (always instakill) and head-on collisions (scissors
+// intentionally does not apply there -- see sim.rs module notes).
+fn try_wormhole_or_die(
+    game: &mut Game,
+    idx: usize,
+    killer: Option<usize>,
+    cause: &'static str,
+    died: &mut DiedMap,
+    stalled: &mut HashSet<usize>,
+    new_heads: &HashMap<usize, Cell>,
+) {
+    if try_wormhole(game, idx, stalled, new_heads) {
+        return;
+    }
     died.set(idx, KillInfo { killer, cause });
+}
+
+// Find the safer of the two directions perpendicular to `dir`: whichever
+// leads `depth` cells further before hitting a solid wall cell, the board
+// edge, or another snake's body. Used by the scissors wall-shatter save to
+// steer away from the wall it just broke through.
+fn safer_perpendicular(game: &Game, from: Cell, dir: Cell, depth: i32) -> Option<Cell> {
+    let now = now_ms();
+    let clear_run = |d: Cell| -> i32 {
+        let mut run = 0;
+        let mut c = from;
+        for _ in 0..depth {
+            c = Cell { x: c.x + d.x, y: c.y + d.y };
+            if !game.in_bounds(c) || game.is_solid_wall_cell(c.x, c.y, now) {
+                break;
+            }
+            if game.slots.iter().flatten().any(|s| hits_body(&s.body, c, false)) {
+                break;
+            }
+            run += 1;
+        }
+        run
+    };
+    let left = Cell { x: dir.y, y: -dir.x };
+    let right = Cell { x: -dir.y, y: dir.x };
+    let (lr, rr) = (clear_run(left), clear_run(right));
+    if lr == 0 && rr == 0 {
+        return None;
+    }
+    Some(if rr > lr { right } else { left })
+}
+
+// Scissors fallback save (v4.5.0): tried only after wormhole has already
+// failed to save the snake, and only for a self-collision or a dynamic
+// (spawned) wall hit -- never the arena boundary. Wormhole always gets
+// first say when it is the snake's own life on the line; this function is
+// the second chance. Returns true if the snake was saved.
+fn try_scissors_self_save(
+    game: &mut Game,
+    idx: usize,
+    cause: &'static str,
+    stalled: &mut HashSet<usize>,
+    new_heads: &mut HashMap<usize, Cell>,
+) -> bool {
+    let armed = matches!(&game.slots[idx], Some(s) if s.scissors_charge);
+    if !armed {
+        return false;
+    }
+    game.slots[idx].as_mut().unwrap().scissors_charge = false;
+    let fatal_head = new_heads[&idx];
+    match cause {
+        "self" => {
+            let min_len = game.cfg.min_snake_length;
+            let (old_body, old_len) = {
+                let s = game.slots[idx].as_ref().unwrap();
+                (s.body.clone(), s.body.len())
+            };
+            let Some(k) = scissors_cut_index(&old_body, fatal_head) else { return false };
+            let surviving_len = k + 1;
+            if surviving_len < min_len {
+                return false;
+            }
+            let mut new_body = Vec::with_capacity(surviving_len);
+            new_body.push(fatal_head);
+            new_body.extend_from_slice(&old_body[0..k]);
+            let severed: Vec<Cell> = old_body[k..].to_vec();
+            let s = game.slots[idx].as_mut().unwrap();
+            s.body = new_body;
+            s.last_trail_cell = None;
+            game.drop_scissors_food(idx, &severed, old_len);
+            stalled.insert(idx);
+            game.dlog(&format!("scissors self-cut slot={} survivingLen={}", idx, surviving_len));
+            true
+        }
+        "obstacle" => {
+            let Some(wall_id) = game.walls.iter().find(|w| w.x == fatal_head.x && w.y == fatal_head.y).map(|w| w.id) else {
+                return false;
+            };
+            let (own_dir, own_head) = {
+                let s = game.slots[idx].as_ref().unwrap();
+                (s.dir, s.head())
+            };
+            let Some(turn) = safer_perpendicular(game, own_head, own_dir, 3) else { return false };
+            let shattered: Vec<Cell> = game.walls.iter().filter(|w| w.id == wall_id).map(|w| Cell { x: w.x, y: w.y }).collect();
+            game.walls.retain(|w| w.id != wall_id);
+            game.wall_shatters.push(WallShatterFx { x: fatal_head.x, y: fatal_head.y });
+            let s = game.slots[idx].as_mut().unwrap();
+            s.dir = turn;
+            s.wall_stalls = 0;
+            new_heads.insert(idx, Cell { x: own_head.x + turn.x, y: own_head.y + turn.y });
+            game.dlog(&format!(
+                "scissors wall-shatter slot={} wallId={} cells={}",
+                idx, wall_id, shattered.len()
+            ));
+            true
+        }
+        _ => false,
+    }
+}
+
+fn try_wormhole_or_scissors_or_die(
+    game: &mut Game,
+    idx: usize,
+    cause: &'static str,
+    died: &mut DiedMap,
+    stalled: &mut HashSet<usize>,
+    new_heads: &mut HashMap<usize, Cell>,
+) {
+    if try_wormhole(game, idx, stalled, new_heads) {
+        return;
+    }
+    if try_scissors_self_save(game, idx, cause, stalled, new_heads) {
+        return;
+    }
+    died.set(idx, KillInfo { killer: None, cause });
 }
 
 fn resolve_wall_collisions(
@@ -754,7 +881,11 @@ fn resolve_wall_collisions(
             new_heads.insert(i, head);
             continue;
         }
-        try_wormhole_or_die(game, i, None, if obstacle { "obstacle" } else { "wall" }, died, stalled, new_heads);
+        if obstacle {
+            try_wormhole_or_scissors_or_die(game, i, "obstacle", died, stalled, new_heads);
+        } else {
+            try_wormhole_or_die(game, i, None, "wall", died, stalled, new_heads);
+        }
         game.slots[i].as_mut().unwrap().wall_stalls = 0;
     }
 }
@@ -762,7 +893,7 @@ fn resolve_wall_collisions(
 fn resolve_self_collisions(
     game: &mut Game,
     movers: &[usize],
-    new_heads: &HashMap<usize, Cell>,
+    new_heads: &mut HashMap<usize, Cell>,
     died: &mut DiedMap,
     stalled: &mut HashSet<usize>,
 ) {
@@ -776,7 +907,7 @@ fn resolve_self_collisions(
         }
         let hit = hits_body(&game.slots[i].as_ref().unwrap().body, new_heads[&i], true);
         if hit {
-            try_wormhole_or_die(game, i, None, "self", died, stalled, new_heads);
+            try_wormhole_or_scissors_or_die(game, i, "self", died, stalled, new_heads);
         }
     }
 }
@@ -847,6 +978,31 @@ fn resolve_snake_collisions(
                     continue;
                 }
                 Some(Action::BodyHit) => {
+                    // Scissors claims a body-hit before wormhole even gets
+                    // consulted (the one exception to "wormhole always goes
+                    // first"): the attacker was never in mortal danger once
+                    // scissors converts the crash into a cut, so it never
+                    // touches its own wormhole charge here.
+                    let attacker_armed = matches!(&game.slots[i], Some(s) if s.scissors_charge);
+                    if attacker_armed {
+                        game.slots[i].as_mut().unwrap().scissors_charge = false;
+                        let victim_body = game.slots[j].as_ref().unwrap().body.clone();
+                        let original_len = victim_body.len();
+                        if let Some(k) = scissors_cut_index(&victim_body, h) {
+                            if k < game.cfg.min_snake_length {
+                                died.set(j, KillInfo { killer: Some(i), cause: "scissors" });
+                            } else {
+                                let severed: Vec<Cell> = victim_body[k..].to_vec();
+                                game.slots[j].as_mut().unwrap().body.truncate(k);
+                                game.drop_scissors_food(j, &severed, original_len);
+                                game.dlog(&format!(
+                                    "scissors cut victim={} by={} survivingLen={}",
+                                    j, i, k
+                                ));
+                            }
+                        }
+                        break; // i (the attacker) is untouched, continues normally
+                    }
                     try_wormhole_or_die(game, i, Some(j), "body", died, stalled, new_heads);
                     break; // i resolved (died or teleported)
                 }
@@ -950,6 +1106,12 @@ fn apply_movement_and_food(
                 blocked = s.wormhole_charge;
                 if !blocked {
                     s.wormhole_charge = true;
+                }
+            } else if ptype == PowerupType::Scissors {
+                let s = game.slots[i].as_mut().unwrap();
+                blocked = s.scissors_charge;
+                if !blocked {
+                    s.scissors_charge = true;
                 }
             } else if ptype.requires_activation() {
                 let s = game.slots[i].as_mut().unwrap();
