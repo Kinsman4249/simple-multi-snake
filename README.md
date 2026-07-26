@@ -593,6 +593,91 @@ values chosen at install, writing the result to
 /etc/apache2/sites-available/<hostname>.conf. There is no per-domain vhost
 committed to the repo.
 
+## Development
+
+### Build and run
+
+No node/npm anywhere in this repo -- the old JS server tree was deleted
+2026-07-22.
+
+```sh
+cd server-rust && cargo build --release
+./server-rust/target/release/multisnake-server   # run from the repo root
+```
+
+### WASM renderer
+
+```sh
+deno run -A tools/build-wasm.mjs   # regenerates gitignored public/js/render-wasm.js
+```
+
+Rebuild after every `wasm/renderer.ts` edit -- it must stay pixel-parity
+with `render2d.js`.
+
+### Bench, parity, and smoke tests
+
+```sh
+deno run --allow-net --allow-read --allow-run --allow-write --allow-env tools/bench/run-bench.js
+deno run -A tools/bench/run-smoke.js
+```
+
+Append `/tools/bench/parity.html` with `window.__PARITY__` set for a parity
+diff; the pass bar is <1%.
+
+### End-to-end and perf tests
+
+- `tests/pw_*.js` -- roughly 15 minutes total. Each test boots its own
+  server on `:8080`; never run two at once.
+- Perf: set `SNAKE_PERF=1` and run `tests/perf_baseline.js`.
+
+### Test hooks
+
+| Env var / message | Effect |
+| --- | --- |
+| `SNAKE_TEST_SPAWNS` | deterministic spawns (`state.rs` `spawn_snake`) |
+| `SNAKE_TEST_HOOKS=1` | enables the WS `testHook` message |
+| `testHook` message | `spawnPickup` / `grantPowerup` / `placeFood` |
+
+### Known test gotchas
+
+- `client.waitFor` checks its predicate immediately, not on a tick-wait.
+- `startServer` never drains child stdout/stderr, so long logs block the
+  sim -- redirect to a file for manual debug runs.
+- Two local seats often land in the same sim tick; test both alignments.
+- Respawn delay `spectatorPromoteDelayMs` is 1500ms -- assert on first
+  death only.
+
+### Releasing
+
+A tag push alone triggers `.github/workflows/release.yml`, which
+auto-publishes the GitHub Release, a prebuilt binary asset, and an
+intentional garter-snake gag in the notes. Don't also run
+`gh release create` afterward -- it 422s. There is no `gh` CLI available in
+this environment; use git plus curl against api.github.com for read-only
+lookups.
+
+### install.sh
+
+`install.sh` is just the orchestrator; the actual steps live in
+`install-lib/*.sh` (see `install-lib/README.md`). Low-RAM hosts (<2GiB)
+take a swap-file, single-job/no-LTO build path, or fall back to a prebuilt
+binary. `install-ok` under `STATE_DIR` records a fully-succeeded run.
+
+### Conventions
+
+- Server is authoritative; client visuals/input never affect
+  collision/authority.
+- New config: add it to `config.json` plus a struct/`impl Default` in
+  `config.rs` (`#[serde(default)]`), and expose it via `/api/config` if the
+  client needs it.
+- New powerups: give each one its own description in its `PowerupType` arm
+  (`POWERUP_INFO`).
+- Renderer changes: update both `wasm/renderer.ts` (rebuild) and
+  `render2d.js`, and extend `tools/bench/scene.js` for parity coverage.
+- Verify with scripted Deno WS clients (`tests/pw_*.js`,
+  `SNAKE_TEST_SPAWNS` for geometry) against the live server, not mocks. UI
+  changes: headless Chromium over CDP.
+
 ## Notes and limitations
 
 - Blue Shell is on by default and fires the instant it is picked up. It

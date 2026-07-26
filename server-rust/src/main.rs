@@ -132,6 +132,7 @@ async fn main() {
         .route("/api/config", get(routes::api_config))
         .route("/api/captcha", get(routes::api_captcha))
         .route("/api/verify", post(routes::api_verify))
+        .route("/api/admin/notify-shutdown", post(routes::api_admin_notify_shutdown))
         .route("/ws", any(ws::ws_handler))
         .fallback(routes::static_handler)
         .with_state(app);

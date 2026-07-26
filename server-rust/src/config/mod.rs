@@ -68,6 +68,12 @@ pub struct Config {
     pub perf: bool,
     pub test_hooks: bool,
     pub test_spawns: Option<Vec<Option<ForcedSpawn>>>,
+    // Shared secret gating POST /api/admin/notify-shutdown (see routes.rs).
+    // Apache proxies "/" straight through to this server (deploy vhost
+    // template), so that route is internet-reachable, not loopback-only --
+    // ADMIN_TOKEN is what keeps it from being a public "kick everyone"
+    // button. None (unset) means the route always 403s.
+    pub admin_token: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -205,6 +211,7 @@ pub fn load() -> &'static Config {
         perf: std::env::var("SNAKE_PERF").map(|v| !v.is_empty()).unwrap_or(false),
         test_hooks: std::env::var("SNAKE_TEST_HOOKS").map(|v| v == "1").unwrap_or(false),
         test_spawns,
+        admin_token: std::env::var("ADMIN_TOKEN").ok().filter(|s| !s.is_empty()),
         root,
     };
     Box::leak(Box::new(cfg))

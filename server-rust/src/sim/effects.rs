@@ -319,6 +319,7 @@ pub(crate) fn apply_movement_and_food(
             game.slots[i].as_mut().unwrap().last_trail_cell = None;
         }
         game.slots[i].as_mut().unwrap().wall_stalls = 0;
+        game.slots[i].as_mut().unwrap().self_stalls = 0;
     }
 }
 

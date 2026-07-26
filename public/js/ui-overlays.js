@@ -194,7 +194,22 @@ function notifyJoinLocalDenied(msg) {
   setTimeout(() => box.remove(), 3000);
 }
 
+// Server-pushed maintenance/shutdown warning ({"type":"systemNotice","text"}).
+// Spans the top of the viewport (unlike the small joinLocalDenied corner
+// toast) since the point is to make sure everyone sees it in time to finish
+// their run and bank a high score before the server bounces.
+function showSystemNotice(msg) {
+  const existing = document.getElementById("systemNoticeBanner");
+  if (existing) existing.remove();
+  const box = document.createElement("div");
+  box.id = "systemNoticeBanner";
+  box.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:10000;background:#3a2a00;color:#fc3;border-bottom:1px solid #a70;font-family:monospace;font-size:14px;padding:8px 12px;text-align:center;";
+  box.textContent = msg.text || "The server is restarting for maintenance shortly.";
+  document.body.appendChild(box);
+}
+
 Object.assign(UI, {
   promptInitials, showSpectator, offerJoin, initCoOp, coOpJoined, coOpLeft,
   notifyJoinLocalDenied, initLeaveButtons, updateLeaveButtons, showRejoin,
+  showSystemNotice,
 });

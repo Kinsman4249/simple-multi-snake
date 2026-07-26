@@ -77,7 +77,8 @@ function startGame(token, initials) {
     onState: handleState,
     onSpectator: msg => UI.showSpectator(msg, myPlayers.size > 1),
     onOfferJoin: msg => UI.offerJoin(msg, () => Net.send({ type: "acceptJoin", local: msg.local }), myPlayers.size > 1),
-    onJoinLocalDenied: () => { seatPending[1] = false; UI.notifyJoinLocalDenied({ reason: "max local players reached" }); }
+    onJoinLocalDenied: () => { seatPending[1] = false; UI.notifyJoinLocalDenied({ reason: "max local players reached" }); },
+    onSystemNotice: msg => UI.showSystemNotice(msg)
   });
   // Mobile is single-seat only (maintainer decision, Phase 6): no co-op
   // button on coarse-pointer devices -- swipe + PWR + BOOST replace the

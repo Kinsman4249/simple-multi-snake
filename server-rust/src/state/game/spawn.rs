@@ -112,6 +112,7 @@ impl Game {
         s.input_queue.clear();
         s.alive = true;
         s.wall_stalls = 0;
+        s.self_stalls = 0;
         s.score = 0;
         s.last_ack = 0;
         s.boost = false;

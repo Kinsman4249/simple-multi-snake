@@ -2,7 +2,9 @@
 // that order each movement step. Movers are checked against EVERY living
 // snake; head-ons (same-step and split-step) kill both with no credit; a
 // body hit credits the owner. See the extensive JS comments for the shapes.
-use super::evasion::{try_wormhole_or_die, try_wormhole_or_scissors_or_die};
+use super::evasion::{
+    try_scissors_self_save, try_wormhole, try_wormhole_or_die, try_wormhole_or_scissors_or_die,
+};
 use super::movement::consume_inbounds_turn;
 use crate::config::now_ms;
 use crate::lifecycle::KillInfo;
@@ -105,9 +107,35 @@ pub(crate) fn resolve_self_collisions(
             continue;
         }
         let hit = hits_body(&game.slots[i].as_ref().unwrap().body, new_heads[&i], true);
-        if hit {
-            try_wormhole_or_scissors_or_die(game, i, "self", died, stalled, new_heads);
+        if !hit {
+            game.slots[i].as_mut().unwrap().self_stalls = 0;
+            continue;
         }
+        if try_wormhole(game, i, stalled, new_heads) {
+            continue;
+        }
+        if try_scissors_self_save(game, i, "self", stalled, new_heads) {
+            continue;
+        }
+        // Grace tick: a rigid head/body offset means the body can be
+        // treated as a static obstacle for one extra tick, same as the
+        // boundary/obstacle wall grace in resolve_wall_collisions -- but
+        // only at rest (no grace while boosting/mid-ramp, matching wall
+        // behavior). Own counter so using wall grace doesn't consume this
+        // one and vice versa.
+        let (self_stalls, ramp) = {
+            let s = game.slots[i].as_ref().unwrap();
+            (s.self_stalls, s.ramp_progress)
+        };
+        if self_stalls < game.cfg.wall_grace_ticks && ramp == 0.0 {
+            let s = game.slots[i].as_mut().unwrap();
+            s.self_stalls += 1;
+            stalled.insert(i);
+            let head = s.head();
+            new_heads.insert(i, head);
+            continue;
+        }
+        died.set(i, KillInfo { killer: None, cause: "self" });
     }
 }
 

@@ -1,9 +1,10 @@
-// HTTP routes: /api/config, /api/captcha, /api/verify, and the static file
-// server for public/. WebSocket upgrade + message handling lives in ws.rs.
+// HTTP routes: /api/config, /api/captcha, /api/verify, /api/admin/*, and the
+// static file server for public/. WebSocket upgrade + message handling lives
+// in ws.rs.
 use crate::App;
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{header, StatusCode, Uri};
+use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use crate::powerups::POWERUP_TYPES;
 
@@ -71,6 +72,39 @@ pub(crate) async fn api_verify(State(app): State<App>, body: String) -> Response
         )
             .into_response()
     }
+}
+
+// Used by install.sh before `systemctl restart multisnake`: broadcasts a
+// maintenance-shutdown warning to every connected client (so players can
+// finish their run to bank a high score) and reports how many connections
+// got it, so the installer knows whether it's worth waiting out the warning
+// period at all. Gated on ADMIN_TOKEN (see config/mod.rs) since Apache
+// proxies "/" straight through, making this route internet-reachable, not
+// loopback-only -- no configured token means the route always 403s, and a
+// mismatched/missing X-Admin-Token header does too.
+pub(crate) async fn api_admin_notify_shutdown(
+    State(app): State<App>,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    let Some(expected) = &app.cfg.admin_token else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    let given = headers.get("x-admin-token").and_then(|v| v.to_str().ok()).unwrap_or("");
+    if given != expected {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let text = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.get("text").and_then(|t| t.as_str()).map(String::from))
+        .unwrap_or_else(|| "The server is restarting for maintenance in 30 seconds.".to_string());
+
+    let game = app.game.lock().unwrap();
+    let connected = game.connections.len();
+    if connected > 0 {
+        crate::net::broadcast_notice(&game, &text);
+    }
+    no_store_json(serde_json::json!({ "connected": connected }).to_string())
 }
 
 pub(crate) async fn static_handler(State(app): State<App>, uri: Uri) -> Response {

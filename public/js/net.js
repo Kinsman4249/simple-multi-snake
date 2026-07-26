@@ -28,6 +28,8 @@ const Net = (() => {
       handlers.onOfferJoin && handlers.onOfferJoin(msg);
     } else if (msg.type === "joinLocalDenied") {
       handlers.onJoinLocalDenied && handlers.onJoinLocalDenied(msg);
+    } else if (msg.type === "systemNotice") {
+      handlers.onSystemNotice && handlers.onSystemNotice(msg);
     }
   }
   function send(obj) {

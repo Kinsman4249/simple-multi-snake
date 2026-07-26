@@ -26,6 +26,17 @@ pub fn send_to(game: &Game, conn_id: &str, msg: serde_json::Value) {
     }
 }
 
+// Fans an arbitrary system message out to every open connection, e.g. the
+// maintenance-shutdown warning (see routes::api_admin_notify_shutdown). One
+// serialize, reused for every connection -- same shape as send_to's payload,
+// just not tied to a single conn_id.
+pub fn broadcast_notice(game: &Game, text: &str) {
+    let payload = serde_json::json!({ "type": "systemNotice", "text": text }).to_string();
+    for conn in game.connections.values() {
+        let _ = conn.tx.send(WsOut::Text(payload.clone()));
+    }
+}
+
 #[derive(Serialize)]
 struct ColorView {
     head: &'static str,
