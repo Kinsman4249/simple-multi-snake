@@ -671,6 +671,14 @@ fn try_wormhole_or_die(
             s.dir = r.dir;
             s.teleported_this_tick = true;
             s.teleport_drain = s.body.len().saturating_sub(1);
+            // Trail-gap-fill anchor: apply_movement_and_food is skipped for
+            // this snake while stalled/draining, so last_trail_cell would
+            // otherwise still point at the pre-teleport tail. Left stale,
+            // the next real movement tick's gap-fill walk (sim.rs ~1034)
+            // bridges old and new tail positions with a straight line of
+            // trail tiles clear across the board. Clearing it here makes
+            // the snake start its trail fresh on the landing side.
+            s.last_trail_cell = None;
             stalled.insert(idx); // normal movement/food skipped this step
             // Purple portal markers at both ends of the phase. They stay
             // up until this snake's tail finishes threading through
