@@ -207,11 +207,6 @@
     animation: loadingSpin 0.8s linear infinite;
   }
   @keyframes loadingSpin { to { transform: rotate(360deg); } }
-  #loadingBarTrack {
-    width: 200px; height: 6px; background: #222; border: 1px solid #444;
-    overflow: hidden;
-  }
-  #loadingBar { height: 100%; width: 0%; background: #6f6; transition: width 0.2s; }
   #loadingLabel { color: #999; font-size: 12px; font-family: monospace; }
 </style>
 </head>
@@ -219,7 +214,6 @@
 
 <div id="loadingScreen">
   <div id="loadingSpinner"></div>
-  <div id="loadingBarTrack"><div id="loadingBar"></div></div>
   <div id="loadingLabel">Loading...</div>
 </div>
 

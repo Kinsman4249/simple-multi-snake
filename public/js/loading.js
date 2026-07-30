@@ -20,7 +20,7 @@
 // `a || b` evaluates to b when a is falsy -- here "use the existing
 // __BUILDS__ object, or create one if this is the first script to run" --
 // see JS-CHEATSHEET.md "Nullish coalescing / defaults".
-(window.__BUILDS__ = window.__BUILDS__ || {}).loading = "loading 2026-07-22.1";
+(window.__BUILDS__ = window.__BUILDS__ || {}).loading = "loading 2026-07-29.1";
 // IIFE module pattern: everything below (MAX_WAIT_MS, total, done, ...) is
 // private; only { begin, step } is exposed as `Loading.begin`/`Loading.step`
 // -- see JS-CHEATSHEET.md.
@@ -30,20 +30,12 @@ const Loading = (() => {
   let done = 0;
   let finished = false;
   const el = document.getElementById("loadingScreen");
-  const bar = document.getElementById("loadingBar");
 
-  function update() {
-    if (!bar) return;
-    const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 100;
-    bar.style.width = pct + "%";
-  }
   function begin(n) {
     total += (n || 1);
-    update();
   }
   function step() {
     done++;
-    update();
     if (done >= total) finish();
   }
   function finish() {

@@ -3,6 +3,9 @@
 This file tracks real changes to this repository. For the rules on how entries
 here should be written, see CHANGELOG_TEMPLATE.md.
 
+#### Boot loading screen: spinner only, remove progress bar -- v5.2.1
+- The progress bar on the boot loading screen has been removed, leaving only the spinner and "Loading..." label. The bar had a first-load rendering issue where it could be driven off-screen or display incorrectly depending on task registration timing. Removing it simplifies the loading screen UI, eliminates the visual glitch, and reduces boot JavaScript by 10 lines. The underlying task-tracking mechanism (`Loading.begin()` / `Loading.step()`) remains unchanged and continues to gate the UI reveal until all async boot tasks complete.
+
 #### Unified despawn telegraph for timed food -- v5.2.0
 - Timed food (piñata bounty candy and scissors-cut tail segments) near their expiry now use the same "fading" visual despawn cue as decaying walls: a pulsing alpha fade over the last `pinata.despawnTelegraphMs` (default 1000ms), reusing the exact formula wall despawn uses (`0.5 + 0.5 * sin(now/90 + seed)`). This gives both entity types one unified "about to disappear" language instead of a separate per-entity fade or blink implementation. Phase-offset by cell position so multiple candies don't throb in lockstep. The server precomputes `fading:true` for each food (same shape as wall state==="fading") and includes it in the broadcast, so the client just applies the standard pulse formula with no per-frame TTL math.
 - Server: new `pinata.despawnTelegraphMs` config (mirrors `walls.despawnTelegraphMs`); `server-rust/src/net.rs` `FoodView` now precomputes `fading` alongside the food, serialized only for timed food. Broadcast timing is tight: `food_telegraph_ticks` derived at frame-encode time using `interval` so food starting to fade updates in the same tick it crosses the threshold.
