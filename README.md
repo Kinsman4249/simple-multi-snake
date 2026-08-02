@@ -1,7 +1,3 @@
-# TODO
-
-Remove leaderboards that people aren't participating in unless manually expanded.
-
 # simple-multi-snake
 
 Browser-based multiplayer Snake. One authoritative server process (a compiled
