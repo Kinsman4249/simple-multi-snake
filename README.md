@@ -300,7 +300,11 @@ Keys:
 - foodRate: a separate speed-run-style leaderboard (`enabled` default true)
   tracking food eaten per unit time per seat, independent of the length-based
   Single PC / Networked boards -- shown as its own daily/all-time pair in the
-  high-score panel with a "food/min" rate. `bucketMs` (1000, accumulator
+  high-score panel with a "food/min" rate. The high-score panel itself only
+  shows a Single PC / Networked section by default when it matches the
+  session's current mode and has at least one posted score; a "Show ..."
+  button reveals any hidden section(s) for the rest of the session
+  (`public/js/ui-hud.js` `updateLeaderboards`). `bucketMs` (1000, accumulator
   resolution), `windowMs` (300000, rolling window the rate is computed
   over), `floorMs` (300000, minimum play time before a rate counts as
   qualifying rather than "provisional").

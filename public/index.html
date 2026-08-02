@@ -51,6 +51,16 @@
   .hs-section { border-left: 2px solid transparent; padding-left: 6px; margin-bottom: 8px; }
   .hs-section.current { border-left-color: #6f6; }
   .hs-section.current h3 { color: #6f6; }
+  /* A section you're not participating in -- wrong mode for this session,
+     or nobody's posted a score to it at all -- starts hidden (see
+     updateLeaderboards in ui-hud.js). #lbMore is the one link back to it. */
+  .hs-section.lb-hidden { display: none; }
+  .lb-more { font-size: 11px; }
+  .lb-more button {
+    background: #222; color: #ccc; border: 1px solid #666;
+    padding: 2px 8px; font-size: 11px; cursor: pointer; font-family: monospace;
+  }
+  .lb-more button:hover { background: #333; }
   #overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.85);
     display: flex; align-items: center; justify-content: center;
@@ -254,6 +264,10 @@
     <h4>Speed Run (food/min) - All-Time Top 5</h4>
     <ol id="netFrAllTimeList"></ol>
   </div>
+  <!-- Sections you're not currently participating in (wrong mode, or no
+       scores posted at all) are hidden by default -- see updateLeaderboards
+       in ui-hud.js. This link is the only way back to a hidden one. -->
+  <div id="lbMore" class="lb-more"></div>
 </div>
 
 <!-- In-game powerup reference (v3.6.5; v3.6.7 button toggle): the same swatch

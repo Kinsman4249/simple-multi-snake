@@ -35,6 +35,13 @@ function updateStatus(curr) {
   }).filter(s => s);
   statusEl.textContent = parts.join("   ");
 }
+// A section you're not participating in -- either it's not the mode this
+// session is playing, or nobody's ever posted a score to it -- starts
+// hidden so the hover panel isn't cluttered with boards that don't apply
+// to you. `lbShowOther` is a plain flag, not localStorage: it resets on
+// reload since participation (not a saved preference) drives the default.
+let lbShowOther = false;
+
 // Phase 12: hs is { local: {daily, allTime}, networked: {daily, allTime} }
 // and `mode` is the session's CURRENT classification ("local" |
 // "networked") -- the matching section gets the .current highlight so a
@@ -43,6 +50,9 @@ function updateLeaderboards(hs, mode) {
   const fmt = list => (list || []).map(e => "<li>" + e.initials + " - " + e.score + "</li>").join("");
   const local = hs.local || hs; // tolerate a pre-split server during a rolling deploy
   const net = hs.networked || { daily: [], allTime: [], foodRateDaily: [], foodRateAllTime: [] };
+  const hasAny = b => (b.daily && b.daily.length) || (b.allTime && b.allTime.length) ||
+    (b.foodRateDaily && b.foodRateDaily.length) || (b.foodRateAllTime && b.foodRateAllTime.length);
+
   document.getElementById("dailyList").innerHTML = fmt(local.daily);
   document.getElementById("allTimeList").innerHTML = fmt(local.allTime);
   const nd = document.getElementById("netDailyList");
@@ -59,10 +69,41 @@ function updateLeaderboards(hs, mode) {
   const nfra = document.getElementById("netFrAllTimeList");
   if (nfrd) nfrd.innerHTML = fmt(net.foodRateDaily);
   if (nfra) nfra.innerHTML = fmt(net.foodRateAllTime);
+
   const secLocal = document.getElementById("hsLocal");
   const secNet = document.getElementById("hsNetworked");
-  if (secLocal) secLocal.classList.toggle("current", mode !== "networked");
-  if (secNet) secNet.classList.toggle("current", mode === "networked");
+  const isNet = mode === "networked";
+  if (secLocal) secLocal.classList.toggle("current", !isNet);
+  if (secNet) secNet.classList.toggle("current", isNet);
+
+  // "Participating in" a section = it's this session's mode AND it has at
+  // least one posted score. The OTHER mode's section is always hidden by
+  // default regardless of its scores -- you're simply not playing it right
+  // now. Either way, one click on #lbMore brings hidden boards back.
+  const mySec = isNet ? secNet : secLocal;
+  const otherSec = isNet ? secLocal : secNet;
+  const myBoard = isNet ? net : local;
+  const myName = isNet ? "Networked" : "Single PC";
+  const otherName = isNet ? "Single PC" : "Networked";
+  const iParticipate = hasAny(myBoard);
+  if (mySec) mySec.classList.toggle("lb-hidden", !(iParticipate || lbShowOther));
+  if (otherSec) otherSec.classList.toggle("lb-hidden", !lbShowOther);
+
+  const more = document.getElementById("lbMore");
+  if (more) {
+    const hiddenNames = [];
+    if (!(iParticipate || lbShowOther)) hiddenNames.push(myName);
+    if (!lbShowOther) hiddenNames.push(otherName);
+    if (lbShowOther) {
+      more.innerHTML = '<button type="button">Hide boards you have not posted to</button>';
+      more.querySelector("button").onclick = () => { lbShowOther = false; updateLeaderboards(hs, mode); };
+    } else if (hiddenNames.length) {
+      more.innerHTML = '<button type="button">Show ' + hiddenNames.join(" &amp; ") + ' board' + (hiddenNames.length > 1 ? "s" : "") + '</button>';
+      more.querySelector("button").onclick = () => { lbShowOther = true; updateLeaderboards(hs, mode); };
+    } else {
+      more.innerHTML = "";
+    }
+  }
 }
 
 // ---- Kill feed (v3.6.8) ----------------------------------------------
